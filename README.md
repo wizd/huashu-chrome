@@ -38,6 +38,9 @@ CLI 是入口（install / mcp / doctor），MCP server 是 agent 的接口，本
 
 **图解版完整说明书 → [huasheng.ai/huashu-chrome](https://huasheng.ai/huashu-chrome/)**
 
+> **`my-dev` 分支：云端发布。** 装上这个分支的扩展、和 [maker.vcorp.ai](https://maker.vcorp.ai) 配对，它就能在你自己的浏览器里把视频发到抖音、小红书、B站等平台——不用终端，平台 cookie 不离开你的电脑，只能碰你勾选的平台、每个任务要你点头。
+> 安装与安全设计 → **[docs/云端发布.md](docs/云端发布.md)**
+
 ---
 
 ## 看效果

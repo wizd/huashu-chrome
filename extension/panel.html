@@ -74,6 +74,28 @@
   .toggle:checked { background: var(--ok); }
   .toggle:checked::after { transform: translateX(14px); }
   footer { color: var(--mute); font-size: 11.5px; padding: 0 16px 18px; }
+  /* 云端发布 */
+  .field { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+  .field input[type=text] { font: inherit; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--line);
+                            background: var(--bg); color: var(--ink); }
+  .field input.code { font: 15px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 2px; text-transform: uppercase; }
+  .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  .msg { font-size: 12px; margin-top: 6px; }
+  .msg.bad { color: var(--bad); }
+  .confirm { border: 1px solid var(--warn); border-radius: 9px; padding: 9px 10px; margin-top: 8px; }
+  .confirm b { word-break: break-all; }
+  .plats { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; margin-top: 4px; }
+  .plats label { display: flex; gap: 6px; align-items: center; font-size: 12.5px; cursor: pointer; }
+  .task { border-top: 1px solid var(--line); padding: 8px 0 2px; margin-top: 6px; }
+  .task .t { font-weight: 500; word-break: break-all; }
+  .task .sub, .muted { color: var(--mute); font-size: 11.5px; }
+  .task.pending { border-left: 3px solid var(--warn); padding-left: 8px; }
+  .log { max-height: 220px; overflow-y: auto; font-size: 11.5px; color: var(--mute); margin-top: 6px; }
+  .log div { display: flex; gap: 8px; }
+  .log .ago { flex: none; width: 46px; text-align: right; margin: 0; }
+  .log .no { color: var(--bad); }
+  details summary { cursor: pointer; color: var(--mute); font-size: 12px; margin-top: 8px; }
+  a { color: var(--accent); }
 </style>
 
 <header>
@@ -98,6 +120,55 @@
     <div id="lights"></div>
     <div class="cmd" id="reconnRow" hidden><button class="btn" id="reconn">重连</button>
       <span class="sub" style="color:var(--mute);font-size:12px">插件没消失，断的只是到终端的连接</span></div>
+  </section>
+
+  <section id="cloud">
+    <h2>云端发布</h2>
+    <!-- 没配对 -->
+    <div id="cloudPair" hidden>
+      <div class="muted">让 maker.vcorp.ai 在这个浏览器里替你把视频发到抖音、小红书这些平台——用的是你已经登录好的账号，
+        平台的 cookie 不会离开这台电脑。到网页上「平台账号 → 连接浏览器」拿一个配对码填在这里。</div>
+      <div class="field">
+        <input type="text" class="code" id="pairCode" maxlength="9" placeholder="ABCD-EFGH" autocomplete="off" spellcheck="false" />
+      </div>
+      <details>
+        <summary>服务器地址</summary>
+        <div class="field"><input type="text" id="pairOrigin" spellcheck="false" /></div>
+        <div class="muted">只有自建了服务才需要改。</div>
+      </details>
+      <div class="row"><button class="btn" id="pairGo">下一步</button></div>
+    </div>
+    <!-- 配对第一步完成，等用户确认账号 -->
+    <div id="cloudClaim" hidden>
+      <div class="confirm">
+        <div>要把这个浏览器交给 <b id="claimOrigin"></b> 上的账号 <b id="claimAccount"></b> 吗？</div>
+        <div class="muted" style="margin-top:4px">确认后，这个账号可以在你勾选的平台上替你发布。配对码如果是别人发给你的，点取消。</div>
+        <div class="row"><button class="btn" id="claimYes">确认连接</button><button class="btn ghost" id="claimNo">取消</button></div>
+      </div>
+    </div>
+    <!-- 已配对 -->
+    <div id="cloudOn" hidden>
+      <div class="light"><span class="dot" id="cloudDot"></span>
+        <div><div class="name" id="cloudName"></div><div class="sub" id="cloudSub"></div></div></div>
+      <div class="lab" style="margin-top:6px">允许它使用的平台</div>
+      <div class="plats" id="cloudPlats"></div>
+      <div class="muted" style="margin-top:4px">只勾你确实要交给它发布的。没勾的平台，它连页面都打不开。</div>
+      <div id="cloudTasks"></div>
+      <label class="sw-row">
+        <span class="txt">自动允许新任务<div class="sub">不再逐个弹窗确认。只在你信任这个账号、且只勾了要发的平台时打开</div></span>
+        <input type="checkbox" class="toggle" id="cloudAuto" />
+      </label>
+      <label class="sw-row">
+        <span class="txt">暂停<div class="sub">立刻断开，云端的命令一条都不接，直到你再打开</div></span>
+        <input type="checkbox" class="toggle" id="cloudPause" />
+      </label>
+      <details>
+        <summary>操作记录</summary>
+        <div class="log" id="cloudLog"></div>
+      </details>
+      <div class="row"><button class="btn ghost" id="cloudReconn">重连</button><button class="btn ghost" id="cloudUnpair">断开并忘记这个服务器</button></div>
+    </div>
+    <div class="msg bad" id="cloudErr" hidden></div>
   </section>
 
   <section>

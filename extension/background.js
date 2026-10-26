@@ -14,6 +14,7 @@ import { matchChallenge, hostOf, hostMatches, L2_ORIGINS_SEED } from './risk.js'
 import { CRED_URL, redactCreds } from './redact.js';
 import { identityOf, stripMarkPrefix } from './identity.js';
 import { validateScript, condText, repeatMax, EXEC_BUDGET, collectRefs, toRecipe } from './script.js';
+import { initCloud, ensureCloud } from './cloud.js';
 
 // ---------- 连接层 ----------
 //
@@ -616,11 +617,42 @@ const markEnabled = async () => !(await chrome.storage.local.get('markDisabled')
 
 // 每条命令都带着 sid / client / live 过来，顺手记下来。
 // popup 要显示「谁在控哪一页」，而它自己够不着桥。
+//
+// 在线名单有两个来源：桥推来的本机会话，和云端通道里已批准的任务（cloud.js）。
+// 分开存、合起来写进 LIVE_SIDS——任何一边更新都不能把另一边冲掉，
+// 否则桥的一次 sessions 推送就会让云端任务的标记和标签组集体消失。
+const BRIDGE_SIDS = 'bridgeSids';
+const CLOUD_SIDS = 'cloudSids';
+
 async function noteSession(sid, client, live) {
   const patch = {};
   if (sid && client) patch[sidClientKey(sid)] = client;
-  if (Array.isArray(live)) patch[LIVE_SIDS] = live;
+  if (Array.isArray(live)) {
+    const { [CLOUD_SIDS]: cloud = [] } = await chrome.storage.session.get(CLOUD_SIDS).catch(() => ({}));
+    patch[BRIDGE_SIDS] = live;
+    patch[LIVE_SIDS] = [...new Set([...live, ...cloud])];
+  }
   if (Object.keys(patch).length) await chrome.storage.session.set(patch).catch(() => {});
+}
+
+async function setCloudLive(sids) {
+  try {
+    const { [BRIDGE_SIDS]: bridge = [] } = await chrome.storage.session.get(BRIDGE_SIDS);
+    await chrome.storage.session.set({ [CLOUD_SIDS]: sids, [LIVE_SIDS]: [...new Set([...bridge, ...sids])] });
+    await resyncMarks();
+  } catch { /* 标记是给人看的，失败不影响命令 */ }
+}
+
+// 云端通道（cloud.js）执行一条已经过它审核的命令。和 onMessage 走同一套
+// 户口簿、标记、驾驶舱，只是不走槽继承：tabId 总是由 cloud.js 显式给出。
+async function runCloud(cmd, params, tabId, sid, label) {
+  await noteSession(sid, label, null);
+  const ctx = { sid, live: await liveList(), adopted: false };
+  if (tabId && cmd !== 'tabs') await registerTab(sid, tabId);
+  const data = await HANDLERS[cmd](params, tabId, ctx);
+  const marked = tabId || data?.tabId;
+  if (marked) void syncMark(marked, { sid, act: actText(cmd, params) });
+  return data;
 }
 
 const liveList = async () => (await chrome.storage.session.get(LIVE_SIDS))[LIVE_SIDS] || [];
@@ -2688,6 +2720,7 @@ cdp.reapOrphans();
 // 没连上就先把 offscreen 扶起来，还不行就自己顶上——这是「装完就自动连上、
 // 永远不需要用户手点」的最后一道保险，所以判据必须是连通性本身。
 chrome.alarms?.onAlarm.addListener(async () => {
+  void ensureCloud();   // 云端通道和本机桥互不相干，各自自愈
   await ensureOffscreen();
   if (await connected()) return setBadge(true);
   // 先让 offscreen 那条腿尽力——kick 会等它把五个端口探完再回话。
@@ -2843,6 +2876,9 @@ chrome.runtime.onMessage.addListener((m, sender, sendResponse) => {
     return true;
   }
 });
+
+// 云端通道：配过对才会连，没配对时什么都不做
+initCloud({ run: runCloud, setCloudLive });
 
 // SW 每次醒来（安装、浏览器启动、alarm 唤醒、offscreen 递消息）都会跑到这里。
 // 给 offscreen 一点时间自己连上，它没连上就自己顶。

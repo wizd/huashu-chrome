@@ -1746,6 +1746,22 @@
     return { data: { selector: `input[data-hc-fi="${mark}"]`, accept: input.getAttribute('accept') || '' } };
   }
 
+  // 云端任务的素材：页面里直接去配对服务器取（那个接口带 CORS），在这里造 File。
+  // 不走消息通道，几百 MB 的视频不用转 base64；SW 已核对过 url 指向配对服务器。
+  // 取不到报 FETCH_FAILED，上游会改由扩展取了再转交。
+  async function doUploadUrl(p) {
+    let blob;
+    try {
+      const res = await fetch(p.url, { credentials: 'omit', cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      blob = await res.blob();
+    } catch (e) {
+      throw fail('FETCH_FAILED', `页面里取素材失败：${e.message}`);
+    }
+    if (p.bytes && blob.size !== p.bytes) throw fail('INTERNAL', `素材大小不对：应为 ${p.bytes}，实际 ${blob.size}`);
+    return putFile(new File([blob], p.name, { type: p.type || blob.type || 'application/octet-stream' }), p, blob.size);
+  }
+
   function doUpload(p) {
     let bin;
     try {
@@ -1765,26 +1781,29 @@
     }
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const file = new File([bytes], p.name, { type: p.type || 'application/octet-stream' });
+    return putFile(new File([bytes], p.name, { type: p.type || 'application/octet-stream' }), p, bytes.length);
+  }
 
+  // 两条上传路（base64、云端素材 URL）造好 File 之后走同一段：挑同一个 input、同样的拖放回落
+  function putFile(file, p, size) {
     // 调用方明确给了 dropSelector，就是明确要走拖放——哪怕页面上另有 file input。
     // 不尊重这个意图的话，参数给了却没生效，而返回值还说「已投入」，
     // 是最难查的那种失败。
-    if (p.dropSelector) return dropFile(file, p, bytes.length);
+    if (p.dropSelector) return dropFile(file, p, size);
 
     const input = findFileInput(p);
     // 没有 file input 不等于不能上传：越来越多的编辑器（X 的 Article、Notion、语雀）
     // 只监听拖放，页面上根本不存在 <input type=file>。之前这里直接报错，
     // 等于把「往文章里插图」这一整类任务判了死刑。
-    if (!input || (input.tagName !== 'INPUT' && !p.selector)) return dropFile(file, p, bytes.length);
-    if (input.tagName !== 'INPUT') return dropFile(file, p, bytes.length, input);
+    if (!input || (input.tagName !== 'INPUT' && !p.selector)) return dropFile(file, p, size);
+    if (input.tagName !== 'INPUT') return dropFile(file, p, size, input);
 
     const dt = new DataTransfer();
     dt.items.add(file);
     input.files = dt.files;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    return { data: { text: `已投入 ${p.name}（${Math.round(bytes.length / 1024)}KB）到 ${input.getAttribute('accept') ? 'accept="' + input.getAttribute('accept') + '"' : ''} input` } };
+    return { data: { text: `已投入 ${p.name}（${Math.round(size / 1024)}KB）到 ${input.getAttribute('accept') ? 'accept="' + input.getAttribute('accept') + '"' : ''} input` } };
   }
 
   // 拖放上传。要点是**整套事件都要发**：只发 drop 的话，很多实现在 dragover 里
@@ -2055,7 +2074,7 @@
           case 'query': return sendResponse(doQuery(msg));
           case 'read': return sendResponse(doRead(msg));
           case 'expect': return sendResponse(doExpect(msg));
-          case 'upload': return sendResponse(doUpload(msg));
+          case 'upload': return sendResponse(msg.url ? await doUploadUrl(msg) : doUpload(msg));
           case 'uploadTarget': return sendResponse(doUploadTarget(msg));
           case 'scroll': return sendResponse(await doScroll(msg));
           case 'history':

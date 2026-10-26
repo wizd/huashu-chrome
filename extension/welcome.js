@@ -11,6 +11,14 @@ const copy = (btnId, srcId) => {
 copy('copy', 'cmd');
 copy('copy2', 'say');
 
+// 侧栏只能在用户手势里打开：这一下点击就是
+document.getElementById('openPanel').onclick = async () => {
+  const win = await chrome.windows.getCurrent();
+  chrome.sidePanel.open({ windowId: win.id }).catch(() => {
+    document.getElementById('openPanel').textContent = '点工具栏上的 huashu-chrome 图标';
+  });
+};
+
 async function poll() {
   const r = await chrome.runtime.sendMessage({ __hcPopup: 'status' }).catch(() => null);
   if (r?.connected) {

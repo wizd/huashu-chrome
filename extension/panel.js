@@ -222,9 +222,128 @@ $('mark').onchange = async (e) => {
   refreshAll();
 };
 
+// ---------- 云端发布 ----------
+//
+// 状态全在 background（cloud.js），这里只发操作、只渲染。服务器给的文字
+// （账号名、任务标题）一律 textContent——服务器被攻破时它们就是攻击者写的。
+
+const cloudCall = async (op, extra = {}) => {
+  const r = await send({ __hcCloud: op, ...extra });
+  $('cloudErr').hidden = !!r?.ok;
+  if (!r?.ok) $('cloudErr').textContent = r?.error || '扩展没有响应，稍后再试';
+  if (r?.state) renderCloud(r.state);
+  return r;
+};
+
+const CLOUD_STATE = {
+  online: ['ok', '已连接'],
+  connecting: ['warn', '连接中'],
+  paused: ['warn', '已暂停'],
+  error: ['bad', '连接失败'],
+  off: ['', '未连接'],
+};
+const LOG_TEXT = {
+  paired: '配对', unpaired: '解除配对', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
+  platforms: '改了允许的平台', auto_on: '打开自动允许', auto_off: '关闭自动允许', paused: '暂停', resumed: '恢复',
+};
+
+function renderCloud(s) {
+  const on = !!s.cfg;
+  $('cloudPair').hidden = on || !!s.claim;
+  $('cloudClaim').hidden = on || !s.claim;
+  $('cloudOn').hidden = !on;
+  if (!$('pairOrigin').value) $('pairOrigin').value = s.defaultOrigin;
+  if (s.claim) {
+    $('claimOrigin').textContent = new URL(s.claim.origin).host;
+    $('claimAccount').textContent = `「${s.claim.account || '（未命名）'}」`;
+  }
+  if (!on) return;
+
+  const [cls, word] = CLOUD_STATE[s.status?.state] || CLOUD_STATE.off;
+  $('cloudDot').className = `dot ${cls}`;
+  $('cloudName').textContent = `${new URL(s.cfg.origin).host} · ${word}`;
+  $('cloudSub').textContent = s.status?.state === 'error' || s.status?.state === 'paused'
+    ? s.status.message : `账号「${s.cfg.account || ''}」`;
+  $('cloudAuto').checked = !!s.cfg.auto;
+  $('cloudPause').checked = !!s.cfg.paused;
+
+  const plats = $('cloudPlats');
+  plats.textContent = '';
+  for (const p of s.platforms) {
+    const lab = el('label');
+    const box = el('input');
+    box.type = 'checkbox';
+    box.value = p.id;
+    box.checked = s.cfg.platforms.includes(p.id);
+    box.onchange = () => cloudCall('setPlatforms', { platforms: [...plats.querySelectorAll('input:checked')].map((b) => b.value) });
+    lab.title = p.hosts.join('、');
+    lab.append(box, el('span', null, p.name));
+    plats.appendChild(lab);
+  }
+
+  const names = (ids) => ids.map((id) => s.platforms.find((p) => p.id === id)?.name || id).join('、') || '（无）';
+  const tasks = $('cloudTasks');
+  tasks.textContent = '';
+  for (const t of s.tasks.filter((x) => x.state !== 'denied')) {
+    const box = el('div', `task ${t.state}`);
+    box.appendChild(el('div', 't', t.title || `任务 ${t.jobId}`));
+    if (t.state === 'pending') {
+      box.appendChild(el('div', 'sub', `请求在 ${names(t.platforms)} 上发布`
+        + (t.requested.length > t.platforms.length ? `（另请求了 ${names(t.requested.filter((id) => !t.platforms.includes(id)))}，你没勾选，不会给）` : '')));
+      const row = el('div', 'row');
+      const yes = el('button', 'btn', '允许');
+      const no = el('button', 'btn ghost', '拒绝');
+      yes.onclick = () => cloudCall('decide', { jobId: t.jobId, allow: true });
+      no.onclick = () => cloudCall('decide', { jobId: t.jobId, allow: false });
+      row.append(yes, no);
+      box.appendChild(row);
+    } else {
+      box.appendChild(el('div', 'sub', `进行中 · ${names(t.platforms)} · ${t.count} 条命令 · ${relTime(t.lastAt)}`));
+      const row = el('div', 'row');
+      const stop = el('button', 'btn ghost', '收回（关掉它的标签页）');
+      stop.onclick = () => cloudCall('endTask', { jobId: t.jobId });
+      row.appendChild(stop);
+      box.appendChild(row);
+    }
+    tasks.appendChild(box);
+  }
+
+  const log = $('cloudLog');
+  log.textContent = '';
+  if (!s.log.length) log.appendChild(el('div', null, '还没有记录'));
+  for (const r of s.log) {
+    const row = el('div');
+    const text = r.ev ? LOG_TEXT[r.ev] || r.ev : `${r.cmd}${r.ok ? '' : ` ✗ ${r.code}${r.msg ? `：${r.msg}` : ''}`}`;
+    row.append(el('span', 'ago', relTime(r.t)), el('span', r.ok === false ? 'no' : null, `${text}${r.job ? ` · ${String(r.job).slice(-6)}` : ''}`));
+    log.appendChild(row);
+  }
+}
+
+$('pairGo').onclick = async () => {
+  $('pairGo').disabled = true;
+  await cloudCall('claim', { origin: $('pairOrigin').value, code: $('pairCode').value });
+  $('pairGo').disabled = false;
+};
+$('pairCode').onkeydown = (e) => { if (e.key === 'Enter') $('pairGo').click(); };
+$('claimYes').onclick = async () => {
+  $('claimYes').disabled = true;
+  await cloudCall('confirm');
+  $('claimYes').disabled = false;
+  $('pairCode').value = '';
+};
+$('claimNo').onclick = () => cloudCall('cancelClaim');
+$('cloudAuto').onchange = (e) => cloudCall('setAuto', { auto: e.target.checked });
+$('cloudPause').onchange = (e) => cloudCall('setPaused', { paused: e.target.checked });
+$('cloudReconn').onclick = () => cloudCall('reconnect');
+$('cloudUnpair').onclick = () => {
+  if (confirm('断开后这个服务器再也不能在本浏览器里发布，它开的标签页会被关掉。要再用得重新配对。')) cloudCall('unpair');
+};
+
 // ---------- 订阅 ----------
 
 chrome.storage.onChanged.addListener((changes, area) => {
+  const keys0 = Object.keys(changes);
+  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudLog', 'cloudStatus', 'cloudClaim'].includes(k))) void cloudCall('state');
   if (area !== 'session') return;
   const keys = Object.keys(changes);
   if (keys.includes(`panel:${tabId}`) || keys.includes('liveSids')) renderPage();
@@ -235,5 +354,6 @@ chrome.tabs.onUpdated.addListener((id, info) => { if (info.title) refreshAll(); 
 
 renderPage();
 refreshAll();
+void cloudCall('state');
 // 相对时间要走字，连接状态要跟上（桥的心跳不写 storage）
-setInterval(() => { renderPage(); refreshAll(); }, 15000);
+setInterval(() => { renderPage(); refreshAll(); void cloudCall('state'); }, 15000);

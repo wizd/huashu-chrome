@@ -244,7 +244,7 @@ const CLOUD_STATE = {
 };
 const LOG_TEXT = {
   paired: '配对', unpaired: '解除配对', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
-  platforms: '改了允许的平台', auto_on: '打开自动允许', auto_off: '关闭自动允许', paused: '暂停', resumed: '恢复',
+  platforms: '改了允许的平台', probe: '检查登录', auto_on: '打开自动允许', auto_off: '关闭自动允许', paused: '暂停', resumed: '恢复',
 };
 
 function renderCloud(s) {
@@ -313,7 +313,7 @@ function renderCloud(s) {
   if (!s.log.length) log.appendChild(el('div', null, '还没有记录'));
   for (const r of s.log) {
     const row = el('div');
-    const text = r.ev ? LOG_TEXT[r.ev] || r.ev : `${r.cmd}${r.ok ? '' : ` ✗ ${r.code}${r.msg ? `：${r.msg}` : ''}`}`;
+    const text = r.ev ? `${LOG_TEXT[r.ev] || r.ev}${r.msg ? ` ${r.msg}` : ''}` :`${r.cmd}${r.ok ? '' : ` ✗ ${r.code}${r.msg ? `：${r.msg}` : ''}`}`;
     row.append(el('span', 'ago', relTime(r.t)), el('span', r.ok === false ? 'no' : null, `${text}${r.job ? ` · ${String(r.job).slice(-6)}` : ''}`));
     log.appendChild(row);
   }

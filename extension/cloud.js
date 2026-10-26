@@ -224,6 +224,7 @@ export async function connect() {
       // 服务器说这个设备已经被作废（用户在网页上删了它）：本机跟着解除，不再重连
       if (m.type === 'revoked') { await unpair(); await setStatus('off', '这个浏览器已在网页上被移除'); return; }
       if (m.type === 'cmd') { void handle(m); return; }
+      if (m.type === 'probe') { void handleProbe(m); return; }
       if (m.type === 'job_end') { void endTask(String(m.jobId || ''), 'server'); }
     };
     sock.onclose = (ev) => {
@@ -519,6 +520,67 @@ async function uploadMedia(p, tid, sid, label) {
   let s = '';
   for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
   return deps.run('upload', { ...base, base64: btoa(s) }, tid, sid, label);
+}
+
+// ---------- 登录探测 ----------
+//
+// 服务器问「这几个平台登录了没有」（做视频时勾了自动发布，提交前要先确认）。
+// 只探用户勾选过的平台，地址和判据写死在 cloud-policy.js 的 PROBES 里，
+// 回去的只有每个平台一个状态词，页面内容一个字都不出去。
+// 在后台开一个标签页看完就关；2 分钟内同一平台复用上次结果，防止服务器刷开标签页。
+
+const PROBE_TTL_MS = 2 * 60 * 1000;
+const PROBE_WAIT_MS = 15000;
+const probeCache = new Map();   // platform → { state, at }
+let probeLock = Promise.resolve();
+
+async function probeOne(id) {
+  const probe = policy.PROBES[id];
+  const hit = probeCache.get(id);
+  if (hit && Date.now() - hit.at < PROBE_TTL_MS) return hit.state;
+  const tab = await chrome.tabs.create({ url: probe.url, active: false });
+  let state = null;
+  try {
+    const until = Date.now() + PROBE_WAIT_MS;
+    while (!state && Date.now() < until) {
+      await sleep(1000);
+      const t = await chrome.tabs.get(tab.id).catch(() => null);
+      if (!t) break;
+      let text = '';
+      if (t.status === 'complete') {
+        try {
+          const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.body?.innerText.slice(0, 20000) || '' });
+          text = r?.result || '';
+        } catch { /* 页面还在跳 */ }
+      }
+      state = policy.judgeProbe(probe, { url: t.pendingUrl || t.url || '', text });
+    }
+  } finally {
+    await chrome.tabs.remove(tab.id).catch(() => {});
+  }
+  state = state || 'unknown';
+  probeCache.set(id, { state, at: Date.now() });
+  return state;
+}
+
+async function handleProbe(m) {
+  const run = probeLock.then(async () => {
+    const cfg = await getCfg();
+    const out = {};
+    for (const id of [...new Set(Array.isArray(m.platforms) ? m.platforms.map(String) : [])].slice(0, 8)) {
+      if (!policy.PROBES[id]) continue;
+      out[id] = cfg?.platforms?.includes(id) ? await probeOne(id) : 'denied';
+    }
+    return out;
+  });
+  probeLock = run.catch(() => {});
+  try {
+    const data = await run;
+    send({ type: 'res', id: m.id, ok: true, data });
+    await log({ ev: 'probe', msg: Object.entries(data).map(([k, v]) => `${policy.PLATFORMS[k]?.name || k}:${v}`).join(' ') });
+  } catch (e) {
+    send({ type: 'res', id: m.id, ok: false, error: { code: 'INTERNAL', message: e.message || String(e) } });
+  }
 }
 
 // ---------- 侧栏 ----------

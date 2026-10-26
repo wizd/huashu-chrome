@@ -29,6 +29,30 @@ export const PLATFORMS = {
 
 export const DEFAULT_ORIGIN = 'https://maker.vcorp.ai';
 
+// 登录探测：服务器只能问「这几个平台登录了没有」，问不了别的。
+// 打开哪个地址、怎么判断，都写死在这里——服务器给不了 URL，拿回去的也只有一个状态词。
+//   url    要登录才看得到的创作者后台页
+//   login  落到这种地址 = 没登录（平台会把未登录的人重定向到登录页）
+//   ok     页面上出现这种字 = 登录着（2026-10-26 实测抖音、小红书已登录的首页）
+//   ask    页面上出现这种字 = 正在要人登录
+export const PROBES = {
+  douyin: { url: 'https://creator.douyin.com/creator-micro/home', login: /\/login|passport|sso\./, ok: /抖音号[:：]/, ask: /扫码登录|验证码登录|手机号登录/ },
+  xiaohongshu: { url: 'https://creator.xiaohongshu.com/new/home', login: /\/login/, ok: /小红书账号[:：]/, ask: /扫码登录|短信登录|验证码登录/ },
+  bilibili: { url: 'https://member.bilibili.com/platform/home', login: /passport\.bilibili\.com|\/login/, ok: /投稿|内容管理/, ask: /扫描二维码登录|密码登录/ },
+  shipinhao: { url: 'https://channels.weixin.qq.com/platform', login: /login\.html/, ok: /视频号ID|发表视频|内容管理/, ask: /登录视频号助手/ },
+  kuaishou: { url: 'https://cp.kuaishou.com/profile', login: /passport\.kuaishou\.com|\/login/, ok: /快手号|作品管理|发布作品/, ask: /扫码登录|验证码登录/ },
+  weibo: { url: 'https://weibo.com/', login: /passport\.weibo|\/signin|\/login/, ok: /发微博|写微博|我的主页/, ask: /立即登录|扫描二维码登录|登录\/注册/ },
+  zhihu: { url: 'https://www.zhihu.com/creator', login: /\/signin|\/login/, ok: /创作中心|内容管理|我的创作/, ask: /验证码登录|密码登录/ },
+};
+
+// 一份页面观察（{url, text}）落到哪种状态：'valid' | 'invalid' | null（还没定，再等等）
+export function judgeProbe(probe, { url = '', text = '' } = {}) {
+  if (probe.login.test(url)) return 'invalid';
+  if (probe.ok.test(text)) return 'valid';
+  if (probe.ask.test(text)) return 'invalid';
+  return null;
+}
+
 // 远端能调的命令。tabs 的子动作另外管（见 checkCommand）。
 export const CLOUD_CMDS = new Set([
   'tabs', 'navigate', 'snapshot', 'click', 'type', 'fill', 'select', 'key', 'scroll',

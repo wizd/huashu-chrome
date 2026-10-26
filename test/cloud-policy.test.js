@@ -8,7 +8,23 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   checkCommand, urlAllowed, allowedHosts, grantedPlatforms, normalizeOrigin, mediaAllowed, CLOUD_CMDS,
+  PROBES, PLATFORMS, judgeProbe,
 } from '../extension/cloud-policy.js';
+
+test('登录探测：每个平台都有探测，探测地址都在该平台自己的白名单里', () => {
+  assert.deepEqual(Object.keys(PROBES).sort(), Object.keys(PLATFORMS).sort());
+  for (const [id, p] of Object.entries(PROBES)) assert.ok(urlAllowed(p.url, allowedHosts([id])), id);
+});
+
+test('登录探测：重定向到登录页算没登录，看到账号号码算登录着，看不出来就再等', () => {
+  // 2026-10-26 实测：已登录的抖音、小红书首页；未登录的视频号被重定向到 login.html
+  assert.equal(judgeProbe(PROBES.douyin, { url: 'https://creator.douyin.com/creator-micro/home', text: '首页\n抖音号：84592557832\n关注' }), 'valid');
+  assert.equal(judgeProbe(PROBES.xiaohongshu, { url: 'https://creator.xiaohongshu.com/new/home', text: '小红书账号: 26539503357' }), 'valid');
+  assert.equal(judgeProbe(PROBES.shipinhao, { url: 'https://channels.weixin.qq.com/login.html', text: '登录视频号助手' }), 'invalid');
+  assert.equal(judgeProbe(PROBES.xiaohongshu, { url: 'https://creator.xiaohongshu.com/login', text: '' }), 'invalid');
+  assert.equal(judgeProbe(PROBES.douyin, { url: 'https://creator.douyin.com/', text: '扫码登录' }), 'invalid');
+  assert.equal(judgeProbe(PROBES.douyin, { url: 'https://creator.douyin.com/creator-micro/home', text: '' }), null);
+});
 
 const ORIGIN = 'https://maker.vcorp.ai';
 const hosts = allowedHosts(['douyin', 'shipinhao']);

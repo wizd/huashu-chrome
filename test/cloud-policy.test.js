@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   checkCommand, urlAllowed, allowedHosts, grantedPlatforms, normalizeOrigin, mediaAllowed, CLOUD_CMDS,
-  PROBES, PLATFORMS, judgeProbe, normalizeSite, cleanSites, SITES_MAX,
+  PROBES, PLATFORMS, judgeProbe, normalizeSite, cleanSites, SITES_MAX, taskHosts, sitesToAsk,
 } from '../extension/cloud-policy.js';
 
 test('登录探测：每个平台都有探测，探测地址都在该平台自己的白名单里', () => {
@@ -134,6 +134,44 @@ test('通用任务的站点：去重、限量，不合规的另列', () => {
   assert.equal(r.sites[0], 'zhipin.com');
   assert.deepEqual(r.bad, ['localhost']);
   assert.deepEqual(cleanSites('zhipin.com').sites, []);
+});
+
+test('混合任务：平台根域和额外网站一起放行，老任务没有 sites 也不报错', () => {
+  const mixed = taskHosts({ platforms: ['douyin', 'shipinhao'], sites: ['pexels.com'] });
+  assert.ok(urlAllowed('https://creator.douyin.com/creator-micro/content/upload', mixed));
+  assert.ok(urlAllowed('https://www.pexels.com/search/cat/', mixed));
+  assert.ok(urlAllowed('https://channels.weixin.qq.com/platform', mixed));
+  assert.ok(!urlAllowed('https://unsplash.com/', mixed));
+  assert.ok(!urlAllowed('https://mp.weixin.qq.com/', mixed));
+  assert.deepEqual(taskHosts({ platforms: ['douyin'] }), allowedHosts(['douyin']));
+  assert.deepEqual(taskHosts(undefined), []);
+});
+
+test('sitesToAsk：平台已覆盖、已批准、已拒绝的不再问，到上限就截断', () => {
+  const covered = allowedHosts(['douyin', 'shipinhao']);
+  const r = sitesToAsk(
+    ['douyin.com', 'creator.douyin.com', 'pexels.com', 'unsplash.com', 'weixin.qq.com'],
+    { covered, sites: ['pexels.com'], refused: ['unsplash.com'] },
+  );
+  assert.deepEqual(r.covered, ['douyin.com', 'creator.douyin.com']);
+  assert.deepEqual(r.ask, ['weixin.qq.com'], '视频号的根域盖不住整个 weixin.qq.com');
+  assert.deepEqual(r.overflow, []);
+
+  const many = Array.from({ length: 5 }, (_, i) => `s${i}.com`);
+  const held = Array.from({ length: SITES_MAX - 2 }, (_, i) => `old${i}.com`);
+  const r2 = sitesToAsk(many, { covered: [], sites: held, refused: ['s0.com'] });
+  assert.deepEqual(r2.ask, ['s1.com', 's2.com']);
+  assert.deepEqual(r2.overflow, ['s3.com', 's4.com']);
+  assert.deepEqual(sitesToAsk(['a.com', 'a.com'], { sites: [], refused: [] }).ask, ['a.com']);
+});
+
+test('混合白名单：额外网站能导航，没批的不行', () => {
+  const c = { hosts: taskHosts({ platforms: ['douyin'], sites: ['pexels.com'] }), origin: ORIGIN };
+  assert.ok(checkCommand('navigate', { url: 'https://www.pexels.com/search/cat' }, c));
+  assert.ok(checkCommand('tabs', { action: 'new', url: 'https://creator.douyin.com/' }, c));
+  assert.ok(checkCommand('act', { steps: [{ do: 'navigate', url: 'https://pexels.com/' }] }, c));
+  denied(() => checkCommand('navigate', { url: 'https://unsplash.com/' }, c));
+  denied(() => checkCommand('act', { steps: [{ do: 'if', then: [{ do: 'navigate', url: 'https://evil.example/' }] }] }, c));
 });
 
 test('sites 命令：清洗申请清单和用途，空申请不收', () => {

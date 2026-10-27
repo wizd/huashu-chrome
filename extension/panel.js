@@ -302,8 +302,12 @@ function renderCloud(s) {
       row.append(yes, no);
       box.appendChild(row);
     } else {
-      box.appendChild(el('div', 'sub', `进行中 · ${browse ? t.sites.join('、') : names(t.platforms)} · ${t.count} 条命令 · ${relTime(t.lastAt)}`));
-      if (browse && t.ask?.length) {
+      const extra = t.sites || [];
+      const where = browse
+        ? extra.join('、')
+        : names(t.platforms) + (extra.length ? ` + 额外网站：${extra.join('、')}` : '');
+      box.appendChild(el('div', 'sub', `进行中 · ${where} · ${t.count} 条命令 · ${relTime(t.lastAt)}`));
+      if (t.ask?.length) {
         box.appendChild(el('div', 'sub', `还想访问：${t.ask.join('、')}${t.askWhy ? `。用途：${t.askWhy}` : ''}`));
         const ask = el('div', 'row');
         const yes = el('button', 'btn', '允许这些网站');

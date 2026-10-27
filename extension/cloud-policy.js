@@ -9,15 +9,18 @@
 //
 //   1. 命令白名单：只有操作页面的那一小组。eval / fetch / network / download / reload
 //      一律没有——它们能读任意接口、带着 cookie 发请求、往磁盘写东西。
-//   2. 域名白名单：云端开的标签页只能停在用户勾选过的创作平台上，跳出去就屏蔽内容。
+//   2. 域名白名单：云端开的标签页只能停在用户勾选过的创作平台上，以及这个任务里
+//      用户逐个点头的额外网站上，跳出去就屏蔽内容。
 //   3. 标签页隔离：云端只看得见、只碰得到它自己开的标签页，用户自己的页面一个都不行。
 //   4. 文件来源：上传只能用配对服务器上的素材 URL，不收本机路径——否则一句
 //      upload(path:"~/.ssh/id_rsa") 就能把私钥发到公开平台上。
 //   5. 每个任务要用户点头（或用户主动开了自动允许），且有命令数上限。
 //
-// 通用任务（「到兼职网站上帮我找个工作」）没有平台，只有站点：服务器用 sites 命令申请，
-// 用户在通知或侧栏里看着这份站点清单点头。之后每多一个站点都要再点一次头，
-// 「自动允许」管不到它们——那等于让服务器自己挑网站。
+// 站点申请（sites 命令）：通用任务（「到兼职网站上帮我找个工作」）全靠它；
+// 发布任务也能用它临时加网站，比如去查资料再回来发。用户在通知或侧栏里看着这份
+// 站点清单点头。之后每多一个站点都要再点一次头，「自动允许」管不到它们——
+// 那等于让服务器自己挑网站。已经被勾选平台根域盖住的站点不再问。
+// 一个任务的额外网站最多 SITES_MAX 个。
 
 // 平台 → 允许停留的站点（含子域）。只放创作者后台和它们的登录/作品页需要的根域。
 // 视频号只放 channels.weixin.qq.com：weixin.qq.com 底下还有公众号后台、微信支付这些。
@@ -57,13 +60,13 @@ export function judgeProbe(probe, { url = '', text = '' } = {}) {
   return null;
 }
 
-// 远端能调的命令。tabs 的子动作另外管（见 checkCommand）。sites 只有通用任务能用。
+// 远端能调的命令。tabs 的子动作另外管（见 checkCommand）。sites 通用任务和发布任务都能用。
 export const CLOUD_CMDS = new Set([
   'tabs', 'navigate', 'snapshot', 'click', 'type', 'fill', 'select', 'key', 'scroll',
   'wait', 'read_text', 'query', 'read', 'screenshot', 'upload', 'act', 'ask', 'status', 'sites',
 ]);
 
-// ---------- 通用任务的站点 ----------
+// ---------- 站点申请（通用任务，以及发布任务的额外网站） ----------
 
 export const SITES_MAX = 20;
 
@@ -137,6 +140,32 @@ export function allowedHosts(platforms) {
   const out = [];
   for (const id of platforms || []) for (const h of PLATFORMS[id]?.hosts || []) out.push(h);
   return out;
+}
+
+// 一个任务实际能停的根域：勾选平台的根域，加上这个任务里批准过的额外网站。
+// 老任务可能没有 sites 字段，当作没有额外网站。
+export function taskHosts(task) {
+  return [...allowedHosts(task?.platforms), ...(task?.sites || [])];
+}
+
+// 一份申请里，哪些还要问用户。
+// covered 是平台根域：申请的站点被某个根域盖住（含子域）就不用问，算已允许。
+// 已经批准或拒绝过的不重复问。额外网站总数不超过 SITES_MAX，多出来的放 overflow。
+export function sitesToAsk(add, { covered = [], sites = [], refused = [] } = {}) {
+  const have = new Set(sites);
+  const no = new Set(refused);
+  const byPlatform = [];
+  const fresh = [];
+  const seen = new Set();
+  for (const h of Array.isArray(add) ? add : []) {
+    if (typeof h !== 'string' || seen.has(h)) continue;
+    seen.add(h);
+    if (covered.some((root) => hostMatches(h, root))) { byPlatform.push(h); continue; }
+    if (have.has(h) || no.has(h)) continue;
+    fresh.push(h);
+  }
+  const room = Math.max(0, SITES_MAX - sites.length);
+  return { ask: fresh.slice(0, room), covered: byPlatform, overflow: fresh.slice(room) };
 }
 
 // 一个页面地址在不在白名单里。about:blank 是新开标签页的出生地，放行；

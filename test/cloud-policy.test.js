@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   checkCommand, urlAllowed, allowedHosts, grantedPlatforms, normalizeOrigin, mediaAllowed, CLOUD_CMDS,
-  PROBES, PLATFORMS, judgeProbe,
+  PROBES, PLATFORMS, judgeProbe, normalizeSite, cleanSites, SITES_MAX,
 } from '../extension/cloud-policy.js';
 
 test('登录探测：每个平台都有探测，探测地址都在该平台自己的白名单里', () => {
@@ -112,4 +112,33 @@ test('服务器地址只收 https（本机调试可 http），素材地址认准
   assert.ok(mediaAllowed(`${ORIGIN}/api/ext/media/x`, ORIGIN));
   assert.ok(!mediaAllowed(`${ORIGIN}.evil.cn/api/ext/media/x`, ORIGIN));
   assert.ok(!mediaAllowed(`${ORIGIN}/api/ext/medias/x`, ORIGIN));
+});
+
+test('通用任务的站点：只收公网域名，去掉 www.，子域跟着放行', () => {
+  assert.equal(normalizeSite('zhipin.com'), 'zhipin.com');
+  assert.equal(normalizeSite('https://www.liepin.com/job/123?x=1'), 'liepin.com');
+  assert.equal(normalizeSite('WWW.58.COM'), '58.com');
+  assert.equal(normalizeSite('jobs.example.org'), 'jobs.example.org');
+  for (const bad of ['', 'localhost', 'printer.local', '127.0.0.1', '10.0.0.8', '[::1]', 'intranet', 'com.cn', 'github.io',
+    'javascript:alert(1)', 'file:///etc/passwd', 'chrome://settings', 'http://u:p@a.com', 'bad_host.com', '-a.com', 'a.123']) {
+    assert.equal(normalizeSite(bad), null, bad);
+  }
+  assert.ok(urlAllowed('https://m.zhipin.com/x', ['zhipin.com']));
+  assert.ok(!urlAllowed('https://zhipin.com.evil.cn/', ['zhipin.com']));
+  assert.ok(!urlAllowed('https://mail.qq.com/', ['zhipin.com']));
+});
+
+test('通用任务的站点：去重、限量，不合规的另列', () => {
+  const r = cleanSites(['zhipin.com', 'www.zhipin.com', 'localhost', ...Array.from({ length: 30 }, (_, i) => `s${i}.com`)]);
+  assert.equal(r.sites.length, SITES_MAX);
+  assert.equal(r.sites[0], 'zhipin.com');
+  assert.deepEqual(r.bad, ['localhost']);
+  assert.deepEqual(cleanSites('zhipin.com').sites, []);
+});
+
+test('sites 命令：清洗申请清单和用途，空申请不收', () => {
+  const p = checkCommand('sites', { add: ['https://www.zhipin.com/', '127.0.0.1'], reason: '  找\n兼职 ', tabId: 9 }, ctx);
+  assert.deepEqual(p, { add: ['zhipin.com'], bad: ['127.0.0.1'], reason: '找 兼职' });
+  denied(() => checkCommand('sites', {}, ctx));
+  denied(() => checkCommand('sites', { add: [] }, ctx));
 });

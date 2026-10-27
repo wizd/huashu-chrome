@@ -14,6 +14,10 @@
 //   4. 文件来源：上传只能用配对服务器上的素材 URL，不收本机路径——否则一句
 //      upload(path:"~/.ssh/id_rsa") 就能把私钥发到公开平台上。
 //   5. 每个任务要用户点头（或用户主动开了自动允许），且有命令数上限。
+//
+// 通用任务（「到兼职网站上帮我找个工作」）没有平台，只有站点：服务器用 sites 命令申请，
+// 用户在通知或侧栏里看着这份站点清单点头。之后每多一个站点都要再点一次头，
+// 「自动允许」管不到它们——那等于让服务器自己挑网站。
 
 // 平台 → 允许停留的站点（含子域）。只放创作者后台和它们的登录/作品页需要的根域。
 // 视频号只放 channels.weixin.qq.com：weixin.qq.com 底下还有公众号后台、微信支付这些。
@@ -53,11 +57,55 @@ export function judgeProbe(probe, { url = '', text = '' } = {}) {
   return null;
 }
 
-// 远端能调的命令。tabs 的子动作另外管（见 checkCommand）。
+// 远端能调的命令。tabs 的子动作另外管（见 checkCommand）。sites 只有通用任务能用。
 export const CLOUD_CMDS = new Set([
   'tabs', 'navigate', 'snapshot', 'click', 'type', 'fill', 'select', 'key', 'scroll',
-  'wait', 'read_text', 'query', 'read', 'screenshot', 'upload', 'act', 'ask', 'status',
+  'wait', 'read_text', 'query', 'read', 'screenshot', 'upload', 'act', 'ask', 'status', 'sites',
 ]);
+
+// ---------- 通用任务的站点 ----------
+
+export const SITES_MAX = 20;
+
+// 这些「后缀」底下是千千万万个别人的网站，批准了它等于批准了全部
+const SHARED_SUFFIXES = new Set([
+  'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'edu.cn', 'ac.cn', 'com.hk', 'com.tw', 'org.tw', 'com.sg',
+  'co.uk', 'org.uk', 'ac.uk', 'co.jp', 'ne.jp', 'or.jp', 'co.kr', 'com.au', 'net.au', 'co.nz', 'com.br',
+  'github.io', 'gitee.io', 'vercel.app', 'netlify.app', 'pages.dev', 'workers.dev', 'herokuapp.com',
+  'blogspot.com', 'appspot.com', 'web.app', 'firebaseapp.com', 'azurewebsites.net', 'cloudfront.net',
+]);
+
+// 「zhipin.com」「https://www.zhipin.com/web/geek/job」→ 'zhipin.com'；不像一个公网站点就 null。
+// www. 去掉：批准的是这个站点，含它的子域。IP、localhost、单段名、共享后缀一律不收。
+export function normalizeSite(raw) {
+  let s = String(raw || '').trim().toLowerCase();
+  if (!s) return null;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//.test(s)) s = `https://${s}`;
+  let u;
+  try { u = new URL(s); } catch { return null; }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  if (u.username || u.password) return null;
+  let h = u.hostname.replace(/\.$/, '');
+  if (h.startsWith('www.')) h = h.slice(4);
+  if (h.length > 253 || !h.includes('.')) return null;
+  if (/^[\d.]+$/.test(h) || h.includes(':') || h.startsWith('[')) return null;
+  if (!h.split('.').every((l) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l))) return null;
+  if (/^\d+$/.test(h.split('.').at(-1))) return null;
+  if (SHARED_SUFFIXES.has(h) || h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return null;
+  return h;
+}
+
+// 一份申请清单 → 去重、合规、限量的站点；不合规的另列出来告诉 agent
+export function cleanSites(list) {
+  const ok = [];
+  const bad = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    const h = normalizeSite(raw);
+    if (!h) { bad.push(String(raw).slice(0, 80)); continue; }
+    if (!ok.includes(h)) ok.push(h);
+  }
+  return { sites: ok.slice(0, SITES_MAX), bad };
+}
 
 // act 里允许出现的步骤
 const ACT_STEPS = new Set(['click', 'type', 'fill', 'select', 'key', 'scroll', 'wait', 'navigate', 'read', 'assert', 'if', 'repeat']);
@@ -185,6 +233,11 @@ export function checkCommand(cmd, params, { hosts, origin }) {
     case 'ask':
       p.timeout = Math.min(Math.max(Number(p.timeout) || 300000, 5000), 600000);
       return p;
+    case 'sites': {
+      const { sites, bad } = cleanSites(p.add);
+      if (!sites.length && !bad.length) throw err('CLOUD_DENIED', 'sites 要给 add：要访问的网站，如 ["zhipin.com"]');
+      return { add: sites, bad, reason: String(p.reason || '').replace(/\s+/g, ' ').trim().slice(0, 200) };
+    }
     default:
       return p;
   }

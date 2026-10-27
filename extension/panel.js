@@ -244,6 +244,7 @@ const CLOUD_STATE = {
 };
 const LOG_TEXT = {
   paired: '配对', unpaired: '解除配对', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
+  sites_on: '允许了新网站', sites_off: '拒绝了新网站', sites_timeout: '新网站没回应',
   platforms: '改了允许的平台', probe: '检查登录', auto_on: '打开自动允许', auto_off: '关闭自动允许', paused: '暂停', resumed: '恢复',
 };
 
@@ -287,8 +288,11 @@ function renderCloud(s) {
   for (const t of s.tasks.filter((x) => x.state !== 'denied')) {
     const box = el('div', `task ${t.state}`);
     box.appendChild(el('div', 't', t.title || `任务 ${t.jobId}`));
+    const browse = t.kind === 'browse';
     if (t.state === 'pending') {
-      box.appendChild(el('div', 'sub', `请求在 ${names(t.platforms)} 上发布`
+      box.appendChild(el('div', 'sub', browse
+        ? `请求访问这些网站：${t.ask.join('、')}${t.purpose ? `。用途：${t.purpose}` : ''}`
+        : `请求在 ${names(t.platforms)} 上发布`
         + (t.requested.length > t.platforms.length ? `（另请求了 ${names(t.requested.filter((id) => !t.platforms.includes(id)))}，你没勾选，不会给）` : '')));
       const row = el('div', 'row');
       const yes = el('button', 'btn', '允许');
@@ -298,7 +302,17 @@ function renderCloud(s) {
       row.append(yes, no);
       box.appendChild(row);
     } else {
-      box.appendChild(el('div', 'sub', `进行中 · ${names(t.platforms)} · ${t.count} 条命令 · ${relTime(t.lastAt)}`));
+      box.appendChild(el('div', 'sub', `进行中 · ${browse ? t.sites.join('、') : names(t.platforms)} · ${t.count} 条命令 · ${relTime(t.lastAt)}`));
+      if (browse && t.ask?.length) {
+        box.appendChild(el('div', 'sub', `还想访问：${t.ask.join('、')}${t.askWhy ? `。用途：${t.askWhy}` : ''}`));
+        const ask = el('div', 'row');
+        const yes = el('button', 'btn', '允许这些网站');
+        const no = el('button', 'btn ghost', '不允许');
+        yes.onclick = () => cloudCall('decideSites', { jobId: t.jobId, allow: true });
+        no.onclick = () => cloudCall('decideSites', { jobId: t.jobId, allow: false });
+        ask.append(yes, no);
+        box.appendChild(ask);
+      }
       const row = el('div', 'row');
       const stop = el('button', 'btn ghost', '收回（关掉它的标签页）');
       stop.onclick = () => cloudCall('endTask', { jobId: t.jobId });

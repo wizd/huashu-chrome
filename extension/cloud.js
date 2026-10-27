@@ -272,8 +272,13 @@ async function pushLive() {
   deps?.setCloudLive(Object.values(tasks).filter((t) => t.state === 'approved').map((t) => sidOf(t.jobId)));
 }
 
-// 批准与否只由用户决定（或用户主动开了自动允许）。服务器只能申请。
-async function taskFor(job, cfg) {
+// 通用任务（信封上带 sites 而不是 platforms）：能去哪些站点由用户逐个批准
+const isBrowse = (job) => Array.isArray(job?.sites);
+const hostsOf = (t) => (t.kind === 'browse' ? t.sites : policy.allowedHosts(t.platforms));
+
+// 批准与否只由用户决定（或用户主动开了自动允许，通用任务不算）。服务器只能申请。
+// reason：通用任务第一次申请站点时 agent 写的用途，放进批准框里给用户看。
+async function taskFor(job, cfg, reason = '') {
   const jobId = String(job?.id || '');
   if (!/^[\w-]{1,64}$/.test(jobId)) throw err('CLOUD_DENIED', '命令缺少有效的任务号');
   const title = String(job?.title || '').slice(0, 80);
@@ -284,6 +289,17 @@ async function taskFor(job, cfg) {
     if (task?.state === 'approved' && Date.now() - task.lastAt > policy.TASK_IDLE_MS) task = null;   // 闲置太久，重新问
     if (task?.state === 'denied') return task;
     if (task?.state === 'approved' || task?.state === 'pending') return task;
+    if (isBrowse(job)) {
+      const { sites } = policy.cleanSites(job.sites);
+      if (!sites.length) return { state: 'nosites' };
+      task = {
+        jobId, title, kind: 'browse', requested: [], platforms: [], sites: [], ask: sites, refused: [], purpose: reason,
+        tabs: [], cur: null, count: 0, state: 'pending', createdAt: Date.now(), lastAt: Date.now(), why: '',
+      };
+      tasks[jobId] = task;
+      await setTasks(tasks);
+      return task;
+    }
     const requested = (Array.isArray(job?.platforms) ? job.platforms : []).map(String);
     const platforms = policy.grantedPlatforms(requested, cfg.platforms);
     task = {
@@ -297,31 +313,81 @@ async function taskFor(job, cfg) {
     return task;
   });
 
+  if (t.state === 'nosites') throw err('NO_SITES', '通用任务要先用 sites 申请要访问的网站（如 sites {"add":["zhipin.com"],"reason":"找兼职"}），用户批准后才能打开。');
   if (t.state === 'denied') throw err('CLOUD_DENIED', `用户拒绝了这个任务${t.why ? `：${t.why}` : ''}。不要重试。`);
   if (t.state === 'approved') return t;
 
   // 等用户点头。通知是把人叫回来的唯一办法；侧栏里同样有一张卡片
   notifyPending(t, cfg);
-  const allow = await new Promise((resolve) => {
-    const set = waiters.get(jobId) || new Set();
-    const fn = (v) => { clearTimeout(timer); set.delete(fn); resolve(v); };
-    const timer = setTimeout(() => fn(null), APPROVE_MS);
-    set.add(fn);
-    waiters.set(jobId, set);
-  });
+  const allow = await waitFor(jobId);
   if (allow === null) throw err('CLOUD_TIMEOUT', '用户 5 分钟内没有批准这个任务。告诉用户打开浏览器扩展侧栏批准后再继续。');
   if (!allow) throw err('CLOUD_DENIED', '用户拒绝了这个任务。不要重试。');
   return (await getTasks())[jobId];
 }
 
+// 用户的决定：true 允许、false 拒绝、null 5 分钟没理
+function waitFor(key) {
+  return new Promise((resolve) => {
+    const set = waiters.get(key) || new Set();
+    const fn = (v) => { clearTimeout(timer); set.delete(fn); resolve(v); };
+    const timer = setTimeout(() => fn(null), APPROVE_MS);
+    set.add(fn);
+    waiters.set(key, set);
+  });
+}
+
 function notifyPending(t, cfg) {
-  const names = t.platforms.map((id) => policy.PLATFORMS[id]?.name || id).join('、');
+  const browse = t.kind === 'browse';
+  const names = browse ? t.ask.join('、') : t.platforms.map((id) => policy.PLATFORMS[id]?.name || id).join('、');
   chrome.notifications?.create(`hc-cloud:${t.jobId}`, {
     type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
-    title: `${policy.hostOf(cfg.origin)} 请求在你的浏览器里发布`,
-    message: `${t.title ? `「${t.title}」` : '一个发布任务'} → ${names}`,
+    title: `${policy.hostOf(cfg.origin)} 请求在你的浏览器里${browse ? '操作这些网站' : '发布'}`,
+    message: `${t.title ? `「${t.title}」` : browse ? '一个任务' : '一个发布任务'} → ${names}${browse && t.purpose ? `\n用途：${t.purpose}` : ''}`,
     buttons: [{ title: '允许' }, { title: '拒绝' }],
   }, () => void chrome.runtime.lastError);
+}
+
+// 进行中的通用任务又要新站点：单独问一次，只问这几个
+function notifySites(t, cfg) {
+  chrome.notifications?.create(`hc-cloud-sites:${t.jobId}`, {
+    type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
+    title: `${policy.hostOf(cfg.origin)} 的任务还想访问新的网站`,
+    message: `${t.title ? `「${t.title}」` : '任务'} → ${t.ask.join('、')}${t.askWhy ? `\n用途：${t.askWhy}` : ''}`,
+    buttons: [{ title: '允许' }, { title: '拒绝' }],
+  }, () => void chrome.runtime.lastError);
+}
+
+// 通用任务申请站点。第一次的清单在批准任务时一起批了；之后的新站点在这里问。
+// 用户拒绝的站点记下来，同一个任务不再问。
+async function requestSites(task, p, cfg) {
+  const extra = p.add.filter((h) => !task.sites.includes(h) && !task.refused.includes(h));
+  if (extra.length) {
+    const t = await updateTask(task.jobId, (x) => { x.ask = extra; x.askWhy = p.reason; });
+    if (!t) throw err('CLOUD_DENIED', '这个任务已经结束');
+    notifySites(t, cfg);
+    const allow = await waitFor(`sites:${task.jobId}`);
+    await updateTask(task.jobId, (x) => {
+      if (allow) x.sites.push(...extra.filter((h) => !x.sites.includes(h)));
+      else if (allow === false) x.refused.push(...extra);
+      x.ask = [];
+      x.askWhy = '';
+    });
+    chrome.notifications?.clear(`hc-cloud-sites:${task.jobId}`, () => void chrome.runtime.lastError);
+    await log({ ev: allow ? 'sites_on' : allow === false ? 'sites_off' : 'sites_timeout', job: task.jobId, msg: extra.join(',') });
+  }
+  const now = (await getTasks())[task.jobId] || task;
+  const lines = [`允许访问：${now.sites.join('、') || '（无）'}`];
+  const no = p.add.filter((h) => now.refused.includes(h));
+  const later = p.add.filter((h) => !now.sites.includes(h) && !now.refused.includes(h));
+  if (no.length) lines.push(`用户不同意：${no.join('、')}。不要再申请，换别的办法或在报告里说明。`);
+  if (later.length) lines.push(`用户 5 分钟内没有回应：${later.join('、')}。可以稍后再申请一次。`);
+  if (p.bad.length) lines.push(`不是可以申请的网站（要写域名，如 zhipin.com）：${p.bad.join('、')}`);
+  return { text: lines.join('\n'), sites: now.sites };
+}
+
+function decideSites(jobId, allow) {
+  chrome.notifications?.clear(`hc-cloud-sites:${jobId}`, () => void chrome.runtime.lastError);
+  for (const fn of waiters.get(`sites:${jobId}`) || []) fn(!!allow);
 }
 
 async function decide(jobId, allow) {
@@ -332,6 +398,7 @@ async function decide(jobId, allow) {
     t.state = allow ? 'approved' : 'denied';
     t.lastAt = Date.now();
     if (!allow) t.why = '';
+    if (allow && t.kind === 'browse') { t.sites = t.ask; t.ask = []; }
     await setTasks(tasks);
   });
   chrome.notifications?.clear(`hc-cloud:${jobId}`, () => void chrome.runtime.lastError);
@@ -353,7 +420,9 @@ async function endTask(jobId, by) {
   });
   if (!t) return;
   for (const fn of waiters.get(jobId) || []) fn(false);
+  for (const fn of waiters.get(`sites:${jobId}`) || []) fn(false);
   chrome.notifications?.clear(`hc-cloud:${jobId}`, () => void chrome.runtime.lastError);
+  chrome.notifications?.clear(`hc-cloud-sites:${jobId}`, () => void chrome.runtime.lastError);
   await closeTaskTabs(t, { force: by === 'user' });
   await pushLive();
   await log({ ev: 'ended', job: jobId, by });
@@ -416,14 +485,17 @@ async function exec(m) {
   if (recent.length >= PER_MINUTE) throw err('CLOUD_RATE', '命令太密（每分钟最多 120 条），放慢一点');
   recent.push(now);
 
-  const task = await taskFor(m.job, cfg);
+  if (m.cmd === 'sites' && !isBrowse(m.job)) throw err('CLOUD_DENIED', '发布任务只能用侧栏里勾选的平台，不能申请别的网站');
+  const reason = m.cmd === 'sites' ? String(m.params?.reason || '').slice(0, 200) : '';
+  const task = await taskFor(m.job, cfg, reason);
   const jobId = task.jobId;
   const updated = await updateTask(jobId, (t) => { t.count += 1; t.lastAt = Date.now(); });
   if (!updated) throw err('CLOUD_DENIED', '这个任务已经结束');
   if (updated.count > policy.TASK_CMD_CAP) throw err('CLOUD_DENIED', `一个任务最多 ${policy.TASK_CMD_CAP} 条命令，已经用完`);
 
-  const hosts = policy.allowedHosts(updated.platforms);
+  const hosts = hostsOf(updated);
   const p = policy.checkCommand(m.cmd, m.params, { hosts, origin: cfg.origin });
+  if (m.cmd === 'sites') return requestSites(updated, p, cfg);
   const sid = sidOf(jobId);
   const label = labelOf(cfg.origin);
   const own = new Set(updated.tabs);
@@ -640,6 +712,7 @@ async function onPanel(m) {
       return panelState();
     }
     case 'decide': await decide(String(m.jobId), !!m.allow); return panelState();
+    case 'decideSites': decideSites(String(m.jobId), !!m.allow); return panelState();
     case 'endTask': await endTask(String(m.jobId), 'user'); return panelState();
     case 'reconnect': disconnect(); retryDelay = 0; await connect(); return panelState();
     default: throw err('INTERNAL', `未知操作 ${m.op}`);
@@ -662,8 +735,8 @@ export function initCloud(d) {
   });
 
   chrome.notifications?.onButtonClicked.addListener((id, idx) => {
-    if (!id.startsWith('hc-cloud:')) return;
-    void decide(id.slice('hc-cloud:'.length), idx === 0);
+    if (id.startsWith('hc-cloud-sites:')) decideSites(id.slice('hc-cloud-sites:'.length), idx === 0);
+    else if (id.startsWith('hc-cloud:')) void decide(id.slice('hc-cloud:'.length), idx === 0);
   });
 
   // 从本任务的页面里点开的新标签页（「去发布」常在新页打开）归同一个任务，

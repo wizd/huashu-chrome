@@ -15,7 +15,7 @@ copy('copy2', 'say');
 document.getElementById('openPanel').onclick = async () => {
   const win = await chrome.windows.getCurrent();
   chrome.sidePanel.open({ windowId: win.id }).catch(() => {
-    document.getElementById('openPanel').textContent = '点工具栏上的 huashu-chrome 图标';
+    document.getElementById('openPanel').textContent = '点工具栏上的 vcorp-chrome 图标';
   });
 };
 

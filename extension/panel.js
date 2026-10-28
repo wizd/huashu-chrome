@@ -203,6 +203,11 @@ $('reconn').onclick = async () => {
 
 // ---------- 设置 ----------
 
+$('guide').onclick = (e) => {
+  e.preventDefault();
+  chrome.tabs.create({ url: chrome.runtime.getURL('welcome.html') });
+};
+
 chrome.storage.local.get('l2Disabled', ({ l2Disabled }) => { $('l2').checked = !l2Disabled; });
 
 $('l2').onchange = async (e) => {

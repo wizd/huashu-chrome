@@ -195,54 +195,66 @@ export async function connect() {
   if (!cfg?.deviceId) return setStatus('off');
   if (cfg.paused) return setStatus('paused', '已暂停：云端命令一律不接');
   connecting = true;
+  let sock;
   try {
     await setStatus('connecting');
-    const sock = new WebSocket(cfg.origin.replace(/^http/, 'ws') + '/api/ext/ws');
+    // 握手失败（例如代理回 503）不会抛异常，Chrome 仍会在内部记一条网络错误。
+    // 这里能接住的是构造函数抛出的地址错误，以及后面每条消息里的异常，都不进侧栏的红色错误。
+    try { sock = new WebSocket(cfg.origin.replace(/^http/, 'ws') + '/api/ext/ws'); }
+    catch { scheduleReconnect(); return; }
     ws = sock;
     lastRx = Date.now();
-    sock.onmessage = async (ev) => {
-      lastRx = Date.now();
-      let m;
-      try { m = JSON.parse(ev.data); } catch { return; }
-      if (m.type === 'ping') { if (sock.readyState === 1) sock.send(JSON.stringify({ type: 'pong' })); return; }
-      if (m.type === 'pong') return;
-      if (m.type === 'challenge') {
+    sock.onerror = (ev) => { ev?.preventDefault?.(); };
+    sock.onmessage = (ev) => {
+      void (async () => {
         try {
-          const sig = await sign(helloText(cfg.origin, cfg.deviceId, String(m.nonce || '')));
-          sock.send(JSON.stringify({
-            type: 'hello', v: 1, deviceId: cfg.deviceId, sig,
-            version: chrome.runtime.getManifest().version, platforms: cfg.platforms || [], auto: !!cfg.auto,
-          }));
-        } catch (e) { await setStatus('error', e.message); sock.close(); }
-        return;
-      }
-      if (m.type === 'welcome') {
-        retryDelay = 0;
-        await setStatus('online', String(m.account || cfg.account || ''));
-        return;
-      }
-      // 服务器说这个设备已经被作废（用户在网页上删了它）：本机跟着解除，不再重连
-      if (m.type === 'revoked') { await unpair(); await setStatus('off', '这个浏览器已在网页上被移除'); return; }
-      if (m.type === 'cmd') { void handle(m); return; }
-      if (m.type === 'probe') { void handleProbe(m); return; }
-      if (m.type === 'job_end') { void endTask(String(m.jobId || ''), 'server'); }
+          lastRx = Date.now();
+          let m;
+          try { m = JSON.parse(ev.data); } catch { return; }
+          if (!m || typeof m !== 'object') return;
+          if (m.type === 'ping') { if (sock.readyState === 1) sock.send(JSON.stringify({ type: 'pong' })); return; }
+          if (m.type === 'pong') return;
+          if (m.type === 'challenge') {
+            try {
+              const sig = await sign(helloText(cfg.origin, cfg.deviceId, String(m.nonce || '')));
+              sock.send(JSON.stringify({
+                type: 'hello', v: 1, deviceId: cfg.deviceId, sig,
+                version: chrome.runtime.getManifest().version, platforms: cfg.platforms || [], auto: !!cfg.auto,
+              }));
+            } catch { try { sock.close(); } catch { /* 已经废了 */ } }
+            return;
+          }
+          if (m.type === 'welcome') {
+            retryDelay = 0;
+            await setStatus('online', String(m.account || cfg.account || ''));
+            return;
+          }
+          // 服务器说这个设备已经被作废（用户在网页上删了它）：本机跟着解除，不再重连
+          if (m.type === 'revoked') { await unpair(); await setStatus('off', '这个浏览器已在网页上被移除'); return; }
+          if (m.type === 'cmd') { await handle(m); return; }
+          if (m.type === 'probe') { await handleProbe(m); return; }
+          if (m.type === 'job_end') { await endTask(String(m.jobId || ''), 'server'); }
+        } catch { /* 一条消息处理失败不能变成未捕获异常 */ }
+      })();
     };
     sock.onclose = (ev) => {
-      if (ws === sock) ws = null;
+      if (ws !== sock) return;
+      ws = null;
       clearInterval(pingTimer); pingTimer = null;
       if (ev.code === 4401) { void setStatus('error', '服务器不认这个设备的签名，请重新配对'); return; }
-      void setStatus('connecting', '连接断开，稍后重连');
+      void setStatus('connecting');
       scheduleReconnect();
     };
-    sock.onerror = () => {};
     clearInterval(pingTimer);
     pingTimer = setInterval(() => {
-      if (sock.readyState !== 1) return;
-      if (Date.now() - lastRx > DEAD_MS) { try { sock.close(); } catch { /* 已经废了 */ } return; }
-      sock.send(JSON.stringify({ type: 'ping' }));
+      try {
+        if (sock.readyState !== 1) return;
+        if (Date.now() - lastRx > DEAD_MS) { sock.close(); return; }
+        sock.send(JSON.stringify({ type: 'ping' }));
+      } catch { /* 发送时已经断开 */ }
     }, PING_MS);
-  } catch (e) {
-    await setStatus('error', String(e?.message || e));
+  } catch {
+    await setStatus('connecting');
     scheduleReconnect();
   } finally {
     connecting = false;
@@ -256,7 +268,7 @@ export async function ensureCloud() {
   if (cfg?.deviceId && !cfg.paused) await connect();
 }
 
-const send = (m) => { if (ws?.readyState === 1) ws.send(JSON.stringify(m)); };
+const send = (m) => { try { if (ws?.readyState === 1) ws.send(JSON.stringify(m)); } catch { /* 发送时已经断开 */ } };
 
 // ---------- 任务 ----------
 

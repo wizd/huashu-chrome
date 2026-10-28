@@ -96,6 +96,9 @@
   .log .no { color: var(--bad); }
   details summary { cursor: pointer; color: var(--mute); font-size: 12px; margin-top: 8px; }
   a { color: var(--accent); }
+  a.guide { display: flex; text-decoration: none; color: inherit; cursor: pointer; border-radius: 8px; margin: 0 -6px; padding-left: 6px; padding-right: 6px; }
+  a.guide:hover { background: var(--soft); }
+  a.guide .go { color: var(--accent); font-size: 12px; flex: none; }
 </style>
 
 <header>
@@ -173,6 +176,10 @@
 
   <section>
     <h2>设置</h2>
+    <a class="sw-row guide" id="guide" href="welcome.html">
+      <span class="txt">开始使用<div class="sub">配对码、接上本机 agent、第一句怎么说</div></span>
+      <span class="go">打开</span>
+    </a>
     <label class="sw-row">
       <span class="txt">高保真模式<div class="sub">需要时用浏览器级真实输入，应付严格的站点和富文本编辑器；用完自动断开</div></span>
       <input type="checkbox" class="toggle" id="l2" />

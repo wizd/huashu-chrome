@@ -79,7 +79,7 @@ export class BridgeClient {
       if (!spawned) spawned = tryStartBridge();
       await sleep(250);
     }
-    throw new Error('连不上 vcorp-chrome 桥。跑 `vcorp-chrome doctor` 看看哪儿卡住了');
+    throw new Error('连不上 vcorp-chrome 桥。跑 `npx vcorp-chrome doctor` 看看哪儿卡住了');
   }
 
   #open(info) {

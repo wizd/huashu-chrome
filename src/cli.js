@@ -144,7 +144,7 @@ async function doctor() {
   console.log('\nvcorp-chrome 体检\n');
 
   console.log('配置目录');
-  fs.existsSync(HOME) ? ok(HOME) : bad(`${HOME} 不存在`, '跑一次 `vcorp-chrome mcp` 会自动创建');
+  fs.existsSync(HOME) ? ok(HOME) : bad(`${HOME} 不存在`, '跑一次 `npx vcorp-chrome mcp` 会自动创建');
 
   console.log('\n桥');
   let info = readBridgeInfo();
@@ -355,7 +355,7 @@ function printExtension() {
 
      加 --reveal 会直接在访达 / 资源管理器里选中它，拖过去就行。
 
-装好后扩展会自动连桥。跑 vcorp-chrome doctor 应该看到「Chrome 扩展在线」
+装好后扩展会自动连桥。跑 npx vcorp-chrome doctor 应该看到「Chrome 扩展在线」
 `);
 }
 

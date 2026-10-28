@@ -17,7 +17,7 @@
   <rect x="60" y="350" width="760" height="1" fill="#FFFFFF" opacity="0.15"/>
   <rect x="860" y="80" width="1" height="240" fill="#FFFFFF" opacity="0.08"/>
   <text x="80" y="88" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" letter-spacing="3" fill="#D4532B">MCP SERVER + CHROME EXTENSION</text>
-  <text x="80" y="178" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="68" font-weight="900" fill="#FFFFFF" letter-spacing="-2">huashu-chrome</text>
+  <text x="80" y="178" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="68" font-weight="900" fill="#FFFFFF" letter-spacing="-2">vcorp-chrome</text>
   <text x="80" y="222" font-family="'Noto Serif SC', 'Source Han Serif', 'Inter', serif" font-size="22" font-weight="700" fill="#EEEEEE" letter-spacing="1">让 agent 操控你自己的 Chrome</text>
   <text x="80" y="284" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="15" font-weight="500" fill="#BBBBBB" letter-spacing="0.5">带着全部登录态</text>
   <text x="198" y="284" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="15" font-weight="700" fill="#D4532B">·</text>
@@ -25,7 +25,7 @@
   <text x="288" y="284" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="15" font-weight="700" fill="#D4532B">·</text>
   <text x="300" y="284" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="15" font-weight="500" fill="#BBBBBB" letter-spacing="0.5">经验会回流</text>
   <text x="80" y="312" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="14" font-weight="400" fill="#888888" letter-spacing="0.3">不用 API key  ·  不用重新登录  ·  用的就是你此刻这个浏览器里的身份</text>
-  <text x="80" y="370" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#666666" letter-spacing="0.3">npx huashu-chrome install · Claude Code / Codex / Cursor / Gemini CLI 通用</text>
+  <text x="80" y="370" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="12" font-weight="400" fill="#666666" letter-spacing="0.3">npx vcorp-chrome install · Claude Code / Codex / Cursor / Gemini CLI 通用</text>
   <text x="890" y="108" font-family="'Inter', system-ui, -apple-system, sans-serif" font-size="10" font-weight="700" letter-spacing="2" fill="#D4532B" opacity="0.9">WHERE THE ANSWER LIVES</text>
   <rect x="890" y="128" width="4" height="42" fill="#D4532B"/>
   <rect x="902" y="128" width="258" height="42" fill="#1A1A1A" stroke="#2C2C2C" stroke-width="1"/>

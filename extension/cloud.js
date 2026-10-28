@@ -89,7 +89,7 @@ async function sign(text) {
 }
 
 // 签名内容的格式，和服务器那侧（opus-video-maker/extlink.js）逐字一致
-export const helloText = (origin, deviceId, nonce) => `huashu-cloud-v1\n${origin}\n${deviceId}\n${nonce}`;
+export const helloText = (origin, deviceId, nonce) => `vcorp-cloud-v1\n${origin}\n${deviceId}\n${nonce}`;
 
 // ---------- 配置 ----------
 

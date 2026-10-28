@@ -781,8 +781,7 @@ const groupKey = (sid) => `agentGroup:${sid}`;
 // 是我们建的」的指纹。旧版组名用过身份 emoji，验指纹时兼容一阵子——
 // 不兼容的话，升级前建的组会因为指纹对不上而永远摘不掉。
 const GROUP_TITLE = 'vcorp';
-// 「花叔」是上游 huashu-chrome 用过的组名。升级后还要认得出，否则旧标签组摘不掉。
-const groupTitleOk = (title, sid) => title === GROUP_TITLE || title === '花叔' || title === identityOf(sid).emoji;
+const groupTitleOk = (title, sid) => title === GROUP_TITLE || title === identityOf(sid).emoji;
 
 async function syncGroup(tabId, owners) {
   try {

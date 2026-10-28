@@ -8,8 +8,8 @@
 // 点错的代价在真实登录态下可能是一笔真订单。
 
 (() => {
-  if (window.__huashuChrome) return;
-  window.__huashuChrome = true;
+  if (window.__vcorpChrome) return;
+  window.__vcorpChrome = true;
 
   let refMap = new Map();
   let snapshotSeq = 0;

@@ -715,7 +715,33 @@
     const base = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, button: 0 };
     const ptr = { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true };
 
-    const fire = (Ctor, type, extra) => el.dispatchEvent(new Ctor(type, { ...extra }));
+    // 点在 <a href="javascript:..."> 上时，click 的默认动作会去执行这个地址。
+    // 页面的 CSP（script-src 没有 unsafe-inline）会拦住，并在控制台记
+    // 「Running the JavaScript URL」。监听器该跑的已经在派发过程里跑过了，
+    // 被拦的只是这段地址本身。这里在默认动作之前 preventDefault，地址不再执行。
+    const javascriptLink = (node) => {
+      for (let n = node; n; n = n.parentElement || n.parentNode?.host) {
+        if (n.nodeType !== 1 || !/^(A|AREA)$/i.test(n.tagName)) continue;
+        const href = n.getAttribute('href') || n.getAttribute('xlink:href') || '';
+        if (/^\s*javascript:/i.test(href)) return n;
+      }
+      return null;
+    };
+    const fire = (Ctor, type, extra) => {
+      if (type === 'click') {
+        const stop = (ev) => ev.preventDefault();
+        const link = javascriptLink(el);
+        const form = el.form || el.closest?.('form');
+        const blockForm = form && /^\s*javascript:/i.test(form.getAttribute('action') || '');
+        if (link) link.addEventListener('click', stop, true);
+        if (blockForm) form.addEventListener('submit', stop, true);
+        const sent = el.dispatchEvent(new Ctor(type, { ...extra }));
+        if (link) link.removeEventListener('click', stop, true);
+        if (blockForm) form.removeEventListener('submit', stop, true);
+        return sent;
+      }
+      return el.dispatchEvent(new Ctor(type, { ...extra }));
+    };
     try {
       fire(PointerEvent, 'pointerover', ptr);
       fire(MouseEvent, 'mouseover', base);

@@ -156,6 +156,8 @@ async function confirmClaim() {
   });
   await chrome.storage.session.remove(CLAIM);
   await log({ ev: 'paired', account: r.account || c.account, origin: c.origin });
+  clearTimeout(retryTimer); retryTimer = null;
+  retryDelay = 0;
   void connect();
   return getCfg();
 }
@@ -185,27 +187,42 @@ function disconnect() {
   ws = null;
 }
 
-function scheduleReconnect() {
+function scheduleReconnect(minDelay = 0) {
   if (retryTimer) return;
-  retryDelay = retryDelay ? Math.min(retryDelay * 2, 60000) : 1000;
+  const grown = retryDelay ? Math.min(retryDelay * 2, 60000) : 1000;
+  retryDelay = Math.max(grown, minDelay);
   retryTimer = setTimeout(() => { retryTimer = null; void connect(); }, retryDelay);
 }
 
+function socketUrl(origin) {
+  const u = new URL(origin);
+  u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+  u.pathname = '/api/ext/ws';
+  u.search = '';
+  u.hash = '';
+  return u.href;
+}
+
 export async function connect() {
-  if (connecting || (ws && ws.readyState <= 1)) return;
+  // readyState 2 是 CLOSING。只挡 0 和 1 的话，旧连接还在关、新连接已经握上，
+  // 代理会把叠在一起的升级请求回 503。
+  if (connecting || retryTimer || (ws && ws.readyState !== 3)) return;
   const cfg = await getCfg();
   if (!cfg?.deviceId) return setStatus('off');
   if (cfg.paused) return setStatus('paused', '已暂停：云端命令一律不接');
   connecting = true;
   let sock;
+  let opened = false;
   try {
     await setStatus('connecting');
-    // 握手失败（例如代理回 503）不会抛异常，Chrome 仍会在内部记一条网络错误。
-    // 这里能接住的是构造函数抛出的地址错误，以及后面每条消息里的异常，都不进侧栏的红色错误。
-    try { sock = new WebSocket(cfg.origin.replace(/^http/, 'ws') + '/api/ext/ws'); }
+    // 地址不合法时构造函数会抛，接住后重连。握手被拒（代理 503 等）不会抛：
+    // Chrome 把 HTTP 状态写进自己的网络日志，脚本取消不了那一行。
+    // 这种失败走下面的 onclose，并且把重试间隔拉到至少 15 秒，避免每秒一条。
+    try { sock = new WebSocket(socketUrl(cfg.origin)); }
     catch { scheduleReconnect(); return; }
     ws = sock;
     lastRx = Date.now();
+    sock.onopen = () => { opened = true; };
     sock.onerror = (ev) => { ev?.preventDefault?.(); };
     sock.onmessage = (ev) => {
       void (async () => {
@@ -248,7 +265,7 @@ export async function connect() {
       clearInterval(pingTimer); pingTimer = null;
       if (ev.code === 4401) { void setStatus('error', '服务器不认这个设备的签名，请重新配对'); return; }
       void setStatus('connecting');
-      scheduleReconnect();
+      scheduleReconnect(opened ? 0 : 15000);
     };
     clearInterval(pingTimer);
     pingTimer = setInterval(() => {
@@ -268,7 +285,7 @@ export async function connect() {
 
 // alarm 每 30 秒叫一次：配了对、没暂停、却没连着，就连
 export async function ensureCloud() {
-  if (ws && ws.readyState <= 1) return;
+  if (retryTimer || (ws && ws.readyState !== 3)) return;
   const cfg = await getCfg();
   if (cfg?.deviceId && !cfg.paused) await connect();
 }

@@ -250,10 +250,42 @@ const CLOUD_STATE = {
 const LOG_TEXT = {
   paired: '配对', unpaired: '解除配对', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
   sites_on: '允许了新网站', sites_off: '拒绝了新网站', sites_timeout: '新网站没回应',
+  folders_on: '允许了本地文件夹', folders_off: '拒绝了本地文件夹', folders_timeout: '本地文件夹没回应',
   platforms: '改了允许的平台', probe: '检查登录', auto_on: '打开自动允许', auto_off: '关闭自动允许', paused: '暂停', resumed: '恢复',
 };
 
+const PERM_WORD = { granted: '可读', prompt: '需要恢复访问', denied: '已拒绝', unknown: '打不开' };
+
+function renderFolders(s) {
+  const box = $('folderList');
+  if (!box) return;
+  box.textContent = '';
+  const rows = s.folders || [];
+  if (!rows.length) {
+    box.appendChild(el('div', 'empty', '还没有。添加后，任务要读的时候会再问你一次。'));
+    return;
+  }
+  for (const f of rows) {
+    const row = el('div', 'sw-row');
+    const text = el('span', 'txt');
+    text.append(el('div', null, f.name), el('div', 'sub', PERM_WORD[f.permission] || PERM_WORD.unknown));
+    row.appendChild(text);
+    if (f.permission !== 'granted') {
+      const restore = el('button', 'btn', '恢复访问');
+      restore.onclick = () => cloudCall('openMount', { folderId: f.id });
+      row.appendChild(restore);
+    }
+    const del = el('button', 'btn ghost', '移除');
+    del.onclick = () => {
+      if (confirm(`移除「${f.name}」？已经批准的任务也不能再读它。文件夹本身不会被删除。`)) cloudCall('removeFolder', { id: f.id });
+    };
+    row.appendChild(del);
+    box.appendChild(row);
+  }
+}
+
 function renderCloud(s) {
+  renderFolders(s);
   const on = !!s.cfg;
   $('cloudPair').hidden = on || !!s.claim;
   $('cloudClaim').hidden = on || !s.claim;
@@ -322,6 +354,17 @@ function renderCloud(s) {
         ask.append(yes, no);
         box.appendChild(ask);
       }
+      if (t.folders?.length) box.appendChild(el('div', 'sub', `可读本地文件夹：${t.folders.join('、')}`));
+      if (t.folderAsk?.length) {
+        box.appendChild(el('div', 'sub', `还想读取本地文件夹：${t.folderAsk.join('、')}${t.folderAskWhy ? `。用途：${t.folderAskWhy}` : ''}`));
+        const ask = el('div', 'row');
+        const yes = el('button', 'btn', '允许这些文件夹');
+        const no = el('button', 'btn ghost', '不允许');
+        yes.onclick = () => cloudCall('decideFolders', { jobId: t.jobId, allow: true });
+        no.onclick = () => cloudCall('decideFolders', { jobId: t.jobId, allow: false });
+        ask.append(yes, no);
+        box.appendChild(ask);
+      }
       const row = el('div', 'row');
       const stop = el('button', 'btn ghost', '收回（关掉它的标签页）');
       stop.onclick = () => cloudCall('endTask', { jobId: t.jobId });
@@ -361,12 +404,13 @@ $('cloudReconn').onclick = () => cloudCall('reconnect');
 $('cloudUnpair').onclick = () => {
   if (confirm('断开后这个服务器再也不能在本浏览器里发布，它开的标签页会被关掉。要再用得重新配对。')) cloudCall('unpair');
 };
+$('folderAdd').onclick = () => cloudCall('openMount');
 
 // ---------- 订阅 ----------
 
 chrome.storage.onChanged.addListener((changes, area) => {
   const keys0 = Object.keys(changes);
-  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudLog', 'cloudStatus', 'cloudClaim'].includes(k))) void cloudCall('state');
+  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudLog', 'cloudStatus', 'cloudClaim', 'folderTick'].includes(k))) void cloudCall('state');
   if (area !== 'session') return;
   const keys = Object.keys(changes);
   if (keys.includes(`panel:${tabId}`) || keys.includes('liveSids')) renderPage();

@@ -9,6 +9,8 @@ import assert from 'node:assert/strict';
 import {
   checkCommand, urlAllowed, allowedHosts, grantedPlatforms, normalizeOrigin, mediaAllowed, CLOUD_CMDS,
   PROBES, PLATFORMS, judgeProbe, normalizeSite, cleanSites, SITES_MAX, taskHosts, sitesToAsk,
+  cleanFolderName, cleanFolderNames, foldersToAsk, normalizeRelPath, fileAllowed, skipEntry, matchGlob, pullUrlAllowed,
+  FS_EXTS, FS_DEPTH_MAX, FS_FOLDERS_MAX,
 } from '../extension/cloud-policy.js';
 
 test('登录探测：每个平台都有探测，探测地址都在该平台自己的白名单里', () => {
@@ -179,4 +181,65 @@ test('sites 命令：清洗申请清单和用途，空申请不收', () => {
   assert.deepEqual(p, { add: ['zhipin.com'], bad: ['127.0.0.1'], reason: '找 兼职' });
   denied(() => checkCommand('sites', {}, ctx));
   denied(() => checkCommand('sites', { add: [] }, ctx));
+});
+
+const PULL = `${ORIGIN}/api/ext/pull/${'a'.repeat(24)}`;
+
+test('本地文件夹：路径出不了根，隐藏文件和私钥这类扩展名读不了', () => {
+  assert.equal(normalizeRelPath(''), '');
+  assert.equal(normalizeRelPath('docs/a.md'), 'docs/a.md');
+  assert.equal(normalizeRelPath('./docs//a.md'), 'docs/a.md');
+  for (const bad of ['../a.md', '/etc/passwd', 'docs/../../x', 'a\\b.md', 'a\u0000.md', 'C:/Users/me']) {
+    assert.equal(normalizeRelPath(bad), null, bad);
+  }
+  assert.equal(cleanFolderName(' 知识库 '), '知识库');
+  assert.equal(cleanFolderName('a/b'), null);
+  assert.equal(cleanFolderName('.'), null);
+  assert.equal(cleanFolderName('x'.repeat(41)), null);
+  assert.ok(fileAllowed('笔记.md'));
+  assert.ok(fileAllowed('a.DOCX'));
+  for (const ext of FS_EXTS) assert.ok(fileAllowed(`a${ext}`), ext);
+  for (const bad of ['.ssh/id_rsa', 'id_rsa', '.env', 'secret.pem', 'note.exe', 'a.md/../../x', '.bashrc']) {
+    assert.equal(fileAllowed(bad), false, bad);
+  }
+  assert.ok(skipEntry('.git'));
+  assert.ok(skipEntry('node_modules'));
+  assert.ok(!skipEntry('docs'));
+  assert.ok(matchGlob('a.md', '**/*.md'));
+  assert.ok(matchGlob('dir/a.md', '**/*.md'));
+  assert.ok(!matchGlob('dir/a.md', '*.md'));
+  assert.ok(matchGlob('dir/a.md', 'dir/*.md'));
+  assert.ok(!matchGlob('dir/sub/a.md', 'dir/*.md'));
+});
+
+test('本地文件夹：命令只留安全字段，上传地址必须指回配对服务器', () => {
+  assert.deepEqual(checkCommand('folders', { use: ['知识库', '知识库', 'a/b', ''], reason: ' 读\n文档 ' }, ctx), {
+    use: ['知识库'], bad: ['a/b', ''], reason: '读 文档',
+  });
+  assert.deepEqual(checkCommand('folders', {}, ctx).use, [], '空申请是在问挂了哪些，不是拒绝');
+  assert.equal(cleanFolderNames(Array.from({ length: 20 }, (_, i) => `夹${i}`)).names.length, FS_FOLDERS_MAX);
+
+  const asked = foldersToAsk(['知识库', '素材', '知识库'], { granted: ['知识库'], refused: ['素材'] });
+  assert.deepEqual(asked, { ask: [], already: ['知识库'], refused: ['素材'] });
+
+  const list = checkCommand('fs_list', { folder: '知识库', path: './docs//a', depth: 99, glob: '**/*.md', tabId: 3 }, ctx);
+  assert.equal(list.path, 'docs/a');
+  assert.equal(list.depth, FS_DEPTH_MAX);
+  assert.equal(list.glob, '**/*.md');
+  assert.equal(list.tabId, undefined);
+  denied(() => checkCommand('fs_list', { folder: '知识库', path: '../x' }, ctx));
+  denied(() => checkCommand('fs_list', { folder: 'a/b' }, ctx));
+  denied(() => checkCommand('fs_list', { folder: '知识库', glob: '../**' }, ctx));
+
+  const read = checkCommand('fs_read', { folder: '知识库', path: 'a/b.pdf', upload: { url: PULL }, path2: 'C:/secret' }, ctx);
+  assert.deepEqual(read, { folder: '知识库', path: 'a/b.pdf', upload: { url: PULL } });
+  denied(() => checkCommand('fs_read', { folder: '知识库', path: '.ssh/id_rsa', upload: { url: PULL } }, ctx));
+  denied(() => checkCommand('fs_read', { folder: '知识库', path: 'id_rsa', upload: { url: PULL } }, ctx));
+  denied(() => checkCommand('fs_read', { folder: '知识库', path: 'a.exe', upload: { url: PULL } }, ctx));
+  denied(() => checkCommand('fs_read', { folder: '知识库', path: 'a.md', upload: { url: 'https://evil.example/api/ext/pull/' + 'a'.repeat(24) } }, ctx));
+  denied(() => checkCommand('fs_read', { folder: '知识库', path: 'a.md', upload: { url: `${ORIGIN}/api/ext/media/` + 'a'.repeat(24) } }, ctx));
+  denied(() => checkCommand('fs_read', { folder: '知识库', path: 'a.md' }, ctx));
+  assert.ok(pullUrlAllowed(PULL, ORIGIN));
+  assert.ok(!pullUrlAllowed(`${PULL}?x=1`, ORIGIN));
+  assert.ok(!pullUrlAllowed(`${ORIGIN}/api/ext/pull/short`, ORIGIN));
 });

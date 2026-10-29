@@ -14,6 +14,7 @@
 // 20 秒一次心跳足够；SW 真被回收了，30 秒的 alarm 会把它连回来（见 background.js）。
 
 import * as policy from './cloud-policy.js';
+import * as folders from './folders.js';
 
 const CFG = 'cloud';                 // storage.local：配对信息和用户的选择
 const TASKS = 'cloudTasks';          // storage.local：任务（批准状态、自己开的标签页）
@@ -37,6 +38,7 @@ let connecting = false;
 const waiters = new Map();   // jobId → Set<fn(allow)>，等用户批准的命令
 const recent = [];           // 最近一分钟的命令时间戳
 let lock = Promise.resolve();
+let mountWin = null;
 
 const err = (code, message) => Object.assign(new Error(message), { code });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -217,9 +219,11 @@ export async function connect() {
           if (m.type === 'challenge') {
             try {
               const sig = await sign(helloText(cfg.origin, cfg.deviceId, String(m.nonce || '')));
+              const mounted = await folders.names().catch(() => []);
               sock.send(JSON.stringify({
                 type: 'hello', v: 1, deviceId: cfg.deviceId, sig,
                 version: chrome.runtime.getManifest().version, platforms: cfg.platforms || [], auto: !!cfg.auto,
+                folders: mounted,
               }));
             } catch { try { sock.close(); } catch { /* 已经废了 */ } }
             return;
@@ -233,6 +237,7 @@ export async function connect() {
           if (m.type === 'revoked') { await unpair(); await setStatus('off', '这个浏览器已在网页上被移除'); return; }
           if (m.type === 'cmd') { await handle(m); return; }
           if (m.type === 'probe') { await handleProbe(m); return; }
+          if (m.type === 'mount_request') { await openMount(); return; }
           if (m.type === 'job_end') { await endTask(String(m.jobId || ''), 'server'); }
         } catch { /* 一条消息处理失败不能变成未捕获异常 */ }
       })();
@@ -295,7 +300,7 @@ const STALE_DENY = '这个任务要用的平台你都没有在侧栏里勾选';
 
 // 批准与否只由用户决定（或用户主动开了自动允许；通用任务和额外网站不算）。服务器只能申请。
 // reason：通用任务第一次申请站点时 agent 写的用途，放进批准框里给用户看。
-async function taskFor(job, cfg, reason = '') {
+async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
   const jobId = String(job?.id || '');
   if (!/^[\w-]{1,64}$/.test(jobId)) throw err('CLOUD_DENIED', '命令缺少有效的任务号');
   const title = String(job?.title || '').slice(0, 80);
@@ -309,10 +314,12 @@ async function taskFor(job, cfg, reason = '') {
     if (task?.state === 'approved' || task?.state === 'pending') return task;
     if (isBrowse(job)) {
       const { sites } = policy.cleanSites(job.sites);
-      if (!sites.length) return { state: 'nosites' };
+      // 只读本地文件夹的任务可以还没有网站。文件夹本身仍要单独点头，这里不替用户答应。
+      if (!sites.length && !allowEmpty) return { state: 'nosites' };
       task = {
         jobId, title, kind: 'browse', requested: [], platforms: [], sites: [], ask: sites, refused: [], purpose: reason,
-        tabs: [], cur: null, count: 0, state: 'pending', createdAt: Date.now(), lastAt: Date.now(), why: '',
+        folders: [], folderRefused: [], folderAsk: [], folderBytes: 0,
+        tabs: [], cur: null, count: 0, state: sites.length ? 'pending' : 'approved', createdAt: Date.now(), lastAt: Date.now(), why: '',
       };
       tasks[jobId] = task;
       await setTasks(tasks);
@@ -322,6 +329,7 @@ async function taskFor(job, cfg, reason = '') {
     const platforms = policy.grantedPlatforms(requested, cfg.platforms);
     task = {
       jobId, title, requested, platforms, sites: [], refused: [], ask: [],
+      folders: [], folderRefused: [], folderAsk: [], folderBytes: 0,
       tabs: [], cur: null, count: 0,
       state: platforms.length ? (cfg.auto ? 'approved' : 'pending') : 'denied',
       createdAt: Date.now(), lastAt: Date.now(),
@@ -332,7 +340,7 @@ async function taskFor(job, cfg, reason = '') {
     return task;
   });
 
-  if (t.state === 'nosites') throw err('NO_SITES', '通用任务要先用 sites 申请要访问的网站（如 sites {"add":["zhipin.com"],"reason":"找兼职"}），用户批准后才能打开。');
+  if (t.state === 'nosites') throw err('NO_SITES', '通用任务要先用 sites 申请要访问的网站（如 sites {"add":["zhipin.com"],"reason":"找兼职"}），或用 folders 申请本地文件夹。用户批准后才能继续。');
   if (t.state === 'denied') throw err('CLOUD_DENIED', `用户拒绝了这个任务${t.why ? `：${t.why}` : ''}。不要重试。`);
   if (t.state === 'approved') return t;
 
@@ -420,6 +428,130 @@ async function requestSites(task, p, cfg) {
   return { text: lines.join('\n'), sites };
 }
 
+function notifyFolders(t, cfg) {
+  const kind = t.kind === 'browse' ? '任务' : '发布任务';
+  chrome.notifications?.create(`hc-cloud-folders:${t.jobId}`, {
+    type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
+    title: `${policy.hostOf(cfg.origin)} 的${kind}想读取你的本地文件夹`,
+    message: `${t.title ? `「${t.title}」` : kind} → ${(t.folderAsk || []).join('、')}${t.folderAskWhy ? `\n用途：${t.folderAskWhy}` : ''}`,
+    buttons: [{ title: '允许' }, { title: '拒绝' }],
+  }, () => void chrome.runtime.lastError);
+}
+
+// 和额外网站一样：「自动允许」管不到文件夹。没挂载的名字不弹窗，直接告诉 agent。
+async function requestFolders(task, p, cfg) {
+  const mounted = await folders.names().catch(() => []);
+  const have = new Set(mounted.map((f) => f.name));
+  const known = p.use.filter((name) => have.has(name));
+  const unknown = p.use.filter((name) => !have.has(name));
+  const split = policy.foldersToAsk(known, { granted: task.folders || [], refused: task.folderRefused || [] });
+  if (split.ask.length) {
+    const t = await updateTask(task.jobId, (x) => {
+      if (!Array.isArray(x.folders)) x.folders = [];
+      if (!Array.isArray(x.folderRefused)) x.folderRefused = [];
+      x.folderAsk = split.ask;
+      x.folderAskWhy = p.reason;
+    });
+    if (!t) throw err('CLOUD_DENIED', '这个任务已经结束');
+    notifyFolders(t, cfg);
+    const allow = await waitFor(`folders:${task.jobId}`);
+    await updateTask(task.jobId, (x) => {
+      if (!Array.isArray(x.folders)) x.folders = [];
+      if (!Array.isArray(x.folderRefused)) x.folderRefused = [];
+      if (allow) for (const name of split.ask) if (!x.folders.includes(name) && x.folders.length < policy.FS_FOLDERS_MAX) x.folders.push(name);
+      else if (allow === false) for (const name of split.ask) if (!x.folderRefused.includes(name)) x.folderRefused.push(name);
+      x.folderAsk = [];
+      x.folderAskWhy = '';
+    });
+    chrome.notifications?.clear(`hc-cloud-folders:${task.jobId}`, () => void chrome.runtime.lastError);
+    await log({ ev: allow ? 'folders_on' : allow === false ? 'folders_off' : 'folders_timeout', job: task.jobId, msg: split.ask.join(',') });
+  }
+  const now = (await getTasks())[task.jobId] || task;
+  const granted = now.folders || [];
+  const refused = now.folderRefused || [];
+  const lines = [`已挂载：${mounted.map((f) => f.name).join('、') || '（无）'}`];
+  lines.push(`本任务可以读：${granted.join('、') || '（无）'}`);
+  const no = known.filter((name) => refused.includes(name));
+  const later = split.ask.filter((name) => !granted.includes(name) && !refused.includes(name));
+  if (no.length) lines.push(`用户不同意：${no.join('、')}。不要再申请。`);
+  if (later.length) lines.push(`用户 5 分钟内没有回应：${later.join('、')}。可以稍后再申请一次。`);
+  if (unknown.length) lines.push(`这个浏览器没有挂载：${unknown.join('、')}。请用户在网页上点「挂载本地文件夹」。`);
+  if (p.bad.length) lines.push(`不是合法的文件夹名：${p.bad.join('、')}`);
+  return { text: lines.join('\n'), folders: granted, audit: `folders ${p.use.join(',') || '(list)'}` };
+}
+
+function decideFolders(jobId, allow) {
+  chrome.notifications?.clear(`hc-cloud-folders:${jobId}`, () => void chrome.runtime.lastError);
+  for (const fn of waiters.get(`folders:${jobId}`) || []) fn(!!allow);
+}
+
+async function notifyLocked(entry) {
+  chrome.notifications?.create(`hc-folder:${entry.id}`, {
+    type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
+    title: '本地文件夹需要重新允许',
+    message: `「${entry.name}」的读取权限失效了。点这里打开窗口，再点「恢复访问」。`,
+  }, () => void chrome.runtime.lastError);
+  await openMount(entry.id).catch(() => {});
+}
+
+async function fsCmd(cmd, p, task) {
+  const granted = task.folders || [];
+  if (!granted.includes(p.folder)) {
+    throw err('CLOUD_DENIED', `本任务还不能读「${p.folder}」。先用 folders 申请，用户点头之后再读。`);
+  }
+  const entry = await folders.getByName(p.folder);
+  if (!entry?.handle) throw err('CLOUD_DENIED', `这个浏览器上没有「${p.folder}」。请用户在网页上重新挂载。`);
+  try {
+    if (cmd === 'fs_list') return await folders.listTree(entry.handle, { path: p.path, depth: p.depth, glob: p.glob, folder: p.folder });
+    const file = await folders.readFile(entry.handle, p.path);
+    let reserved = false;
+    const held = await updateTask(task.jobId, (x) => {
+      const used = x.folderBytes || 0;
+      if (used + file.size > policy.FS_TASK_MAX) return;
+      x.folderBytes = used + file.size;
+      reserved = true;
+    });
+    if (!held) throw err('CLOUD_DENIED', '这个任务已经结束');
+    if (!reserved) throw err('CLOUD_DENIED', '这个任务读取本地文件已到 256MB 上限');
+    try {
+      const up = await folders.uploadFile(file, p.upload.url);
+      return { text: `已读取 ${p.folder}/${p.path}（${up.bytes} 字节），可以拉取了。`, bytes: up.bytes, name: up.name, audit: `read ${p.folder}/${p.path} ${up.bytes}` };
+    } catch (e) {
+      await updateTask(task.jobId, (x) => { x.folderBytes = Math.max(0, (x.folderBytes || 0) - file.size); });
+      throw e;
+    }
+  } catch (e) {
+    if (e.code === 'FOLDER_LOCKED') {
+      await notifyLocked(entry);
+      throw err('FOLDER_LOCKED', `文件夹「${entry.name}」需要你重新允许一次。已打开窗口，点「恢复访问」后再试。`);
+    }
+    throw e;
+  }
+}
+
+async function openMount(folderId = '') {
+  const url = chrome.runtime.getURL('mount.html') + (folderId ? `?id=${encodeURIComponent(folderId)}` : '');
+  if (mountWin != null) {
+    const existing = await chrome.windows.get(mountWin).catch(() => null);
+    if (existing) {
+      await chrome.windows.update(mountWin, { focused: true, drawAttention: true }).catch(() => {});
+      const [tab] = await chrome.tabs.query({ windowId: mountWin });
+      if (tab) await chrome.tabs.update(tab.id, { url }).catch(() => {});
+      return;
+    }
+    mountWin = null;
+  }
+  const created = await chrome.windows.create({ url, type: 'popup', width: 440, height: 560, focused: true });
+  mountWin = created?.id ?? null;
+}
+
+async function reportFolders() {
+  const mounted = await folders.names().catch(() => []);
+  const cfg = await getCfg();
+  if (cfg && ws?.readyState === 1) send({ type: 'config', platforms: cfg.platforms || [], auto: !!cfg.auto, folders: mounted });
+  await chrome.storage.session.set({ folderTick: Date.now() }).catch(() => {});
+}
+
 function decideSites(jobId, allow) {
   chrome.notifications?.clear(`hc-cloud-sites:${jobId}`, () => void chrome.runtime.lastError);
   for (const fn of waiters.get(`sites:${jobId}`) || []) fn(!!allow);
@@ -456,8 +588,10 @@ async function endTask(jobId, by) {
   if (!t) return;
   for (const fn of waiters.get(jobId) || []) fn(false);
   for (const fn of waiters.get(`sites:${jobId}`) || []) fn(false);
+  for (const fn of waiters.get(`folders:${jobId}`) || []) fn(false);
   chrome.notifications?.clear(`hc-cloud:${jobId}`, () => void chrome.runtime.lastError);
   chrome.notifications?.clear(`hc-cloud-sites:${jobId}`, () => void chrome.runtime.lastError);
+  chrome.notifications?.clear(`hc-cloud-folders:${jobId}`, () => void chrome.runtime.lastError);
   await closeTaskTabs(t, { force: by === 'user' });
   await pushLive();
   await log({ ev: 'ended', job: jobId, by });
@@ -488,11 +622,13 @@ async function handle(m) {
   try {
     const data = await exec(m);
     let out = data;
+    const audit = out && typeof out === 'object' ? out.audit : '';
+    if (out && typeof out === 'object') delete out.audit;
     if (JSON.stringify(out ?? null).length > policy.RESULT_MAX) {
       out = { text: String(data?.text || '').slice(0, 200000) + '\n…（结果太大，已截断）' };
     }
     send({ type: 'res', id: m.id, ok: true, data: out });
-    await log({ job: jobId, cmd: m.cmd, ok: true, ms: Date.now() - started });
+    await log({ job: jobId, cmd: m.cmd, ok: true, ms: Date.now() - started, ...(audit ? { msg: String(audit).slice(0, 160) } : {}) });
   } catch (e) {
     send({ type: 'res', id: m.id, ok: false, error: { code: e.code || 'INTERNAL', message: e.message || String(e) } });
     await log({ job: jobId, cmd: m.cmd, ok: false, code: e.code || 'INTERNAL', msg: String(e.message || e).slice(0, 120) });
@@ -520,8 +656,8 @@ async function exec(m) {
   if (recent.length >= PER_MINUTE) throw err('CLOUD_RATE', '命令太密（每分钟最多 120 条），放慢一点');
   recent.push(now);
 
-  const reason = m.cmd === 'sites' ? String(m.params?.reason || '').slice(0, 200) : '';
-  const task = await taskFor(m.job, cfg, reason);
+  const reason = m.cmd === 'sites' || m.cmd === 'folders' ? String(m.params?.reason || '').slice(0, 200) : '';
+  const task = await taskFor(m.job, cfg, reason, { allowEmpty: m.cmd === 'folders' });
   const jobId = task.jobId;
   const updated = await updateTask(jobId, (t) => { t.count += 1; t.lastAt = Date.now(); });
   if (!updated) throw err('CLOUD_DENIED', '这个任务已经结束');
@@ -530,6 +666,8 @@ async function exec(m) {
   const hosts = hostsOf(updated);
   const p = policy.checkCommand(m.cmd, m.params, { hosts, origin: cfg.origin });
   if (m.cmd === 'sites') return requestSites(updated, p, cfg);
+  if (m.cmd === 'folders') return requestFolders(updated, p, cfg);
+  if (m.cmd === 'fs_list' || m.cmd === 'fs_read') return fsCmd(m.cmd, p, updated);
   const sid = sidOf(jobId);
   const label = labelOf(cfg.origin);
   const own = new Set(updated.tabs);
@@ -704,6 +842,7 @@ async function panelState() {
     status: status || { state: 'off' },
     claim: claimed && claimed.expiresAt > Date.now() ? { origin: claimed.origin, account: claimed.account } : null,
     tasks: Object.values(tasks).sort((a, b) => b.lastAt - a.lastAt),
+    folders: await folders.listFolders().catch(() => []),
     log: list.slice(-40).reverse(),
     platforms: Object.entries(policy.PLATFORMS).map(([id, p]) => ({ id, name: p.name, hosts: p.hosts })),
     defaultOrigin: policy.DEFAULT_ORIGIN,
@@ -715,7 +854,8 @@ async function patchCfg(patch) {
   if (!cfg) throw err('CLOUD_UNPAIRED', '还没有配对');
   const next = { ...cfg, ...patch };
   await setCfg(next);
-  send({ type: 'config', platforms: next.platforms, auto: !!next.auto });
+  const mounted = await folders.names().catch(() => []);
+  send({ type: 'config', platforms: next.platforms, auto: !!next.auto, folders: mounted });
   return next;
 }
 
@@ -747,6 +887,10 @@ async function onPanel(m) {
     }
     case 'decide': await decide(String(m.jobId), !!m.allow); return panelState();
     case 'decideSites': decideSites(String(m.jobId), !!m.allow); return panelState();
+    case 'decideFolders': decideFolders(String(m.jobId), !!m.allow); return panelState();
+    case 'openMount': await openMount(m.folderId ? String(m.folderId) : ''); return panelState();
+    case 'removeFolder': await folders.removeFolder(String(m.id || '')); await reportFolders(); return panelState();
+    case 'foldersChanged': await reportFolders(); return panelState();
     case 'endTask': await endTask(String(m.jobId), 'user'); return panelState();
     case 'reconnect': disconnect(); retryDelay = 0; await connect(); return panelState();
     default: throw err('INTERNAL', `未知操作 ${m.op}`);
@@ -769,9 +913,15 @@ export function initCloud(d) {
   });
 
   chrome.notifications?.onButtonClicked.addListener((id, idx) => {
-    if (id.startsWith('hc-cloud-sites:')) decideSites(id.slice('hc-cloud-sites:'.length), idx === 0);
+    if (id.startsWith('hc-cloud-folders:')) decideFolders(id.slice('hc-cloud-folders:'.length), idx === 0);
+    else if (id.startsWith('hc-cloud-sites:')) decideSites(id.slice('hc-cloud-sites:'.length), idx === 0);
     else if (id.startsWith('hc-cloud:')) void decide(id.slice('hc-cloud:'.length), idx === 0);
+    else if (id.startsWith('hc-folder:')) void openMount(id.slice('hc-folder:'.length));
   });
+  chrome.notifications?.onClicked.addListener((id) => {
+    if (id.startsWith('hc-folder:')) void openMount(id.slice('hc-folder:'.length));
+  });
+  chrome.windows?.onRemoved.addListener((id) => { if (id === mountWin) mountWin = null; });
 
   // 从本任务的页面里点开的新标签页（「去发布」常在新页打开）归同一个任务，
   // 白名单照样管它：下一条命令前、结果出门前都会核对地址

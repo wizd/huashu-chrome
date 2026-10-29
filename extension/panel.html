@@ -158,7 +158,7 @@
       <div class="muted" style="margin-top:4px">只勾你确实要交给它发布的。没勾的平台，它连页面都打不开。</div>
       <div id="cloudTasks"></div>
       <label class="sw-row">
-        <span class="txt">自动允许新任务<div class="sub">不再逐个弹窗确认。只在你信任这个账号、且只勾了要发的平台时打开。不管额外网站：发布任务临时申请的网站，以及操作其它网站的任务，每个网站都要你点头</div></span>
+        <span class="txt">自动允许新任务<div class="sub">不再逐个弹窗确认。只在你信任这个账号、且只勾了要发的平台时打开。不管额外网站，也不管本地文件夹：那些都要你逐个点头</div></span>
         <input type="checkbox" class="toggle" id="cloudAuto" />
       </label>
       <label class="sw-row">
@@ -172,6 +172,13 @@
       <div class="row"><button class="btn ghost" id="cloudReconn">重连</button><button class="btn ghost" id="cloudUnpair">断开并忘记这个服务器</button></div>
     </div>
     <div class="msg bad" id="cloudErr" hidden></div>
+  </section>
+
+  <section>
+    <h2>本地文件夹</h2>
+    <div class="muted">挂载之后，配对的网站可以申请读取里面的文档（Markdown、文本、PDF、Word、CSV、JSON、HTML）。只读，不会改你的文件。每次真正读取之前还会再问你一次。浏览器重启后如果这里显示需要恢复，点「恢复访问」。</div>
+    <div id="folderList"></div>
+    <div class="row"><button class="btn" id="folderAdd" type="button">添加文件夹</button></div>
   </section>
 
   <section>

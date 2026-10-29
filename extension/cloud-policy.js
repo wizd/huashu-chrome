@@ -64,6 +64,9 @@ export function judgeProbe(probe, { url = '', text = '' } = {}) {
 export const CLOUD_CMDS = new Set([
   'tabs', 'navigate', 'snapshot', 'click', 'type', 'fill', 'select', 'key', 'scroll',
   'wait', 'read_text', 'query', 'read', 'screenshot', 'upload', 'act', 'ask', 'status', 'sites',
+  // 本地文件夹：只读、按任务批准、扩展名白名单。读文件在 service worker 里做，
+  // 选文件夹和重新授权只能发生在扩展自己的页面（见 folders.js 顶部的结论）。
+  'folders', 'fs_list', 'fs_read',
 ]);
 
 // ---------- 站点申请（通用任务，以及发布任务的额外网站） ----------
@@ -116,6 +119,16 @@ const ACT_STEPS = new Set(['click', 'type', 'fill', 'select', 'key', 'scroll', '
 export const TASK_CMD_CAP = 1500;        // 一个任务最多这么多条命令，防失控循环把账号刷进风控
 export const TASK_IDLE_MS = 3 * 3600e3;  // 批准过的任务闲置 3 小时作废，下次要重新点头
 export const MEDIA_MAX = 2 * 1024 ** 3;  // 素材上限，与 maker 那侧的上传上限一致
+
+// 本地文件夹。数字和 opus-video-maker/extlink.js 的 PULL_MAX 必须一致：
+// 扩展拒绝超限的文件，服务器拒绝超限的上传，两边对不齐就会一截一放。
+export const FS_FILE_MAX = 32 * 1024 * 1024;     // 单个文件
+export const FS_TASK_MAX = 256 * 1024 * 1024;    // 一个任务累计读走的字节
+export const FS_LIST_MAX = 2000;                 // 一次列出的条目
+export const FS_DEPTH_MAX = 8;
+export const FS_FOLDERS_MAX = 8;                 // 一个浏览器最多挂这么多个；一个任务也最多批准这么多个
+export const FS_EXTS = new Set(['.md', '.markdown', '.txt', '.pdf', '.docx', '.csv', '.json', '.html', '.htm']);
+const FS_SKIP = new Set(['node_modules', '__pycache__', '.git', '.venv']);
 
 const err = (code, message) => Object.assign(new Error(message), { code });
 
@@ -178,6 +191,88 @@ export function urlAllowed(url, hosts) {
   if (u.username || u.password) return false;
   const h = u.hostname.toLowerCase();
   return hosts.some((root) => hostMatches(h, root));
+}
+
+// 显示名是用户自己起的，不是磁盘路径。不要斜杠，这样它才能当成本地目录名，也才能安全地报给服务器。
+export function cleanFolderName(raw) {
+  const s = String(raw ?? '').replace(/\s+/g, ' ').trim();
+  if (!s || s.length > 40 || s === '.' || s === '..') return null;
+  if (/[\\/\x00-\x1f]/.test(s)) return null;
+  return s;
+}
+
+export function cleanFolderNames(list) {
+  const ok = [];
+  const bad = [];
+  for (const raw of Array.isArray(list) ? list : []) {
+    const name = cleanFolderName(raw);
+    if (!name) { bad.push(String(raw).slice(0, 80)); continue; }
+    if (!ok.includes(name)) ok.push(name);
+  }
+  return { names: ok.slice(0, FS_FOLDERS_MAX), bad };
+}
+
+// 已经允许、已经拒绝的不再问。空名单就是「先告诉我挂了哪些」，什么都不问。
+export function foldersToAsk(use, { granted = [], refused = [] } = {}) {
+  const have = new Set(granted);
+  const no = new Set(refused);
+  const ask = [];
+  const already = [];
+  const denied = [];
+  for (const name of Array.isArray(use) ? use : []) {
+    if (typeof name !== 'string') continue;
+    if (have.has(name)) { if (!already.includes(name)) already.push(name); continue; }
+    if (no.has(name)) { if (!denied.includes(name)) denied.push(name); continue; }
+    if (!ask.includes(name)) ask.push(name);
+  }
+  return { ask, already, refused: denied };
+}
+
+// 相对路径。'' 是文件夹根；不合法返回 null（和根区分开）。
+// 不收绝对路径、反斜杠、.. 和控制字符——服务器被攻破时这是唯一一道路径闸。
+export function normalizeRelPath(raw) {
+  const s = String(raw ?? '');
+  // 冒号挡掉 Windows 盘符（C:/...）和 NTFS 流。句柄只能按名字往下走，盘符在这里没有意义。
+  if (s.includes('\\') || s.includes(':') || /[\x00-\x1f]/.test(s) || s.startsWith('/')) return null;
+  const parts = s.split('/').filter((p) => p && p !== '.');
+  if (parts.some((p) => p === '..')) return null;
+  return parts.join('/');
+}
+
+export const skipEntry = (name) => !name || name.startsWith('.') || FS_SKIP.has(name);
+
+export function fileAllowed(name) {
+  const base = String(name || '').split('/').pop();
+  if (!base || base.startsWith('.')) return false;
+  const dot = base.lastIndexOf('.');
+  if (dot <= 0) return false;
+  return FS_EXTS.has(base.slice(dot).toLowerCase());
+}
+
+// 只支持 *（一段里）和 **（跨目录）。不解释 shell，不接收 ..。
+export function matchGlob(rel, glob) {
+  const g = String(glob || '').trim();
+  if (!g) return true;
+  let re = '';
+  const s = g.replace(/\\/g, '/');
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '*' && s[i + 1] === '*') {
+      if (s[i + 2] === '/') { re += '(?:.*/)?'; i += 2; }
+      else { re += '.*'; i += 1; }
+    } else if (s[i] === '*') re += '[^/]*';
+    else if (s[i] === '?') re += '[^/]';
+    else re += s[i].replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${re}$`).test(rel);
+}
+
+// 文件字节只能上传到配对服务器的一次性地址。和 mediaAllowed 同一条理由：
+// 不然服务器会让扩展把用户的文件 PUT 到攻击者的主机上。
+export function pullUrlAllowed(url, origin) {
+  let u;
+  try { u = new URL(url); } catch { return false; }
+  return u.origin === origin && /^\/api\/ext\/pull\/[A-Za-z0-9_-]{16,64}$/.test(u.pathname)
+    && !u.username && !u.password && !u.search && !u.hash;
 }
 
 // 素材地址必须指回配对的那台服务器的素材接口——扩展只从那里取文件
@@ -266,6 +361,34 @@ export function checkCommand(cmd, params, { hosts, origin }) {
       const { sites, bad } = cleanSites(p.add);
       if (!sites.length && !bad.length) throw err('CLOUD_DENIED', 'sites 要给 add：要访问的网站，如 ["zhipin.com"]');
       return { add: sites, bad, reason: String(p.reason || '').replace(/\s+/g, ' ').trim().slice(0, 200) };
+    }
+    case 'folders': {
+      // use 可以是空的：那是在问「这个浏览器挂了哪些」，不是在申请。
+      const { names, bad } = cleanFolderNames(p.use);
+      return { use: names, bad, reason: String(p.reason || '').replace(/\s+/g, ' ').trim().slice(0, 200) };
+    }
+    case 'fs_list': {
+      const folder = cleanFolderName(p.folder);
+      if (!folder) throw err('CLOUD_DENIED', 'fs_list 要给 folder：文件夹的显示名');
+      const rel = normalizeRelPath(p.path ?? '');
+      if (rel === null) throw err('CLOUD_DENIED', 'path 不合法');
+      const depth = Math.min(FS_DEPTH_MAX, Math.max(1, Math.floor(Number(p.depth) || 3)));
+      let glob = '';
+      if (p.glob !== undefined && p.glob !== '') {
+        glob = String(p.glob).trim().slice(0, 200);
+        if (!glob || glob.includes('..') || /[\x00-\x1f\\]/.test(glob)) throw err('CLOUD_DENIED', 'glob 不合法');
+      }
+      return { folder, path: rel, depth, ...(glob ? { glob } : {}) };
+    }
+    case 'fs_read': {
+      const folder = cleanFolderName(p.folder);
+      if (!folder) throw err('CLOUD_DENIED', 'fs_read 要给 folder：文件夹的显示名');
+      const rel = normalizeRelPath(p.path ?? '');
+      if (!rel) throw err('CLOUD_DENIED', 'fs_read 要给文件的 path');
+      const base = rel.split('/').pop();
+      if (skipEntry(base) || !fileAllowed(base)) throw err('CLOUD_DENIED', `不读取这种文件：${base}`);
+      if (!pullUrlAllowed(p.upload?.url, origin)) throw err('CLOUD_DENIED', 'fs_read 只能把文件传到配对服务器的 /api/ext/pull/');
+      return { folder, path: rel, upload: { url: p.upload.url } };
     }
     default:
       return p;

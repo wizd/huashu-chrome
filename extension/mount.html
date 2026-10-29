@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>挂载本地文件夹</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fafaf9; --card: #ffffff; --ink: #1c1917; --mute: #78716c; --line: rgba(0,0,0,.07);
+    --soft: rgba(0,0,0,.04); --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --accent: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161616; --card: #1f1f1f; --ink: #f2f2f2; --mute: #a1a1aa; --line: rgba(255,255,255,.08);
+            --soft: rgba(255,255,255,.05); --ok: #22c55e; --warn: #f59e0b; --bad: #f87171; --accent: #60a5fa; }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 13px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  main { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  h1 { margin: 0; font-size: 15px; }
+  p { margin: 0; color: var(--mute); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  button.btn { font: inherit; font-size: 12.5px; border: 0; border-radius: 7px; padding: 6px 12px; cursor: pointer;
+               background: var(--accent); color: #fff; }
+  button.btn.ghost { background: var(--soft); color: var(--ink); }
+  button.btn:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  input[type=text] { font: inherit; flex: 1; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--line);
+                     background: var(--bg); color: var(--ink); }
+  .item { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .item:first-child { border-top: 0; }
+  .item .name { font-weight: 600; flex: 1; word-break: break-all; }
+  .item .sub { color: var(--mute); font-size: 11.5px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #a8a29e; flex: none; }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+  .msg { color: var(--bad); font-size: 12.5px; }
+  .empty { color: var(--mute); }
+</style>
+<main>
+  <div>
+    <h1>挂载本地文件夹</h1>
+    <p>选一个文件夹之后，配对的网站可以申请读取里面的文档。每次申请你都会在通知里看到文件夹的名字。只读，不会改你的文件。</p>
+  </div>
+  <section>
+    <button class="btn" id="pick" type="button">选择文件夹</button>
+    <div id="naming" hidden>
+      <p style="margin-top:8px">给它一个显示名。网站和任务看到的是这个名字，不是磁盘路径。</p>
+      <div class="row">
+        <input type="text" id="name" maxlength="40" autocomplete="off" spellcheck="false" />
+        <button class="btn" id="save" type="button">挂载</button>
+        <button class="btn ghost" id="cancel" type="button">取消</button>
+      </div>
+    </div>
+  </section>
+  <section>
+    <div id="list"><div class="empty">读取中…</div></div>
+  </section>
+  <p class="msg" id="err" hidden></p>
+</main>
+<script type="module" src="mount.js"></script>

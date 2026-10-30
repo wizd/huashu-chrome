@@ -5,7 +5,7 @@ export const LOADS = {
     "name": "eda",
     "title": "嘉立创EDA 专业版",
     "description": "在嘉立创EDA/EasyEDA 专业版网页编辑器里调用有类型、带核对的原理图与 PCB 操作（来自 easyeda-agent 的 actions 层）。",
-    "version": "1.15.0+7a73a68.bbd371",
+    "version": "1.15.0+7a73a68.f00c96",
     "hosts": [
       "pro.lceda.cn",
       "pro.easyeda.com"
@@ -194,7 +194,7 @@ export const LOADS = {
       "pcb.region.delete": "删除禁止区域",
       "pcb.fill.delete": "删除填充"
     },
-    "sha256": "cd9f1c08cae7cc7f3acb7c161252a28f7b2874ba51b02c5c57d0c33467c2f5e3",
-    "bytes": 940107
+    "sha256": "2702ea1be226305aaaeda5e188139d4acc8d596f86d5d7165e26de95cb5914f8",
+    "bytes": 942689
   }
 };

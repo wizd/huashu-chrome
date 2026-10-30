@@ -19203,8 +19203,76 @@
 
   // loads/eda/entry.js
   var ALLOWED = new Set(define_LOAD_ACTIONS_default);
+  async function findAcrossTeams(payload) {
+    const friendlyName = typeof payload?.friendlyName === "string" ? payload.friendlyName : "";
+    if (!friendlyName || payload.teamUuid) return runAction("project.find", payload);
+    const matches = [];
+    const unreadableUuids = [];
+    const places = [];
+    let reason = null;
+    let uuidCount = 0;
+    let readableCount = 0;
+    let teams;
+    try {
+      teams = await eda.dmt_Team.getAllTeamsInfo();
+    } catch {
+      teams = null;
+    }
+    if (!Array.isArray(teams) || !teams.length) return runAction("project.find", payload);
+    const seen = /* @__PURE__ */ new Set();
+    for (const team of teams) {
+      let folders = [];
+      try {
+        folders = await eda.dmt_Folder.getAllFoldersUuid(team.uuid);
+      } catch {
+        reason ||= "folder_list_failed";
+      }
+      for (const folder of [void 0, ...Array.isArray(folders) ? folders : []]) {
+        let uuids;
+        try {
+          uuids = await eda.dmt_Project.getAllProjectsUuid(team.uuid, folder);
+        } catch {
+          reason ||= "uuid_list_failed";
+          continue;
+        }
+        if (!Array.isArray(uuids)) {
+          reason ||= "invalid_uuid_list";
+          continue;
+        }
+        places.push({ team: team.name || team.uuid, folder: folder || null, projects: uuids.length });
+        for (const uuid of uuids) {
+          if (seen.has(uuid)) continue;
+          seen.add(uuid);
+          uuidCount++;
+          try {
+            const info = await eda.dmt_Project.getProjectInfo(uuid);
+            if (!info || info.uuid !== uuid || typeof info.friendlyName !== "string") {
+              unreadableUuids.push(uuid);
+              continue;
+            }
+            readableCount++;
+            if (info.friendlyName === friendlyName) {
+              matches.push({ uuid, friendlyName: info.friendlyName, teamUuid: info.teamUuid ?? team.uuid, folderUuid: info.folderUuid ?? null });
+            }
+          } catch {
+            unreadableUuids.push(uuid);
+          }
+        }
+      }
+    }
+    if (!reason && unreadableUuids.length) reason = "project_info_incomplete";
+    if (!reason && !uuidCount) reason = "empty_uuid_list";
+    const complete = reason === null;
+    return { result: {
+      friendlyName,
+      teamUuid: null,
+      presence: matches.length ? "found" : complete ? "absent" : "unknown",
+      matches,
+      enumeration: { scope: "all-teams", complete, reason, uuidCount, readableCount, unreadableUuids, places }
+    } };
+  }
   (window.__vcorpLoads ||= {}).eda = {
-    version: "1.15.0+7a73a68.bbd371",
+    version: "1.15.0+7a73a68.f00c96",
     async ready() {
       if (typeof eda === "undefined") return { ok: false, reason: "\u7F16\u8F91\u5668\u8FD8\u6CA1\u52A0\u8F7D\u5B8C" };
       const info = { ok: true, editor: "", project: null };
@@ -19226,6 +19294,7 @@
       if (!ALLOWED.has(action)) {
         throw Object.assign(new Error(`eda \u80FD\u529B\u5305\u4E0D\u63A5\u53D7 ${action}`), { code: "LOAD_DENIED" });
       }
+      if (action === "project.find") return findAcrossTeams(payload);
       return runAction(action, payload);
     }
   };

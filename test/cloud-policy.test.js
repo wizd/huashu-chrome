@@ -89,6 +89,14 @@ test('截图不许借道切前台，ask 的等待有上限', () => {
   assert.equal(checkCommand('ask', { timeout: 99999999 }, ctx).timeout, 600000);
 });
 
+test('ask 的 kind 只留 confirm，别的值当没写', () => {
+  assert.equal(checkCommand('ask', { kind: 'confirm' }, ctx).kind, 'confirm');
+  for (const kind of ['captcha', 'pay', 'login', '', 'CONFIRM', true, 1, null]) {
+    assert.equal(checkCommand('ask', { kind }, ctx).kind, undefined, `不该留下 ${JSON.stringify(kind)}`);
+  }
+  assert.equal(checkCommand('ask', {}, ctx).kind, undefined);
+});
+
 test('服务器地址只收 https（本机调试可 http），素材地址认准同源和路径', () => {
   assert.equal(normalizeOrigin('https://maker.vcorp.ai/some/path'), 'https://maker.vcorp.ai');
   assert.equal(normalizeOrigin('http://localhost:5170'), 'http://localhost:5170');

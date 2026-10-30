@@ -2626,6 +2626,7 @@ const HANDLERS = {
     const started = Date.now();
     await chrome.tabs.sendMessage(id, {
       __hcAsk: 'show', title: p.title, prompt: p.prompt, timeout, wantNote: p.wantNote !== false,
+      ...(p.kind === 'confirm' ? { offerAlways: true } : {}),
     });
     const panel = pollPanel(id, timeout);
 
@@ -2650,6 +2651,7 @@ const HANDLERS = {
 
     return {
       outcome: res.outcome,
+      ...(res.always ? { always: true } : {}),
       text: `${head}${res.note ? `\n用户留言：${res.note}` : ''}\n\n${snap.text}`,
     };
   },

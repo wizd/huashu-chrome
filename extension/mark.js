@@ -213,6 +213,9 @@
     .ask .ok:hover { background: #ea580c; }
     .ask .no { background: #fff; color: #666; border-color: #e2e2e2; }
     .ask .no:hover { background: #f6f6f6; }
+    .ask.confirm { width: 420px; }
+    .ask .all { background: #fff; color: #9a3412; border-color: #fed7aa; font-size: 12px; padding: 7px 10px; }
+    .ask .all:hover { background: #fff7ed; }
     /* 支付确认：同一个浮条换一身红。这类打断一年遇不上几次，
        必须一眼就和「帮我解个验证码」区分开——看错了是要花钱的。 */
     .ask.danger .head { background: linear-gradient(135deg,#fef2f2,#fee2e2); }
@@ -228,6 +231,8 @@
       .ask .note { background: #2a2a2c; border-color: #3a3a3c; color: #f2f2f2; }
       .ask .no { background: #2a2a2c; color: #ccc; border-color: #3a3a3c; }
       .ask .no:hover { background: #333; }
+      .ask .all { background: #2a2a2c; color: #fdba74; border-color: #7c2d12; }
+      .ask .all:hover { background: #3b2a1a; }
       .ask.danger .head { background: linear-gradient(135deg,#3f1d1d,#2a1414); }
       .ask .what { background: #2a2a2c; }
       .ask .amount { color: #f87171; }
@@ -546,11 +551,12 @@
   let askOutcome = null;  // 已结算的结果，等 background 来取
   let askTimer = null;
 
-  function closeAsk(result, note) {
+  function closeAsk(result, note, extra) {
     if (askEl) { askEl.remove(); askEl = null; }
     if (askTimer) { clearInterval(askTimer); askTimer = null; }
     askSettle = null;
     askOutcome = { outcome: result, note: note || '' };
+    if (extra?.always) askOutcome.always = true;
     maybeTeardown();
   }
 
@@ -578,6 +584,7 @@
     askEl.querySelector('.t').textContent = msg.title || `${chrome.runtime.getManifest().name} 需要你搭把手`;
     askEl.querySelector('.p').textContent = msg.prompt || '';
     if (msg.danger) askEl.classList.add('danger');
+    if (msg.offerAlways && !msg.danger) askEl.classList.add('confirm');
     if (msg.okText) askEl.querySelector('.ok').textContent = msg.okText;
     if (msg.noText) askEl.querySelector('.no').textContent = msg.noText;
     // 「点哪个按钮、在哪个站、多少钱」单独拎出来，不混在正文里。
@@ -609,6 +616,14 @@
 
     askEl.querySelector('.ok').addEventListener('click', () => closeAsk('continued', noteEl?.value));
     askEl.querySelector('.no').addEventListener('click', () => closeAsk('cancelled', noteEl?.value));
+    // 文案写死在扩展里，不接 agent 传来的字。支付确认不给这个按钮。
+    if (msg.offerAlways && !msg.danger) {
+      const always = document.createElement('button');
+      always.className = 'all';
+      always.textContent = '本任务内都同意';
+      askEl.querySelector('.ok').before(always);
+      always.addEventListener('click', () => closeAsk('continued', noteEl?.value, { always: true }));
+    }
 
     // 挂在 own 之外：会话区重画时不触碰 ask（输入框的焦点经不起挪动）
     wrap.querySelector('.dock').appendChild(askEl);

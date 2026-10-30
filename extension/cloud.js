@@ -5,7 +5,9 @@
 // 所以这里的每一条命令都按「对面可能已经被攻破」来处理，规矩全在 cloud-policy.js：
 // 只有页面操作那一小组命令、只能停在允许名单（以及本任务里批准的网站）上、只能碰自己开的标签页、
 // 上传只能用服务器上的素材。新任务要用户点头；开了自动允许则新任务和它一开始的网站直接放行。
-// 任务开始之后追加的网站、本地文件夹，仍要逐个点头。没有预设的平台表：要去哪个网站，任务自己申请。
+// 任务开始之后追加的网站、本地文件夹，仍要逐个点头。带 kind=confirm 的 ask 是对外动作的确认：
+// 用户开了免确认，或在这个任务里点过「本任务内都同意」，就直接放行。扫码和验证码不带 kind，照旧等人。
+// 没有预设的平台表：要去哪个网站，任务自己申请。
 //
 // 身份：配对时在这里生成一对 ECDSA P-256 密钥，私钥以不可导出的 CryptoKey 存在
 // IndexedDB，服务器只拿到公钥。每次连接对服务器给的随机数签名，签名里带上服务器
@@ -153,7 +155,7 @@ async function confirmClaim() {
   await setCfg({
     origin: c.origin, deviceId: r.deviceId, account: String(r.account || c.account), pairedAt: Date.now(),
     // 换绑时沿用之前允许的网站；第一次配对名单是空的，等任务申请、用户点允许
-    sites: policy.cleanAllowList(old?.sites), auto: false, paused: false,
+    sites: policy.cleanAllowList(old?.sites), auto: false, autoConfirm: false, paused: false,
   });
   await chrome.storage.session.remove(CLAIM);
   await log({ ev: 'paired', account: r.account || c.account, origin: c.origin });
@@ -724,11 +726,26 @@ async function exec(m) {
     return policy.redactOffList(tab.pendingUrl || tab.url);
   }
 
+  // 对外动作的确认：全局开关或本任务里点过「都同意」，就不弹浮条。
+  // 不带 kind 的 ask（扫码、验证码）不满足条件，继续往下弹窗。
+  if (m.cmd === 'ask' && p.kind === 'confirm' && (cfg.autoConfirm || updated.confirmAll)) {
+    await log({ ev: 'ask_auto', job: jobId, msg: String(p.prompt || '').slice(0, 160) });
+    return { outcome: 'continued', auto: true, text: '✅ 用户已设置对外动作免确认，直接继续。' };
+  }
+
   // 浮条上写明是谁在问：云端发来的文字可能是钓鱼，用户得知道这不是本机 agent 说的
   if (m.cmd === 'ask') p.title = `☁ ${policy.hostOf(cfg.origin)}：${String(p.title || '需要你搭把手').slice(0, 60)}`;
   const data = m.cmd === 'upload'
     ? await uploadMedia(p, tid, sid, label)
     : await deps.run(m.cmd, p, tid, sid, label);
+
+  // 「本任务内都同意」只记在这个任务上。任务结束时整条记录删掉，不会带到下一个任务。
+  // always 是扩展内部的记号，不回给服务器。
+  if (m.cmd === 'ask' && data?.always) {
+    await updateTask(jobId, (t) => { t.confirmAll = true; });
+    await log({ ev: 'confirm_task', job: jobId, msg: String(p.prompt || '').slice(0, 160) });
+    delete data.always;
+  }
 
   // 结果出门前再查一遍本任务所有标签页：有一页跳出了白名单，整份结果都不能出去
   const after = (await getTasks())[jobId]?.tabs || [];
@@ -814,7 +831,7 @@ async function panelState() {
     getCfg(), chrome.storage.session.get(STATUS), chrome.storage.session.get(CLAIM), getTasks(), chrome.storage.local.get(LOG),
   ]);
   return {
-    cfg: cfg && { origin: cfg.origin, account: cfg.account, sites: allowOf(cfg), auto: cfg.auto, paused: cfg.paused, pairedAt: cfg.pairedAt },
+    cfg: cfg && { origin: cfg.origin, account: cfg.account, sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, paused: cfg.paused, pairedAt: cfg.pairedAt },
     status: status || { state: 'off' },
     claim: claimed && claimed.expiresAt > Date.now() ? { origin: claimed.origin, account: claimed.account } : null,
     tasks: Object.values(tasks).sort((a, b) => b.lastAt - a.lastAt),
@@ -854,6 +871,11 @@ async function onPanel(m) {
         await setTasks(tasks);
       });
       await log({ ev: 'site_off', msg: host });
+      return panelState();
+    }
+    case 'setAutoConfirm': {
+      await patchCfg({ autoConfirm: !!m.autoConfirm });
+      await log({ ev: m.autoConfirm ? 'confirm_on' : 'confirm_off' });
       return panelState();
     }
     case 'setAuto': {

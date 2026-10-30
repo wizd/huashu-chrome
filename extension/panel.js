@@ -251,7 +251,9 @@ const LOG_TEXT = {
   paired: '配对', unpaired: '解除配对', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
   sites_on: '允许了新网站', sites_off: '拒绝了新网站', sites_timeout: '新网站没回应',
   folders_on: '允许了本地文件夹', folders_off: '拒绝了本地文件夹', folders_timeout: '本地文件夹没回应',
-  site_on: '网站加入允许名单', site_off: '从允许名单移除网站', auto_on: '打开自动允许', auto_off: '关闭自动允许', paused: '暂停', resumed: '恢复',
+  site_on: '网站加入允许名单', site_off: '从允许名单移除网站', auto_on: '打开自动允许', auto_off: '关闭自动允许',
+  confirm_on: '打开对外动作免确认', confirm_off: '关闭对外动作免确认', ask_auto: '免确认放行', confirm_task: '本任务内都同意',
+  paused: '暂停', resumed: '恢复',
 };
 
 const PERM_WORD = { granted: '可读', prompt: '需要恢复访问', denied: '已拒绝', unknown: '打不开' };
@@ -303,6 +305,7 @@ function renderCloud(s) {
   $('cloudSub').textContent = s.status?.state === 'error' || s.status?.state === 'paused'
     ? s.status.message : `账号「${s.cfg.account || ''}」`;
   $('cloudAuto').checked = !!s.cfg.auto;
+  $('cloudAutoConfirm').checked = !!s.cfg.autoConfirm;
   $('cloudPause').checked = !!s.cfg.paused;
 
   // 允许名单：用户点过「允许」的网站，含子域。没有预设的平台。
@@ -396,6 +399,7 @@ $('claimYes').onclick = async () => {
 };
 $('claimNo').onclick = () => cloudCall('cancelClaim');
 $('cloudAuto').onchange = (e) => cloudCall('setAuto', { auto: e.target.checked });
+$('cloudAutoConfirm').onchange = (e) => cloudCall('setAutoConfirm', { autoConfirm: e.target.checked });
 $('cloudPause').onchange = (e) => cloudCall('setPaused', { paused: e.target.checked });
 $('cloudReconn').onclick = () => cloudCall('reconnect');
 $('cloudUnpair').onclick = () => {

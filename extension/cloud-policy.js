@@ -334,6 +334,9 @@ export function checkCommand(cmd, params, { hosts, origin }) {
       return p;
     case 'ask':
       p.timeout = Math.min(Math.max(Number(p.timeout) || 300000, 5000), 600000);
+      // 只有对外动作的确认可以被免确认开关跳过。别的值（含没写）一律当成人必须在场：
+      // 扫码、验证码、滑块不能因为用户开了开关就被静默放行。
+      if (p.kind !== 'confirm') delete p.kind;
       return p;
     case 'sites': {
       const { sites, bad } = cleanSites(p.add);

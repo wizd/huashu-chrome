@@ -5,7 +5,7 @@ export const LOADS = {
     "name": "eda",
     "title": "嘉立创EDA 专业版",
     "description": "在嘉立创EDA/EasyEDA 专业版网页编辑器里调用有类型、带核对的原理图与 PCB 操作（来自 easyeda-agent 的 actions 层）。",
-    "version": "1.15.0+7a73a68.2c3bbb",
+    "version": "1.15.0+7a73a68.bbd371",
     "hosts": [
       "pro.lceda.cn",
       "pro.easyeda.com"
@@ -178,7 +178,23 @@ export const LOADS = {
         "pcb.save"
       ]
     },
-    "sha256": "fac3abe86b716c71ca36230569a36c3c167e6888086eb75962070c5be287b330",
+    "confirm": {
+      "schematic.component.delete": "删除原理图里的元件",
+      "schematic.primitives.delete": "删除原理图里的图元（导线、标识、文字等）",
+      "pcb.import_changes": "把原理图的改动导入 PCB（可能增删封装和飞线）",
+      "pcb.add_component": "往 PCB 上加封装",
+      "pcb.component.delete": "删除 PCB 上的封装",
+      "pcb.outline.set": "重画板框",
+      "pcb.outline.clear": "清掉板框",
+      "pcb.route.rip_up": "拆掉布线",
+      "pcb.route.delete": "删除布线",
+      "pcb.clear_routing": "清空全部布线",
+      "pcb.route.auto": "自动布线（会整片重做走线）",
+      "pcb.pour.delete": "删除铺铜",
+      "pcb.region.delete": "删除禁止区域",
+      "pcb.fill.delete": "删除填充"
+    },
+    "sha256": "cd9f1c08cae7cc7f3acb7c161252a28f7b2874ba51b02c5c57d0c33467c2f5e3",
     "bytes": 940107
   }
 };

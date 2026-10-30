@@ -19204,7 +19204,7 @@
   // loads/eda/entry.js
   var ALLOWED = new Set(define_LOAD_ACTIONS_default);
   (window.__vcorpLoads ||= {}).eda = {
-    version: "1.15.0+7a73a68.2c3bbb",
+    version: "1.15.0+7a73a68.bbd371",
     async ready() {
       if (typeof eda === "undefined") return { ok: false, reason: "\u7F16\u8F91\u5668\u8FD8\u6CA1\u52A0\u8F7D\u5B8C" };
       const info = { ok: true, editor: "", project: null };

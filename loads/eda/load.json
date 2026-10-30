@@ -65,6 +65,22 @@
       "pcb.beautify", "pcb.save"
     ]
   },
+  "confirm": {
+    "schematic.component.delete": "删除原理图里的元件",
+    "schematic.primitives.delete": "删除原理图里的图元（导线、标识、文字等）",
+    "pcb.import_changes": "把原理图的改动导入 PCB（可能增删封装和飞线）",
+    "pcb.add_component": "往 PCB 上加封装",
+    "pcb.component.delete": "删除 PCB 上的封装",
+    "pcb.outline.set": "重画板框",
+    "pcb.outline.clear": "清掉板框",
+    "pcb.route.rip_up": "拆掉布线",
+    "pcb.route.delete": "删除布线",
+    "pcb.clear_routing": "清空全部布线",
+    "pcb.route.auto": "自动布线（会整片重做走线）",
+    "pcb.pour.delete": "删除铺铜",
+    "pcb.region.delete": "删除禁止区域",
+    "pcb.fill.delete": "删除填充"
+  },
   "denied": {
     "debug.exec_js": "任意 JS，等于放开 eval",
     "system.page_reload": "刷新整个编辑器，会丢掉未保存的修改",

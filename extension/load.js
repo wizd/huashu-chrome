@@ -35,7 +35,12 @@ export function checkLoadParams(p = {}) {
   return { name: def.name };
 }
 
-// call {name, action, payload?, timeout?} → 清洗过的参数 + kind。
+// 要用户点头的 action 返回给用户看的说明，否则 ''。只看注册表，调用方传什么都不算数。
+export function confirmText(def, action) {
+  return def.confirm && Object.hasOwn(def.confirm, action) ? String(def.confirm[action]) : '';
+}
+
+// call {name, action, payload?, timeout?} → 清洗过的参数 + kind + confirm（说明文字或 ''）。
 // payload 只收普通 JSON 对象：走一遍 JSON 往返，函数、原型、循环引用都留不下来。
 export function checkCallParams(p = {}) {
   const def = loadDef(p.name);
@@ -49,5 +54,5 @@ export function checkCallParams(p = {}) {
   if (size > def.limits.payloadMax) throw err('BAD_PARAMS', `payload 太大：${size} 字节，上限 ${def.limits.payloadMax}`);
   const t = Number(p.timeout);
   const timeout = Number.isFinite(t) && t > 0 ? Math.min(Math.max(t, 1000), def.limits.timeoutMaxMs) : def.limits.timeoutMs;
-  return { name: def.name, action: p.action, payload: JSON.parse(json), timeout, kind };
+  return { name: def.name, action: p.action, payload: JSON.parse(json), timeout, kind, confirm: confirmText(def, p.action) };
 }

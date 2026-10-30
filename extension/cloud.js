@@ -735,6 +735,14 @@ async function exec(m) {
 
   // 浮条上写明是谁在问：云端发来的文字可能是钓鱼，用户得知道这不是本机 agent 说的
   if (m.cmd === 'ask') p.title = `☁ ${policy.hostOf(cfg.origin)}：${String(p.title || '需要你搭把手').slice(0, 60)}`;
+  // 能力包里会删东西或整片重做的 action（load.json 的 confirm）：扩展自己弹确认，不靠 agent 记得先 ask。
+  // 和对外动作的确认是同一套：全局免确认、本任务内都同意都能盖住它。说明文字来自扩展包，不来自服务器。
+  if (m.cmd === 'call') {
+    const what = p.confirm;
+    delete p.confirm;
+    if (what) await confirmCall(what, p, updated, cfg, { tid, sid, label });
+  }
+
   const data = m.cmd === 'upload'
     ? await uploadMedia(p, tid, sid, label)
     : await deps.run(m.cmd, p, tid, sid, label);
@@ -760,6 +768,31 @@ async function exec(m) {
   const next = Number(data?.tabId) && after.includes(Number(data.tabId)) ? Number(data.tabId) : tid;
   await updateTask(jobId, (t) => { t.cur = next; });
   return data;
+}
+
+async function confirmCall(what, p, task, cfg, { tid, sid, label }) {
+  const jobId = task.jobId;
+  const msg = `${p.name}.${p.action}`;
+  if (cfg.autoConfirm || task.confirmAll) {
+    await log({ ev: 'ask_auto', job: jobId, msg });
+    return;
+  }
+  const r = await deps.run('ask', {
+    kind: 'confirm',
+    title: `☁ ${policy.hostOf(cfg.origin)}：要${what}`,
+    prompt: `云端任务要在这个页面上${what}（${msg}）。同意后才会执行。`,
+    timeout: 300000,
+    wantNote: false,
+  }, tid, sid, label);
+  if (r?.always) {
+    await updateTask(jobId, (t) => { t.confirmAll = true; });
+    await log({ ev: 'confirm_task', job: jobId, msg });
+  }
+  if (r?.outcome !== 'continued') {
+    throw err('CONFIRM_DECLINED', r?.outcome === 'timed_out'
+      ? `用户 5 分钟内没有确认「${what}」，没有执行。在报告里写明，不要重试。`
+      : `用户没有同意「${what}」，没有执行。这是明确的「别做」，不要换个方式重试。`);
+  }
 }
 
 async function tabsCmd(p, m, task, { sid, label, hosts, own }) {

@@ -1,5 +1,5 @@
 # 从上游 action 目录生成 opus-video-maker 的 skills/easyeda/references/actions.md。
-# 用法见那边 SKILL.md 的「维护」一节。只取 load.json 白名单里的 action，⚠ 取自上游的 NeedsConfirm。
+# 用法见那边 SKILL.md 的「维护」一节。只取 load.json 白名单里的 action，⚠ 取自 load.json 的 confirm。
 import re, json, sys
 
 src = open(sys.argv[1], encoding='utf-8').read()
@@ -29,13 +29,14 @@ out = [
     "`loads/eda/load.json` 的白名单整理，说明保留上游英文首句。重新生成：见 SKILL.md 末尾。\n",
     '调用：`node "$OVM_BROWSE/browser.mjs" call \'{"name":"eda","action":"<action>","payload":{…}}\'`。',
     '参数名以 Inputs 为准；拿不准就先传 `{}`，错误信息会说缺哪个字段。'
-    '⚠ 标记的 action 会删东西或整片重做，先用 `ask`（kind 为 confirm）征得用户同意。\n',
+    '⚠ 标记的 action 会删东西或整片重做：扩展会在用户的浏览器里弹确认，同意后才执行，不用再另外 `ask`。'
+    '用户不同意或没人响应时回 `CONFIRM_DECLINED`，不要重试。\n',
 ]
 for kind, title in (('read', '## 只读（不改设计文件）'), ('write', '## 改动设计')):
     out.append(title + '\n')
     for a in L['actions'][kind]:
         s = specs.get(a, {})
-        line = f"- `{a}`{' ⚠' if s.get('confirm') else ''} — {s.get('desc', '')}".rstrip(' —')
+        line = f"- `{a}`{' ⚠' if a in L.get('confirm', {}) else ''} — {s.get('desc', '')}".rstrip(' —')
         if s.get('inputs'):
             line += f"\n  - Inputs: {'; '.join(s['inputs'])}"
         if s.get('verify'):

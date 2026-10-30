@@ -270,7 +270,11 @@ test('load/call：只认注册表里的包和白名单里的 action', () => {
   denied(() => checkCommand('load', {}, ctx));
 
   const r = checkCommand('call', { name: 'eda', action: 'project.current', tabId: 9 }, ctx);
-  assert.deepEqual(r, { name: 'eda', action: 'project.current', payload: {}, timeout: 120000 });
+  assert.deepEqual(r, { name: 'eda', action: 'project.current', payload: {}, timeout: 120000, confirm: '' });
+  // 要不要用户点头只看注册表：服务器说「不用确认」不算数，说「要确认」也不会给只读的加戏
+  assert.match(checkCommand('call', { name: 'eda', action: 'pcb.route.auto', confirm: '' }, ctx).confirm, /自动布线/);
+  assert.match(checkCommand('call', { name: 'eda', action: 'schematic.component.delete', confirm: false }, ctx).confirm, /删除/);
+  assert.equal(checkCommand('call', { name: 'eda', action: 'project.current', confirm: '钓鱼文字' }, ctx).confirm, '');
   const w = checkCommand('call', { name: 'eda', action: 'schematic.component.place', payload: { lcscId: 'C25804', x: 0, y: 0 } }, ctx);
   assert.equal(w.payload.lcscId, 'C25804');
 

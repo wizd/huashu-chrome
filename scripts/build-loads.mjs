@@ -8,7 +8,8 @@
 //   node scripts/build-loads.mjs eda      → 只构建 eda
 //
 // 每个能力包：
-//   load.json  清单：hosts、waitFor、limits、vendor（上游仓库 + 固定 commit）、actions.read/write、denied
+//   load.json  清单：hosts、waitFor、limits、vendor（上游仓库 + 固定 commit）、actions.read/write、
+//              confirm（云端调用前扩展要用户点头的 write action → 给用户看的说明）、denied
 //   setup.js   跑在上游代码之前，补上页面缺的全局变量
 //   entry.js   页面侧入口，注册 window.__vcorpLoads[name] = { version, ready(), call(action, payload) }
 // 上游源码按 vendor.commit 拉到 .cache/loads/ 里，用 @upstream 引用。升级上游只改 commit 再跑一遍。
@@ -92,6 +93,7 @@ async function build(name) {
     files: manifest.files.map((f) => `loads/${name}/${f}`),
     limits: manifest.limits,
     actions: { read, write },
+    confirm: manifest.confirm || {},
     sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
     bytes: bytes.length,
   };

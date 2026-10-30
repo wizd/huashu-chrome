@@ -381,8 +381,9 @@ export function checkCommand(cmd, params, { hosts, origin }) {
       // 能力包的 hosts 由 background.js 对着标签页再核一遍；这里管名字、action 和 payload
       try {
         if (cmd === 'load') return { ...checkLoadParams(p), ...(p.reload === true ? { reload: true } : {}) };
-        const { name, action, payload, timeout } = checkCallParams(p);
-        return { name, action, payload, timeout };
+        // confirm 由注册表算出来，服务器传的同名字段在这里就被丢掉了
+        const { name, action, payload, timeout, confirm } = checkCallParams(p);
+        return { name, action, payload, timeout, confirm };
       } catch (e) {
         throw err('CLOUD_DENIED', e.message);
       }

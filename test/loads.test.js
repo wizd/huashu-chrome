@@ -33,6 +33,11 @@ test('每个 loads/<name>/load.json 都构建进了注册表，而且没过期',
     const read = new Set(m.actions.read);
     assert.equal(read.size, m.actions.read.length, `${n}: read 有重复`);
     for (const a of m.actions.write) assert.ok(!read.has(a), `${n}: ${a} 同时在 read 和 write 里`);
+    assert.deepEqual(def.confirm, m.confirm || {}, `${n}: 注册表过期，重新跑 npm run build:loads`);
+    for (const [a, text] of Object.entries(m.confirm || {})) {
+      assert.equal(actionKind(def, a), 'write', `${n}: confirm 里的 ${a} 不在 write 白名单里`);
+      assert.ok(typeof text === 'string' && text.length && text.length <= 40, `${n}: ${a} 的确认说明要是一句短话`);
+    }
     for (const a of Object.keys(m.denied || {})) {
       assert.equal(actionKind(def, a), null, `${n}: ${a} 写在 denied 里，却也在白名单里`);
     }

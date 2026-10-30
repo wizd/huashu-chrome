@@ -23,7 +23,10 @@ test('每个 loads/<name>/load.json 都构建进了注册表，而且没过期',
     assert.ok(Array.isArray(m.hosts) && m.hosts.length, `${n}: hosts 不能空`);
     assert.ok(m.limits.payloadMax > 0 && m.limits.timeoutMs > 0 && m.limits.timeoutMaxMs >= m.limits.timeoutMs);
     assert.match(m.vendor.commit, /^[0-9a-f]{40}$/);
-    assert.equal(def.version, `${m.vendor.version}+${m.vendor.commit.slice(0, 7)}`, `${n}: 注册表过期，重新跑 npm run build:loads`);
+    const adapter = crypto.createHash('sha256');
+    for (const f of ['load.json', 'setup.js', 'entry.js']) adapter.update(fs.readFileSync(path.join(ROOT, 'loads', n, f), 'utf8').replace(/\r\n/g, '\n'));
+    assert.equal(def.version, `${m.vendor.version}+${m.vendor.commit.slice(0, 7)}.${adapter.digest('hex').slice(0, 6)}`,
+      `${n}: 注册表过期，重新跑 npm run build:loads`);
     assert.deepEqual(def.actions, m.actions, `${n}: 注册表过期，重新跑 npm run build:loads`);
     assert.deepEqual(def.hosts, m.hosts);
 

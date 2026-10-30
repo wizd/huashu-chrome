@@ -16,6 +16,11 @@ const ALLOWED = new Set(__LOAD_ACTIONS__);
       const p = await eda.dmt_Project.getCurrentProjectInfo();
       if (p) info.project = { uuid: p.uuid, name: p.friendlyName };
     } catch { /* 在首页，还没打开工程 */ }
+    // 刷新后 _EXTAPI_ROOT_ 先出来，地址里的工程要再过几秒才打开（实测）。
+    // 这时就说没准备好，让扩展接着等，免得第一条 call 撞上「No current project」。
+    if (!info.project && /[#&]id=[0-9a-f]{32}/.test(location.hash)) {
+      return { ok: false, reason: '地址里的工程还在打开' };
+    }
     return info;
   },
 

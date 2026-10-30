@@ -43,7 +43,11 @@ async function build(name) {
   const { vendor } = manifest;
   const up = upstream(name, vendor);
   const actions = [...manifest.actions.read, ...manifest.actions.write];
-  const version = `${vendor.version}+${vendor.commit.slice(0, 7)}`;
+  // 版本里带上适配层的指纹：只改了 entry.js / setup.js / 白名单时，页面上那份旧的也要被换掉
+  // （ensureLoad 按版本号判断要不要重新注入）
+  const adapter = crypto.createHash('sha256');
+  for (const f of ['load.json', 'setup.js', 'entry.js']) adapter.update(fs.readFileSync(path.join(dir, f), 'utf8').replace(/\r\n/g, '\n'));
+  const version = `${vendor.version}+${vendor.commit.slice(0, 7)}.${adapter.digest('hex').slice(0, 6)}`;
 
   const outDir = path.join(OUT, name);
   fs.mkdirSync(outDir, { recursive: true });

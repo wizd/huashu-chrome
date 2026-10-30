@@ -1950,7 +1950,8 @@ async function ensureLoad(id, def, { force = false } = {}) {
   if (force || st.version !== def.version) {
     await chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: def.files });
   }
-  const [{ result: ready } = {}] = await withTimeout(chrome.scripting.executeScript({
+  // ready() 说没准备好（比如编辑器还在打开工程）就接着等，和上面等 waitFor 共用一个期限
+  const readyOnce = async () => (await withTimeout(chrome.scripting.executeScript({
     target: { tabId: id },
     world: 'MAIN',
     func: async (name) => {
@@ -1959,7 +1960,12 @@ async function ensureLoad(id, def, { force = false } = {}) {
       try { return await load.ready(); } catch (e) { return { ok: false, reason: String((e && e.message) || e) }; }
     },
     args: [def.name],
-  }), LOAD_WAIT_MS, `${def.name}.ready`);
+  }), LOAD_WAIT_MS, `${def.name}.ready`))[0]?.result;
+  let ready = await readyOnce();
+  while (!ready?.ok && Date.now() < until) {
+    await sleep(1000);
+    ready = await readyOnce();
+  }
   if (!ready?.ok) throw err('LOAD_NOT_READY', `能力包 ${def.name} 没准备好：${ready?.reason || '未知原因'}`);
   return { version: def.version, ready };
 }

@@ -19204,7 +19204,7 @@
   // loads/eda/entry.js
   var ALLOWED = new Set(define_LOAD_ACTIONS_default);
   (window.__vcorpLoads ||= {}).eda = {
-    version: "1.15.0+7a73a68",
+    version: "1.15.0+7a73a68.2c3bbb",
     async ready() {
       if (typeof eda === "undefined") return { ok: false, reason: "\u7F16\u8F91\u5668\u8FD8\u6CA1\u52A0\u8F7D\u5B8C" };
       const info = { ok: true, editor: "", project: null };
@@ -19216,6 +19216,9 @@
         const p = await eda.dmt_Project.getCurrentProjectInfo();
         if (p) info.project = { uuid: p.uuid, name: p.friendlyName };
       } catch {
+      }
+      if (!info.project && /[#&]id=[0-9a-f]{32}/.test(location.hash)) {
+        return { ok: false, reason: "\u5730\u5740\u91CC\u7684\u5DE5\u7A0B\u8FD8\u5728\u6253\u5F00" };
       }
       return info;
     },

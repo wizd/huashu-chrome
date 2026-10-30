@@ -242,7 +242,13 @@
   // ---------- host ----------
 
   function ensureHost() {
-    if (host) return;
+    // document.open() 会换掉整棵 <html>，window 和这里的状态却原样留着（嘉立创EDA 的
+    // 加载器就是 document.open + writeln 整页）。只认 host 变量，浮条和边框就会一直
+    // 画在一个已经脱离文档的节点里，谁也看不见；ask 干等到超时。
+    if (host) {
+      if (!host.isConnected) document.documentElement.appendChild(host);
+      return;
+    }
     // z-index 顶格：ask 并进来之后这个 host 不再是纯装饰层——「需要确认」的
     // 浮条绝不能被页面自己的最高层弹窗盖住（支付确认被遮住=没有确认）。
     // 边框和光标跟着顶格没有代价，它们 pointer-events:none。
@@ -561,9 +567,10 @@
   }
 
   function showAsk(msg) {
-    ensureHost();
-    // 上一轮还开着就先结算掉，否则两个浮条叠在一起，旧的永远没人回应
+    // 上一轮还开着就先结算掉，否则两个浮条叠在一起，旧的永远没人回应。
+    // 结算要在 ensureHost 之前：页面没有主时 closeAsk 会顺手拆掉 host。
     if (askSettle) closeAsk('cancelled', '被新的请求取代');
+    ensureHost();
     askOutcome = null;
     askSettle = true;
 

@@ -242,7 +242,7 @@ export async function connect() {
               const mounted = await folders.names().catch(() => []);
               sock.send(JSON.stringify({
                 type: 'hello', v: 1, deviceId: cfg.deviceId, sig,
-                version: chrome.runtime.getManifest().version, sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto,
+                version: chrome.runtime.getManifest().version, sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm,
                 folders: mounted,
               }));
             } catch { try { sock.close(); } catch { /* 已经废了 */ } }
@@ -568,7 +568,7 @@ async function openMount(folderId = '') {
 async function reportFolders() {
   const mounted = await folders.names().catch(() => []);
   const cfg = await getCfg();
-  if (cfg && ws?.readyState === 1) send({ type: 'config', sites: allowOf(cfg), auto: !!cfg.auto, folders: mounted });
+  if (cfg && ws?.readyState === 1) send({ type: 'config', sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, folders: mounted });
   await chrome.storage.session.set({ folderTick: Date.now() }).catch(() => {});
 }
 
@@ -848,7 +848,7 @@ async function patchCfg(patch) {
   const next = { ...rest, ...patch };
   await setCfg(next);
   const mounted = await folders.names().catch(() => []);
-  send({ type: 'config', sites: allowOf(next), auto: !!next.auto, folders: mounted });
+  send({ type: 'config', sites: allowOf(next), auto: !!next.auto, autoConfirm: !!next.autoConfirm, folders: mounted });
   return next;
 }
 

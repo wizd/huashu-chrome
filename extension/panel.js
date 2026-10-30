@@ -379,7 +379,9 @@ function renderCloud(s) {
   if (!s.log.length) log.appendChild(el('div', null, '还没有记录'));
   for (const r of s.log) {
     const row = el('div');
-    const text = r.ev ? `${LOG_TEXT[r.ev] || r.ev}${r.msg ? ` ${r.msg}` : ''}` :`${r.cmd}${r.ok ? '' : ` ✗ ${r.code}${r.msg ? `：${r.msg}` : ''}`}`;
+    const text = r.ev === 'approved' && r.msg === '自动放行'
+      ? '自动放行了任务'
+      : r.ev ? `${LOG_TEXT[r.ev] || r.ev}${r.msg ? ` ${r.msg}` : ''}` : `${r.cmd}${r.ok ? '' : ` ✗ ${r.code}${r.msg ? `：${r.msg}` : ''}`}`;
     row.append(el('span', 'ago', relTime(r.t)), el('span', r.ok === false ? 'no' : null, `${text}${r.job ? ` · ${String(r.job).slice(-6)}` : ''}`));
     log.appendChild(row);
   }

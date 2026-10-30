@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  checkCommand, urlAllowed, allowedHosts, grantedPlatforms, normalizeOrigin, mediaAllowed, CLOUD_CMDS,
+  checkCommand, urlAllowed, allowedHosts, grantedPlatforms, initialTask, normalizeOrigin, mediaAllowed, CLOUD_CMDS,
   PROBES, PLATFORMS, judgeProbe, normalizeSite, cleanSites, SITES_MAX, taskHosts, sitesToAsk,
   cleanFolderName, cleanFolderNames, foldersToAsk, normalizeRelPath, fileAllowed, skipEntry, matchGlob, pullUrlAllowed,
   FS_EXTS, FS_DEPTH_MAX, FS_FOLDERS_MAX,
@@ -147,6 +147,23 @@ test('混合任务：平台根域和额外网站一起放行，老任务没有 s
   assert.ok(!urlAllowed('https://mp.weixin.qq.com/', mixed));
   assert.deepEqual(taskHosts({ platforms: ['douyin'] }), allowedHosts(['douyin']));
   assert.deepEqual(taskHosts(undefined), []);
+});
+
+test('initialTask：自动允许放行新任务和它一开始的网站，追加的网站仍要问', () => {
+  assert.deepEqual(initialTask({ platforms: ['douyin'], auto: false }), { state: 'pending', sites: [], ask: [] });
+  assert.deepEqual(initialTask({ platforms: ['douyin'], auto: true }), { state: 'approved', sites: [], ask: [] });
+  assert.deepEqual(initialTask({ platforms: [], auto: true }), { state: 'denied', sites: [], ask: [] });
+
+  const sites = ['zhipin.com', 'liepin.com'];
+  assert.deepEqual(initialTask({ browse: true, sites, auto: false }), { state: 'pending', sites: [], ask: ['zhipin.com', 'liepin.com'] });
+  assert.deepEqual(sites, ['zhipin.com', 'liepin.com'], '不改调用方的清单');
+  assert.deepEqual(initialTask({ browse: true, sites, auto: true }), { state: 'approved', sites: ['zhipin.com', 'liepin.com'], ask: [] });
+  assert.deepEqual(initialTask({ browse: true, sites: [], auto: false }), { state: 'approved', sites: [], ask: [] });
+  assert.deepEqual(initialTask({ browse: true, sites: [], auto: true }), { state: 'approved', sites: [], ask: [] });
+
+  const opened = initialTask({ browse: true, sites, auto: true });
+  assert.deepEqual(sitesToAsk(['zhipin.com', 'liepin.com', 'bank.example'], { sites: opened.sites }).ask, ['bank.example']);
+  assert.deepEqual(foldersToAsk(['知识库'], { granted: [], refused: [] }).ask, ['知识库']);
 });
 
 test('sitesToAsk：平台已覆盖、已批准、已拒绝的不再问，到上限就截断', () => {

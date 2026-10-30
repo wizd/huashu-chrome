@@ -14,12 +14,13 @@
 //   3. 标签页隔离：云端只看得见、只碰得到它自己开的标签页，用户自己的页面一个都不行。
 //   4. 文件来源：上传只能用配对服务器上的素材 URL，不收本机路径——否则一句
 //      upload(path:"~/.ssh/id_rsa") 就能把私钥发到公开平台上。
-//   5. 每个任务要用户点头（或用户主动开了自动允许），且有命令数上限。
+//   5. 每个任务要用户点头，或用户主动开了自动允许。自动允许盖住新任务，以及通用
+//      任务信封上一开始带着的网站；盖不住任务开始之后追加的网站和文件夹。有命令数上限。
 //
 // 站点申请（sites 命令）：通用任务（「到兼职网站上帮我找个工作」）全靠它；
-// 发布任务也能用它临时加网站，比如去查资料再回来发。用户在通知或侧栏里看着这份
-// 站点清单点头。之后每多一个站点都要再点一次头，「自动允许」管不到它们——
-// 那等于让服务器自己挑网站。已经被勾选平台根域盖住的站点不再问。
+// 发布任务也能用它临时加网站，比如去查资料再回来发。没开自动允许时，新任务的
+// 第一份网站清单要用户点头，点头后这些站随任务生效。任务开始之后每多一个站点
+// 都要再点一次头，自动允许管不到这次追加。已经被勾选平台根域盖住的站点不再问。
 // 一个任务的额外网站最多 SITES_MAX 个。
 
 // 平台 → 允许停留的站点（含子域）。只放创作者后台和它们的登录/作品页需要的根域。
@@ -286,6 +287,22 @@ export function mediaAllowed(url, origin) {
 export function grantedPlatforms(requested, enabled) {
   const on = new Set(enabled || []);
   return [...new Set(requested || [])].filter((id) => PLATFORMS[id] && on.has(id));
+}
+
+// 一条新任务开场时的批准状态。platforms 是已经求过交集的生效平台。
+// auto 打开：发布任务（有生效平台）和通用任务都直接 approved。通用任务信封上
+// 已经带着的网站写入 sites，不要留在 ask，否则紧接着的 sites 命令会把同一份清单再问一遍。
+// auto 盖不住任务开始之后追加的网站（sitesToAsk）和文件夹（foldersToAsk）。
+// 发布任务一个生效平台都没有：denied。没有网站的通用任务本来就是 approved（文件夹仍另批）。
+export function initialTask({ browse = false, sites = [], platforms = [], auto = false } = {}) {
+  const list = Array.isArray(sites) ? sites.slice() : [];
+  if (browse) {
+    return auto
+      ? { state: 'approved', sites: list, ask: [] }
+      : { state: list.length ? 'pending' : 'approved', sites: [], ask: list };
+  }
+  if (!(Array.isArray(platforms) ? platforms : []).length) return { state: 'denied', sites: [], ask: [] };
+  return { state: auto ? 'approved' : 'pending', sites: [], ask: [] };
 }
 
 // act 剧本静态检查：每一步都要是允许的动作，导航目标都要在白名单里。

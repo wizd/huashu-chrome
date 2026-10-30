@@ -3,8 +3,9 @@
 // 和本机那条桥是两回事：桥只有本机进程能连，agent 拿到的是全套工具；
 // 云端通道是**这个浏览器主动连出去**的一条 WebSocket，对面是公网上的服务器。
 // 所以这里的每一条命令都按「对面可能已经被攻破」来处理，规矩全在 cloud-policy.js：
-// 只有页面操作那一小组命令、只能停在用户勾选的平台（以及本任务里逐个批准的额外网站）上、只能碰自己开的标签页、
-// 上传只能用服务器上的素材、每个任务要用户点头。
+// 只有页面操作那一小组命令、只能停在用户勾选的平台（以及本任务里批准的网站）上、只能碰自己开的标签页、
+// 上传只能用服务器上的素材。新任务要用户点头；开了自动允许则新任务和它一开始的网站直接放行。
+// 任务开始之后追加的网站、本地文件夹，仍要逐个点头。
 //
 // 身份：配对时在这里生成一对 ECDSA P-256 密钥，私钥以不可导出的 CryptoKey 存在
 // IndexedDB，服务器只拿到公钥。每次连接对服务器给的随机数签名，签名里带上服务器
@@ -306,7 +307,7 @@ async function pushLive() {
   deps?.setCloudLive(Object.values(tasks).filter((t) => t.state === 'approved').map((t) => sidOf(t.jobId)));
 }
 
-// 通用任务（信封上带 sites 而不是 platforms）：能去哪些站点由用户逐个批准。
+// 通用任务（信封上带 sites）：一开始的网站清单随任务一起批准。
 // 发布任务的白名单是勾选平台的根域，加上这个任务里另行批准的额外网站。
 const isBrowse = (job) => Array.isArray(job?.sites);
 const hostsOf = (t) => policy.taskHosts(t);
@@ -315,12 +316,14 @@ const hostsOf = (t) => policy.taskHosts(t);
 // 浏览器任务（信封带 sites）或用户后来勾了平台，都要能重新评，不能把任务号卡死。
 const STALE_DENY = '这个任务要用的平台你都没有在侧栏里勾选';
 
-// 批准与否只由用户决定（或用户主动开了自动允许；通用任务和额外网站不算）。服务器只能申请。
+// 新任务由用户点头，或由用户打开的自动允许直接放行（含通用任务信封上一开始的网站）。
+// 任务开始之后再申请的网站、本地文件夹，自动允许管不到。服务器只能申请。
 // reason：通用任务第一次申请站点时 agent 写的用途，放进批准框里给用户看。
 async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
   const jobId = String(job?.id || '');
   if (!/^[\w-]{1,64}$/.test(jobId)) throw err('CLOUD_DENIED', '命令缺少有效的任务号');
   const title = String(job?.title || '').slice(0, 80);
+  let freshAuto = false;
 
   const t = await serial(async () => {
     const tasks = await getTasks();
@@ -333,10 +336,12 @@ async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
       const { sites } = policy.cleanSites(job.sites);
       // 只读本地文件夹的任务可以还没有网站。文件夹本身仍要单独点头，这里不替用户答应。
       if (!sites.length && !allowEmpty) return { state: 'nosites' };
+      const opening = policy.initialTask({ browse: true, sites, auto: !!cfg.auto });
+      freshAuto = !!cfg.auto && opening.state === 'approved' && sites.length > 0;
       task = {
-        jobId, title, kind: 'browse', requested: [], platforms: [], sites: [], ask: sites, refused: [], purpose: reason,
+        jobId, title, kind: 'browse', requested: [], platforms: [], sites: opening.sites, ask: opening.ask, refused: [], purpose: reason,
         folders: [], folderRefused: [], folderAsk: [], folderBytes: 0,
-        tabs: [], cur: null, count: 0, state: sites.length ? 'pending' : 'approved', createdAt: Date.now(), lastAt: Date.now(), why: '',
+        tabs: [], cur: null, count: 0, state: opening.state, createdAt: Date.now(), lastAt: Date.now(), why: '',
       };
       tasks[jobId] = task;
       await setTasks(tasks);
@@ -344,25 +349,41 @@ async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
     }
     const requested = (Array.isArray(job?.platforms) ? job.platforms : []).map(String);
     const platforms = policy.grantedPlatforms(requested, cfg.platforms);
+    const opening = policy.initialTask({ platforms, auto: !!cfg.auto });
+    freshAuto = !!cfg.auto && opening.state === 'approved' && platforms.length > 0;
     task = {
-      jobId, title, requested, platforms, sites: [], refused: [], ask: [],
+      jobId, title, requested, platforms, sites: opening.sites, refused: [], ask: opening.ask,
       folders: [], folderRefused: [], folderAsk: [], folderBytes: 0,
-      tabs: [], cur: null, count: 0,
-      state: platforms.length ? (cfg.auto ? 'approved' : 'pending') : 'denied',
-      createdAt: Date.now(), lastAt: Date.now(),
-      why: platforms.length ? '' : STALE_DENY,
+      tabs: [], cur: null, count: 0, state: opening.state, createdAt: Date.now(), lastAt: Date.now(),
+      why: opening.state === 'denied' ? STALE_DENY : '',
     };
     tasks[jobId] = task;
     await setTasks(tasks);
     return task;
   });
 
+  if (freshAuto) {
+    await log({ ev: 'approved', job: jobId, msg: '自动放行' });
+    await pushLive();
+  }
   if (t.state === 'nosites') throw err('NO_SITES', '通用任务要先用 sites 申请要访问的网站（如 sites {"add":["zhipin.com"],"reason":"找兼职"}），或用 folders 申请本地文件夹。用户批准后才能继续。');
   if (t.state === 'denied') throw err('CLOUD_DENIED', `用户拒绝了这个任务${t.why ? `：${t.why}` : ''}。不要重试。`);
   if (t.state === 'approved') return t;
 
+  // 这条任务还挂着。开关若已经打开（包括刚打开、存储里已经是开的），按允许处理，不再弹窗。
+  const live = await getCfg();
+  if (cfg.auto || live?.auto) {
+    await decide(jobId, true, { auto: true });
+    const granted = (await getTasks())[jobId];
+    if (granted?.state === 'approved') return granted;
+  }
+  const now = (await getTasks())[jobId];
+  if (!now) throw err('CLOUD_DENIED', '这个任务已经结束');
+  if (now.state === 'denied') throw err('CLOUD_DENIED', `用户拒绝了这个任务${now.why ? `：${now.why}` : ''}。不要重试。`);
+  if (now.state === 'approved') return now;
+
   // 等用户点头。通知是把人叫回来的唯一办法；侧栏里同样有一张卡片
-  notifyPending(t, cfg);
+  notifyPending(now, live || cfg);
   const allow = await waitFor(jobId);
   if (allow === null) throw err('CLOUD_TIMEOUT', '用户 5 分钟内没有批准这个任务。告诉用户打开浏览器扩展侧栏批准后再继续。');
   if (!allow) throw err('CLOUD_DENIED', '用户拒绝了这个任务。不要重试。');
@@ -574,20 +595,23 @@ function decideSites(jobId, allow) {
   for (const fn of waiters.get(`sites:${jobId}`) || []) fn(!!allow);
 }
 
-async function decide(jobId, allow) {
-  await serial(async () => {
+async function decide(jobId, allow, { auto = false } = {}) {
+  const changed = await serial(async () => {
     const tasks = await getTasks();
     const t = tasks[jobId];
-    if (!t || t.state !== 'pending') return;
+    if (!t || t.state !== 'pending') return false;
     t.state = allow ? 'approved' : 'denied';
     t.lastAt = Date.now();
     if (!allow) t.why = '';
-    if (allow && t.kind === 'browse') { t.sites = t.ask; t.ask = []; }
+    if (allow && t.kind === 'browse') { t.sites = t.ask || []; t.ask = []; }
     await setTasks(tasks);
+    return true;
   });
   chrome.notifications?.clear(`hc-cloud:${jobId}`, () => void chrome.runtime.lastError);
-  await log({ ev: allow ? 'approved' : 'denied', job: jobId });
-  await pushLive();
+  if (changed) {
+    await log({ ev: allow ? 'approved' : 'denied', job: jobId, ...(auto && allow ? { msg: '自动放行' } : {}) });
+    await pushLive();
+  }
   for (const fn of waiters.get(jobId) || []) fn(!!allow);
 }
 
@@ -895,7 +919,16 @@ async function onPanel(m) {
       await log({ ev: 'platforms', platforms: ids.join(',') });
       return panelState();
     }
-    case 'setAuto': await patchCfg({ auto: !!m.auto }); await log({ ev: m.auto ? 'auto_on' : 'auto_off' }); return panelState();
+    case 'setAuto': {
+      await patchCfg({ auto: !!m.auto });
+      await log({ ev: m.auto ? 'auto_on' : 'auto_off' });
+      // 已经挂着「允许」的任务跟着放行。追加网站和文件夹不在 pending 上，这里碰不到。
+      if (m.auto) {
+        const pending = Object.values(await getTasks()).filter((t) => t.state === 'pending');
+        for (const t of pending) await decide(t.jobId, true, { auto: true });
+      }
+      return panelState();
+    }
     case 'setPaused': {
       await patchCfg({ paused: !!m.paused });
       await log({ ev: m.paused ? 'paused' : 'resumed' });

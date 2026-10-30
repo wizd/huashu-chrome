@@ -251,7 +251,7 @@ const LOG_TEXT = {
   paired: '配对', unpaired: '解除配对', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
   sites_on: '允许了新网站', sites_off: '拒绝了新网站', sites_timeout: '新网站没回应',
   folders_on: '允许了本地文件夹', folders_off: '拒绝了本地文件夹', folders_timeout: '本地文件夹没回应',
-  platforms: '改了允许的平台', probe: '检查登录', auto_on: '打开自动允许', auto_off: '关闭自动允许', paused: '暂停', resumed: '恢复',
+  site_on: '网站加入允许名单', site_off: '从允许名单移除网站', auto_on: '打开自动允许', auto_off: '关闭自动允许', paused: '暂停', resumed: '恢复',
 };
 
 const PERM_WORD = { granted: '可读', prompt: '需要恢复访问', denied: '已拒绝', unknown: '打不开' };
@@ -305,32 +305,30 @@ function renderCloud(s) {
   $('cloudAuto').checked = !!s.cfg.auto;
   $('cloudPause').checked = !!s.cfg.paused;
 
-  const plats = $('cloudPlats');
-  plats.textContent = '';
-  for (const p of s.platforms) {
-    const lab = el('label');
-    const box = el('input');
-    box.type = 'checkbox';
-    box.value = p.id;
-    box.checked = s.cfg.platforms.includes(p.id);
-    box.onchange = () => cloudCall('setPlatforms', { platforms: [...plats.querySelectorAll('input:checked')].map((b) => b.value) });
-    lab.title = p.hosts.join('、');
-    lab.append(box, el('span', null, p.name));
-    plats.appendChild(lab);
+  // 允许名单：用户点过「允许」的网站，含子域。没有预设的平台。
+  const sites = $('cloudSites');
+  sites.textContent = '';
+  if (!s.cfg.sites.length) sites.appendChild(el('div', 'empty', '还没有。任务申请网站、你点了允许，就会出现在这里。'));
+  for (const host of s.cfg.sites) {
+    const row = el('div', 'site');
+    row.appendChild(el('span', 'host', host));
+    const del = el('button', 'btn ghost', '移除');
+    del.onclick = () => cloudCall('removeSite', { host });
+    row.appendChild(del);
+    sites.appendChild(row);
   }
 
-  const names = (ids) => ids.map((id) => s.platforms.find((p) => p.id === id)?.name || id).join('、') || '（无）';
   const tasks = $('cloudTasks');
   tasks.textContent = '';
   for (const t of s.tasks.filter((x) => x.state !== 'denied')) {
     const box = el('div', `task ${t.state}`);
     box.appendChild(el('div', 't', t.title || `任务 ${t.jobId}`));
-    const browse = t.kind === 'browse';
     if (t.state === 'pending') {
-      box.appendChild(el('div', 'sub', browse
-        ? `请求访问这些网站：${t.ask.join('、')}${t.purpose ? `。用途：${t.purpose}` : ''}`
-        : `请求在 ${names(t.platforms)} 上发布`
-        + (t.requested.length > t.platforms.length ? `（另请求了 ${names(t.requested.filter((id) => !t.platforms.includes(id)))}，你没勾选，不会给）` : '')));
+      const lines = [];
+      if (t.ask?.length) lines.push(`请求访问这些网站：${t.ask.join('、')}（允许后加入允许名单）`);
+      if (t.use?.length) lines.push(`要用允许名单里的：${t.use.join('、')}`);
+      if (t.purpose) lines.push(`用途：${t.purpose}`);
+      for (const line of lines) box.appendChild(el('div', 'sub', line));
       const row = el('div', 'row');
       const yes = el('button', 'btn', '允许');
       const no = el('button', 'btn ghost', '拒绝');
@@ -339,10 +337,7 @@ function renderCloud(s) {
       row.append(yes, no);
       box.appendChild(row);
     } else {
-      const extra = t.sites || [];
-      const where = browse
-        ? extra.join('、')
-        : names(t.platforms) + (extra.length ? ` + 额外网站：${extra.join('、')}` : '');
+      const where = [...new Set([...(t.use || []), ...(t.sites || [])])].join('、') || '（还没有网站）';
       box.appendChild(el('div', 'sub', `进行中 · ${where} · ${t.count} 条命令 · ${relTime(t.lastAt)}`));
       if (t.ask?.length) {
         box.appendChild(el('div', 'sub', `还想访问：${t.ask.join('、')}${t.askWhy ? `。用途：${t.askWhy}` : ''}`));

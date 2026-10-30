@@ -1,11 +1,11 @@
-// 云端通道 —— 让一个配对过的服务（默认 maker.vcorp.ai）在这个浏览器里替用户发布。
+// 云端通道 —— 让一个配对过的服务（默认 maker.vcorp.ai）在这个浏览器里替用户办事（发布、查资料、填表）。
 //
 // 和本机那条桥是两回事：桥只有本机进程能连，agent 拿到的是全套工具；
 // 云端通道是**这个浏览器主动连出去**的一条 WebSocket，对面是公网上的服务器。
 // 所以这里的每一条命令都按「对面可能已经被攻破」来处理，规矩全在 cloud-policy.js：
-// 只有页面操作那一小组命令、只能停在用户勾选的平台（以及本任务里批准的网站）上、只能碰自己开的标签页、
+// 只有页面操作那一小组命令、只能停在允许名单（以及本任务里批准的网站）上、只能碰自己开的标签页、
 // 上传只能用服务器上的素材。新任务要用户点头；开了自动允许则新任务和它一开始的网站直接放行。
-// 任务开始之后追加的网站、本地文件夹，仍要逐个点头。
+// 任务开始之后追加的网站、本地文件夹，仍要逐个点头。没有预设的平台表：要去哪个网站，任务自己申请。
 //
 // 身份：配对时在这里生成一对 ECDSA P-256 密钥，私钥以不可导出的 CryptoKey 存在
 // IndexedDB，服务器只拿到公钥。每次连接对服务器给的随机数签名，签名里带上服务器
@@ -118,7 +118,7 @@ function deviceName() {
 //
 // 两步：先 claim 拿到「这个码属于哪个账号」，给用户看一眼，确认了才 confirm 生成密钥。
 // 多这一步是为了防「把这个码填进你的扩展」式的钓鱼——填别人给的码，等于把自己的
-// 平台账号交给别人的 maker 账号发帖。确认框里写着账号名，看一眼就知道不对。
+// 浏览器里的登录交给别人的 maker 账号去用。确认框里写着账号名，看一眼就知道不对。
 
 async function post(origin, path, body) {
   const res = await fetch(origin + path, {
@@ -152,8 +152,8 @@ async function confirmClaim() {
   const old = await getCfg();
   await setCfg({
     origin: c.origin, deviceId: r.deviceId, account: String(r.account || c.account), pairedAt: Date.now(),
-    // 换绑时沿用用户之前的选择；第一次配对什么平台都不开，由用户逐个勾
-    platforms: old?.platforms || [], auto: false, paused: false,
+    // 换绑时沿用之前允许的网站；第一次配对名单是空的，等任务申请、用户点允许
+    sites: policy.cleanAllowList(old?.sites), auto: false, paused: false,
   });
   await chrome.storage.session.remove(CLAIM);
   await log({ ev: 'paired', account: r.account || c.account, origin: c.origin });
@@ -240,7 +240,7 @@ export async function connect() {
               const mounted = await folders.names().catch(() => []);
               sock.send(JSON.stringify({
                 type: 'hello', v: 1, deviceId: cfg.deviceId, sig,
-                version: chrome.runtime.getManifest().version, platforms: cfg.platforms || [], auto: !!cfg.auto,
+                version: chrome.runtime.getManifest().version, sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto,
                 folders: mounted,
               }));
             } catch { try { sock.close(); } catch { /* 已经废了 */ } }
@@ -254,7 +254,8 @@ export async function connect() {
           // 服务器说这个设备已经被作废（用户在网页上删了它）：本机跟着解除，不再重连
           if (m.type === 'revoked') { await unpair(); await setStatus('off', '这个浏览器已在网页上被移除'); return; }
           if (m.type === 'cmd') { await handle(m); return; }
-          if (m.type === 'probe') { await handleProbe(m); return; }
+          // 服务器的「验证」：一来一回量延迟，什么都不开。老版本这里还会探平台登录，已经去掉。
+          if (m.type === 'probe') { send({ type: 'res', id: m.id, ok: true, data: {} }); return; }
           if (m.type === 'mount_request') { await openMount(); return; }
           if (m.type === 'job_end') { await endTask(String(m.jobId || ''), 'server'); }
         } catch { /* 一条消息处理失败不能变成未捕获异常 */ }
@@ -307,18 +308,14 @@ async function pushLive() {
   deps?.setCloudLive(Object.values(tasks).filter((t) => t.state === 'approved').map((t) => sidOf(t.jobId)));
 }
 
-// 通用任务（信封上带 sites）：一开始的网站清单随任务一起批准。
-// 发布任务的白名单是勾选平台的根域，加上这个任务里另行批准的额外网站。
-const isBrowse = (job) => Array.isArray(job?.sites);
-const hostsOf = (t) => policy.taskHosts(t);
+const allowOf = (cfg) => policy.cleanAllowList(cfg?.sites);
+const hostsOf = (t, cfg) => policy.taskHosts(t, allowOf(cfg));
+// 任务表的格式版本。老版本按平台建的任务没有它，启动时清掉，下一条命令重新问。
+const TASK_V = 2;
 
-// 这条不是用户点的「拒绝」，是旧逻辑在没有勾选平台时自己记的。
-// 浏览器任务（信封带 sites）或用户后来勾了平台，都要能重新评，不能把任务号卡死。
-const STALE_DENY = '这个任务要用的平台你都没有在侧栏里勾选';
-
-// 新任务由用户点头，或由用户打开的自动允许直接放行（含通用任务信封上一开始的网站）。
+// 新任务由用户点头，或由用户打开的自动允许直接放行（含信封上一开始的网站）。
 // 任务开始之后再申请的网站、本地文件夹，自动允许管不到。服务器只能申请。
-// reason：通用任务第一次申请站点时 agent 写的用途，放进批准框里给用户看。
+// reason：第一次申请站点时 agent 写的用途，放进批准框里给用户看。
 async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
   const jobId = String(job?.id || '');
   if (!/^[\w-]{1,64}$/.test(jobId)) throw err('CLOUD_DENIED', '命令缺少有效的任务号');
@@ -329,33 +326,16 @@ async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
     const tasks = await getTasks();
     let task = tasks[jobId];
     if (task?.state === 'approved' && Date.now() - task.lastAt > policy.TASK_IDLE_MS) task = null;   // 闲置太久，重新问
-    if (task?.state === 'denied' && task.why === STALE_DENY) { delete tasks[jobId]; task = null; await setTasks(tasks); }
-    if (task?.state === 'denied') return task;
-    if (task?.state === 'approved' || task?.state === 'pending') return task;
-    if (isBrowse(job)) {
-      const { sites } = policy.cleanSites(job.sites);
-      // 只读本地文件夹的任务可以还没有网站。文件夹本身仍要单独点头，这里不替用户答应。
-      if (!sites.length && !allowEmpty) return { state: 'nosites' };
-      const opening = policy.initialTask({ browse: true, sites, auto: !!cfg.auto });
-      freshAuto = !!cfg.auto && opening.state === 'approved' && sites.length > 0;
-      task = {
-        jobId, title, kind: 'browse', requested: [], platforms: [], sites: opening.sites, ask: opening.ask, refused: [], purpose: reason,
-        folders: [], folderRefused: [], folderAsk: [], folderBytes: 0,
-        tabs: [], cur: null, count: 0, state: opening.state, createdAt: Date.now(), lastAt: Date.now(), why: '',
-      };
-      tasks[jobId] = task;
-      await setTasks(tasks);
-      return task;
-    }
-    const requested = (Array.isArray(job?.platforms) ? job.platforms : []).map(String);
-    const platforms = policy.grantedPlatforms(requested, cfg.platforms);
-    const opening = policy.initialTask({ platforms, auto: !!cfg.auto });
-    freshAuto = !!cfg.auto && opening.state === 'approved' && platforms.length > 0;
+    if (task && task.v === TASK_V) return task;
+    const { sites } = policy.cleanSites(job?.sites);
+    // 只读本地文件夹的任务可以还没有网站。文件夹本身仍要单独点头，这里不替用户答应。
+    if (!sites.length && !allowEmpty) return { state: 'nosites' };
+    const opening = policy.initialTask({ sites, covered: allowOf(cfg), auto: !!cfg.auto });
+    freshAuto = !!cfg.auto && opening.state === 'approved' && sites.length > 0;
     task = {
-      jobId, title, requested, platforms, sites: opening.sites, refused: [], ask: opening.ask,
+      v: TASK_V, jobId, title, sites: opening.sites, use: opening.use, ask: opening.ask, refused: [], purpose: reason,
       folders: [], folderRefused: [], folderAsk: [], folderBytes: 0,
       tabs: [], cur: null, count: 0, state: opening.state, createdAt: Date.now(), lastAt: Date.now(),
-      why: opening.state === 'denied' ? STALE_DENY : '',
     };
     tasks[jobId] = task;
     await setTasks(tasks);
@@ -366,8 +346,8 @@ async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
     await log({ ev: 'approved', job: jobId, msg: '自动放行' });
     await pushLive();
   }
-  if (t.state === 'nosites') throw err('NO_SITES', '通用任务要先用 sites 申请要访问的网站（如 sites {"add":["zhipin.com"],"reason":"找兼职"}），或用 folders 申请本地文件夹。用户批准后才能继续。');
-  if (t.state === 'denied') throw err('CLOUD_DENIED', `用户拒绝了这个任务${t.why ? `：${t.why}` : ''}。不要重试。`);
+  if (t.state === 'nosites') throw err('NO_SITES', '先用 sites 申请要访问的网站（如 sites {"add":["zhipin.com"],"reason":"找兼职"}），或用 folders 申请本地文件夹。用户批准后才能继续。');
+  if (t.state === 'denied') throw err('CLOUD_DENIED', '用户拒绝了这个任务。不要重试。');
   if (t.state === 'approved') return t;
 
   // 这条任务还挂着。开关若已经打开（包括刚打开、存储里已经是开的），按允许处理，不再弹窗。
@@ -379,7 +359,7 @@ async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
   }
   const now = (await getTasks())[jobId];
   if (!now) throw err('CLOUD_DENIED', '这个任务已经结束');
-  if (now.state === 'denied') throw err('CLOUD_DENIED', `用户拒绝了这个任务${now.why ? `：${now.why}` : ''}。不要重试。`);
+  if (now.state === 'denied') throw err('CLOUD_DENIED', '用户拒绝了这个任务。不要重试。');
   if (now.state === 'approved') return now;
 
   // 等用户点头。通知是把人叫回来的唯一办法；侧栏里同样有一张卡片
@@ -402,32 +382,31 @@ function waitFor(key) {
 }
 
 function notifyPending(t, cfg) {
-  const browse = t.kind === 'browse';
-  const names = browse ? t.ask.join('、') : t.platforms.map((id) => policy.PLATFORMS[id]?.name || id).join('、');
+  const names = [...(t.ask || []), ...(t.use || [])].join('、');
   chrome.notifications?.create(`hc-cloud:${t.jobId}`, {
     type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
-    title: `${policy.hostOf(cfg.origin)} 请求在你的浏览器里${browse ? '操作这些网站' : '发布'}`,
-    message: `${t.title ? `「${t.title}」` : browse ? '一个任务' : '一个发布任务'} → ${names}${browse && t.purpose ? `\n用途：${t.purpose}` : ''}`,
+    title: `${policy.hostOf(cfg.origin)} 请求在你的浏览器里操作这些网站`,
+    message: `${t.title ? `「${t.title}」` : '一个任务'} → ${names}${t.purpose ? `\n用途：${t.purpose}` : ''}`,
     buttons: [{ title: '允许' }, { title: '拒绝' }],
   }, () => void chrome.runtime.lastError);
 }
 
-// 进行中的任务又要新站点：单独问一次，只问这几个。发布任务和通用任务都走这里。
+// 进行中的任务又要新站点：单独问一次，只问这几个。
 function notifySites(t, cfg) {
-  const kind = t.kind === 'browse' ? '任务' : '发布任务';
   chrome.notifications?.create(`hc-cloud-sites:${t.jobId}`, {
     type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
-    title: `${policy.hostOf(cfg.origin)} 的${kind}还想访问新的网站`,
-    message: `${t.title ? `「${t.title}」` : kind} → ${(t.ask || []).join('、')}${t.askWhy ? `\n用途：${t.askWhy}` : ''}`,
+    title: `${policy.hostOf(cfg.origin)} 的任务还想访问新的网站`,
+    message: `${t.title ? `「${t.title}」` : '任务'} → ${(t.ask || []).join('、')}${t.askWhy ? `\n用途：${t.askWhy}` : ''}`,
     buttons: [{ title: '允许' }, { title: '拒绝' }],
   }, () => void chrome.runtime.lastError);
 }
 
-// 任务申请额外网站。平台根域已经盖住的不再问；用户拒绝过的同一任务不再问。
-// 「自动允许」管不到这里。总数超过 SITES_MAX 的部分这次不询问。
+// 任务申请网站。允许名单已经盖住的不再问；用户拒绝过的同一任务不再问。
+// 「自动允许」管不到这里。用户点了允许，这些网站也进允许名单。
+// 本任务新批的网站超过 SITES_MAX 的部分这次不询问。
 async function requestSites(task, p, cfg) {
   const split = policy.sitesToAsk(p.add, {
-    covered: policy.allowedHosts(task.platforms),
+    covered: allowOf((await getCfg()) || cfg),
     sites: task.sites || [],
     refused: task.refused || [],
   });
@@ -450,13 +429,15 @@ async function requestSites(task, p, cfg) {
       x.askWhy = '';
     });
     chrome.notifications?.clear(`hc-cloud-sites:${task.jobId}`, () => void chrome.runtime.lastError);
+    if (allow) await allowSites(split.ask);
     await log({ ev: allow ? 'sites_on' : allow === false ? 'sites_off' : 'sites_timeout', job: task.jobId, msg: split.ask.join(',') });
   }
   const now = (await getTasks())[task.jobId] || task;
+  const allowList = allowOf(await getCfg());
   const sites = now.sites || [];
   const refused = now.refused || [];
-  const lines = [`允许访问：${policy.taskHosts(now).join('、') || '（无）'}`];
-  if (split.covered.length) lines.push(`已包含在勾选的平台里：${split.covered.join('、')}`);
+  const lines = [`允许访问：${policy.taskHosts(now, allowList).join('、') || '（无）'}`];
+  if (split.covered.length) lines.push(`已在允许名单里：${split.covered.join('、')}`);
   const no = p.add.filter((h) => refused.includes(h) && !split.covered.includes(h));
   const later = split.ask.filter((h) => !sites.includes(h) && !refused.includes(h));
   if (no.length) lines.push(`用户不同意：${no.join('、')}。不要再申请，换别的办法或在报告里说明。`);
@@ -467,11 +448,10 @@ async function requestSites(task, p, cfg) {
 }
 
 function notifyFolders(t, cfg) {
-  const kind = t.kind === 'browse' ? '任务' : '发布任务';
   chrome.notifications?.create(`hc-cloud-folders:${t.jobId}`, {
     type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
-    title: `${policy.hostOf(cfg.origin)} 的${kind}想读取你的本地文件夹`,
-    message: `${t.title ? `「${t.title}」` : kind} → ${(t.folderAsk || []).join('、')}${t.folderAskWhy ? `\n用途：${t.folderAskWhy}` : ''}`,
+    title: `${policy.hostOf(cfg.origin)} 的任务想读取你的本地文件夹`,
+    message: `${t.title ? `「${t.title}」` : '任务'} → ${(t.folderAsk || []).join('、')}${t.folderAskWhy ? `\n用途：${t.folderAskWhy}` : ''}`,
     buttons: [{ title: '允许' }, { title: '拒绝' }],
   }, () => void chrome.runtime.lastError);
 }
@@ -586,7 +566,7 @@ async function openMount(folderId = '') {
 async function reportFolders() {
   const mounted = await folders.names().catch(() => []);
   const cfg = await getCfg();
-  if (cfg && ws?.readyState === 1) send({ type: 'config', platforms: cfg.platforms || [], auto: !!cfg.auto, folders: mounted });
+  if (cfg && ws?.readyState === 1) send({ type: 'config', sites: allowOf(cfg), auto: !!cfg.auto, folders: mounted });
   await chrome.storage.session.set({ folderTick: Date.now() }).catch(() => {});
 }
 
@@ -595,19 +575,35 @@ function decideSites(jobId, allow) {
   for (const fn of waiters.get(`sites:${jobId}`) || []) fn(!!allow);
 }
 
+// 用户亲手允许的网站进允许名单。自动允许不走这里。
+async function allowSites(hosts) {
+  if (!hosts?.length) return;
+  const cfg = await getCfg();
+  if (!cfg) return;
+  const list = allowOf(cfg);
+  const add = policy.cleanAllowList(hosts).filter((h) => !list.includes(h));
+  if (!add.length) return;
+  await patchCfg({ sites: [...list, ...add] });
+  await log({ ev: 'site_on', msg: add.join(',') });
+}
+
+// 自动允许（auto）只放行这个任务：一开始的网站给这个任务用，不进允许名单。
+// 用户点的允许：这些网站同时进允许名单。
 async function decide(jobId, allow, { auto = false } = {}) {
+  let granted = [];
   const changed = await serial(async () => {
     const tasks = await getTasks();
     const t = tasks[jobId];
     if (!t || t.state !== 'pending') return false;
     t.state = allow ? 'approved' : 'denied';
     t.lastAt = Date.now();
-    if (!allow) t.why = '';
-    if (allow && t.kind === 'browse') { t.sites = t.ask || []; t.ask = []; }
+    if (allow) { granted = t.ask || []; t.sites = [...new Set([...(t.sites || []), ...granted])]; }
+    t.ask = [];
     await setTasks(tasks);
     return true;
   });
   chrome.notifications?.clear(`hc-cloud:${jobId}`, () => void chrome.runtime.lastError);
+  if (changed && allow && !auto) await allowSites(granted);
   if (changed) {
     await log({ ev: allow ? 'approved' : 'denied', job: jobId, ...(auto && allow ? { msg: '自动放行' } : {}) });
     await pushLive();
@@ -704,7 +700,7 @@ async function exec(m) {
   if (!updated) throw err('CLOUD_DENIED', '这个任务已经结束');
   if (updated.count > policy.TASK_CMD_CAP) throw err('CLOUD_DENIED', `一个任务最多 ${policy.TASK_CMD_CAP} 条命令，已经用完`);
 
-  const hosts = hostsOf(updated);
+  const hosts = hostsOf(updated, cfg);
   const p = policy.checkCommand(m.cmd, m.params, { hosts, origin: cfg.origin });
   if (m.cmd === 'sites') return requestSites(updated, p, cfg);
   if (m.cmd === 'folders') return requestFolders(updated, p, cfg);
@@ -807,67 +803,6 @@ async function uploadMedia(p, tid, sid, label) {
   return deps.run('upload', { ...base, base64: btoa(s) }, tid, sid, label);
 }
 
-// ---------- 登录探测 ----------
-//
-// 服务器问「这几个平台登录了没有」（做视频时勾了自动发布，提交前要先确认）。
-// 只探用户勾选过的平台，地址和判据写死在 cloud-policy.js 的 PROBES 里，
-// 回去的只有每个平台一个状态词，页面内容一个字都不出去。
-// 在后台开一个标签页看完就关；2 分钟内同一平台复用上次结果，防止服务器刷开标签页。
-
-const PROBE_TTL_MS = 2 * 60 * 1000;
-const PROBE_WAIT_MS = 15000;
-const probeCache = new Map();   // platform → { state, at }
-let probeLock = Promise.resolve();
-
-async function probeOne(id) {
-  const probe = policy.PROBES[id];
-  const hit = probeCache.get(id);
-  if (hit && Date.now() - hit.at < PROBE_TTL_MS) return hit.state;
-  const tab = await chrome.tabs.create({ url: probe.url, active: false });
-  let state = null;
-  try {
-    const until = Date.now() + PROBE_WAIT_MS;
-    while (!state && Date.now() < until) {
-      await sleep(1000);
-      const t = await chrome.tabs.get(tab.id).catch(() => null);
-      if (!t) break;
-      let text = '';
-      if (t.status === 'complete') {
-        try {
-          const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.body?.innerText.slice(0, 20000) || '' });
-          text = r?.result || '';
-        } catch { /* 页面还在跳 */ }
-      }
-      state = policy.judgeProbe(probe, { url: t.pendingUrl || t.url || '', text });
-    }
-  } finally {
-    await chrome.tabs.remove(tab.id).catch(() => {});
-  }
-  state = state || 'unknown';
-  probeCache.set(id, { state, at: Date.now() });
-  return state;
-}
-
-async function handleProbe(m) {
-  const run = probeLock.then(async () => {
-    const cfg = await getCfg();
-    const out = {};
-    for (const id of [...new Set(Array.isArray(m.platforms) ? m.platforms.map(String) : [])].slice(0, 8)) {
-      if (!policy.PROBES[id]) continue;
-      out[id] = cfg?.platforms?.includes(id) ? await probeOne(id) : 'denied';
-    }
-    return out;
-  });
-  probeLock = run.catch(() => {});
-  try {
-    const data = await run;
-    send({ type: 'res', id: m.id, ok: true, data });
-    await log({ ev: 'probe', msg: Object.entries(data).map(([k, v]) => `${policy.PLATFORMS[k]?.name || k}:${v}`).join(' ') });
-  } catch (e) {
-    send({ type: 'res', id: m.id, ok: false, error: { code: 'INTERNAL', message: e.message || String(e) } });
-  }
-}
-
 // ---------- 侧栏 ----------
 
 // 只认扩展自己的页面（侧栏）发来的。内容脚本跑在网页里，页面被攻破时它也可能被利用，
@@ -879,13 +814,12 @@ async function panelState() {
     getCfg(), chrome.storage.session.get(STATUS), chrome.storage.session.get(CLAIM), getTasks(), chrome.storage.local.get(LOG),
   ]);
   return {
-    cfg: cfg && { origin: cfg.origin, account: cfg.account, platforms: cfg.platforms, auto: cfg.auto, paused: cfg.paused, pairedAt: cfg.pairedAt },
+    cfg: cfg && { origin: cfg.origin, account: cfg.account, sites: allowOf(cfg), auto: cfg.auto, paused: cfg.paused, pairedAt: cfg.pairedAt },
     status: status || { state: 'off' },
     claim: claimed && claimed.expiresAt > Date.now() ? { origin: claimed.origin, account: claimed.account } : null,
     tasks: Object.values(tasks).sort((a, b) => b.lastAt - a.lastAt),
     folders: await folders.listFolders().catch(() => []),
     log: list.slice(-40).reverse(),
-    platforms: Object.entries(policy.PLATFORMS).map(([id, p]) => ({ id, name: p.name, hosts: p.hosts })),
     defaultOrigin: policy.DEFAULT_ORIGIN,
   };
 }
@@ -893,10 +827,11 @@ async function panelState() {
 async function patchCfg(patch) {
   const cfg = await getCfg();
   if (!cfg) throw err('CLOUD_UNPAIRED', '还没有配对');
-  const next = { ...cfg, ...patch };
+  const { platforms: _old, ...rest } = cfg;   // 老版本存的平台勾选，不再有用
+  const next = { ...rest, ...patch };
   await setCfg(next);
   const mounted = await folders.names().catch(() => []);
-  send({ type: 'config', platforms: next.platforms, auto: !!next.auto, folders: mounted });
+  send({ type: 'config', sites: allowOf(next), auto: !!next.auto, folders: mounted });
   return next;
 }
 
@@ -907,16 +842,18 @@ async function onPanel(m) {
     case 'cancelClaim': await chrome.storage.session.remove(CLAIM); return panelState();
     case 'confirm': await confirmClaim(); return panelState();
     case 'unpair': await unpair(); return panelState();
-    case 'setPlatforms': {
-      const ids = (Array.isArray(m.platforms) ? m.platforms : []).filter((id) => policy.PLATFORMS[id]);
-      await patchCfg({ platforms: ids });
-      // 收回的平台立刻从进行中的任务里摘掉
+    case 'removeSite': {
+      const host = String(m.host || '');
+      const cfg = await getCfg();
+      if (!cfg) throw err('CLOUD_UNPAIRED', '还没有配对');
+      await patchCfg({ sites: allowOf(cfg).filter((h) => h !== host) });
+      // 收回的网站立刻从进行中的任务里摘掉
       await serial(async () => {
         const tasks = await getTasks();
-        for (const t of Object.values(tasks)) t.platforms = t.platforms.filter((id) => ids.includes(id));
+        for (const t of Object.values(tasks)) t.sites = (t.sites || []).filter((h) => h !== host);
         await setTasks(tasks);
       });
-      await log({ ev: 'platforms', platforms: ids.join(',') });
+      await log({ ev: 'site_off', msg: host });
       return panelState();
     }
     case 'setAuto': {
@@ -999,12 +936,12 @@ export function initCloud(d) {
     });
   });
 
-  // 闲置太久的批准作废，结束了的任务不留在侧栏里
+  // 闲置太久的批准作废；结束了的任务、老格式的任务不留在侧栏里
   void serial(async () => {
     const tasks = await getTasks();
     let dirty = false;
     for (const [id, t] of Object.entries(tasks)) {
-      if (Date.now() - t.lastAt > policy.TASK_IDLE_MS) { delete tasks[id]; dirty = true; }
+      if (Date.now() - t.lastAt > policy.TASK_IDLE_MS || t.v !== TASK_V) { delete tasks[id]; dirty = true; }
     }
     if (dirty) await setTasks(tasks);
   }).then(pushLive);

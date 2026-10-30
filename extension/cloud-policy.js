@@ -9,59 +9,23 @@
 //
 //   1. 命令白名单：只有操作页面的那一小组。eval / fetch / network / download / reload
 //      一律没有——它们能读任意接口、带着 cookie 发请求、往磁盘写东西。
-//   2. 域名白名单：云端开的标签页只能停在用户勾选过的创作平台上，以及这个任务里
-//      用户逐个点头的额外网站上，跳出去就屏蔽内容。
+//   2. 域名白名单：云端开的标签页只能停在用户允许过的网站上（侧栏里的名单），
+//      以及这个任务里用户点头的网站上，跳出去就屏蔽内容。扩展里没有预设的平台表。
 //   3. 标签页隔离：云端只看得见、只碰得到它自己开的标签页，用户自己的页面一个都不行。
 //   4. 文件来源：上传只能用配对服务器上的素材 URL，不收本机路径——否则一句
 //      upload(path:"~/.ssh/id_rsa") 就能把私钥发到公开平台上。
 //   5. 每个任务要用户点头，或用户主动开了自动允许。自动允许盖住新任务，以及通用
 //      任务信封上一开始带着的网站；盖不住任务开始之后追加的网站和文件夹。有命令数上限。
 //
-// 站点申请（sites 命令）：通用任务（「到兼职网站上帮我找个工作」）全靠它；
-// 发布任务也能用它临时加网站，比如去查资料再回来发。没开自动允许时，新任务的
-// 第一份网站清单要用户点头，点头后这些站随任务生效。任务开始之后每多一个站点
-// 都要再点一次头，自动允许管不到这次追加。已经被勾选平台根域盖住的站点不再问。
-// 一个任务的额外网站最多 SITES_MAX 个。
-
-// 平台 → 允许停留的站点（含子域）。只放创作者后台和它们的登录/作品页需要的根域。
-// 视频号只放 channels.weixin.qq.com：weixin.qq.com 底下还有公众号后台、微信支付这些。
-export const PLATFORMS = {
-  douyin: { name: '抖音', hosts: ['douyin.com'] },
-  xiaohongshu: { name: '小红书', hosts: ['xiaohongshu.com'] },
-  bilibili: { name: 'B站', hosts: ['bilibili.com'] },
-  shipinhao: { name: '视频号', hosts: ['channels.weixin.qq.com'] },
-  kuaishou: { name: '快手', hosts: ['kuaishou.com'] },
-  weibo: { name: '微博', hosts: ['weibo.com', 'weibo.cn'] },
-  zhihu: { name: '知乎', hosts: ['zhihu.com'] },
-};
+// 站点申请（sites 命令）：每个任务（发布也好、「到兼职网站上帮我找个工作」也好）
+// 都靠它说明要去哪些网站。没开自动允许时，新任务的第一份网站清单要用户点头；
+// 任务开始之后每多一个站点都要再点一次头，自动允许管不到这次追加。
+// 用户亲手点「允许」的网站进入允许名单（侧栏可逐个移除），以后的任务用到它们不再问；
+// 自动允许只放行这一个任务，不往名单里加。一个任务新批的网站最多 SITES_MAX 个。
 
 export const DEFAULT_ORIGIN = 'https://maker.vcorp.ai';
 
-// 登录探测：服务器只能问「这几个平台登录了没有」，问不了别的。
-// 打开哪个地址、怎么判断，都写死在这里——服务器给不了 URL，拿回去的也只有一个状态词。
-//   url    要登录才看得到的创作者后台页
-//   login  落到这种地址 = 没登录（平台会把未登录的人重定向到登录页）
-//   ok     页面上出现这种字 = 登录着（2026-10-26 实测抖音、小红书已登录的首页）
-//   ask    页面上出现这种字 = 正在要人登录
-export const PROBES = {
-  douyin: { url: 'https://creator.douyin.com/creator-micro/home', login: /\/login|passport|sso\./, ok: /抖音号[:：]/, ask: /扫码登录|验证码登录|手机号登录/ },
-  xiaohongshu: { url: 'https://creator.xiaohongshu.com/new/home', login: /\/login/, ok: /小红书账号[:：]/, ask: /扫码登录|短信登录|验证码登录/ },
-  bilibili: { url: 'https://member.bilibili.com/platform/home', login: /passport\.bilibili\.com|\/login/, ok: /投稿|内容管理/, ask: /扫描二维码登录|密码登录/ },
-  shipinhao: { url: 'https://channels.weixin.qq.com/platform', login: /login\.html/, ok: /视频号ID|发表视频|内容管理/, ask: /登录视频号助手/ },
-  kuaishou: { url: 'https://cp.kuaishou.com/profile', login: /passport\.kuaishou\.com|\/login/, ok: /快手号|作品管理|发布作品/, ask: /扫码登录|验证码登录/ },
-  weibo: { url: 'https://weibo.com/', login: /passport\.weibo|\/signin|\/login/, ok: /发微博|写微博|我的主页/, ask: /立即登录|扫描二维码登录|登录\/注册/ },
-  zhihu: { url: 'https://www.zhihu.com/creator', login: /\/signin|\/login/, ok: /创作中心|内容管理|我的创作/, ask: /验证码登录|密码登录/ },
-};
-
-// 一份页面观察（{url, text}）落到哪种状态：'valid' | 'invalid' | null（还没定，再等等）
-export function judgeProbe(probe, { url = '', text = '' } = {}) {
-  if (probe.login.test(url)) return 'invalid';
-  if (probe.ok.test(text)) return 'valid';
-  if (probe.ask.test(text)) return 'invalid';
-  return null;
-}
-
-// 远端能调的命令。tabs 的子动作另外管（见 checkCommand）。sites 通用任务和发布任务都能用。
+// 远端能调的命令。tabs 的子动作另外管（见 checkCommand）。
 export const CLOUD_CMDS = new Set([
   'tabs', 'navigate', 'snapshot', 'click', 'type', 'fill', 'select', 'key', 'scroll',
   'wait', 'read_text', 'query', 'read', 'screenshot', 'upload', 'act', 'ask', 'status', 'sites',
@@ -70,7 +34,7 @@ export const CLOUD_CMDS = new Set([
   'folders', 'fs_list', 'fs_read',
 ]);
 
-// ---------- 站点申请（通用任务，以及发布任务的额外网站） ----------
+// ---------- 站点申请 ----------
 
 export const SITES_MAX = 20;
 
@@ -149,37 +113,39 @@ export function hostOf(url) {
 
 export const hostMatches = (host, root) => host === root || host.endsWith('.' + root);
 
-// 这些平台合起来允许哪些根域
-export function allowedHosts(platforms) {
+// 允许名单：用户点过「允许」的根域。读存储时也过一遍，坏数据不进白名单。
+export function cleanAllowList(list) {
   const out = [];
-  for (const id of platforms || []) for (const h of PLATFORMS[id]?.hosts || []) out.push(h);
+  for (const raw of Array.isArray(list) ? list : []) {
+    const h = normalizeSite(raw);
+    if (h && !out.includes(h)) out.push(h);
+  }
   return out;
 }
 
-// 一个任务实际能停的根域：勾选平台的根域，加上这个任务里批准过的额外网站。
-// 老任务可能没有 sites 字段，当作没有额外网站。
-export function taskHosts(task) {
-  return [...allowedHosts(task?.platforms), ...(task?.sites || [])];
+// 一个任务实际能停的根域：允许名单，加上这个任务里批准过的网站。
+export function taskHosts(task, allow = []) {
+  return [...new Set([...cleanAllowList(allow), ...(task?.sites || [])])];
 }
 
 // 一份申请里，哪些还要问用户。
-// covered 是平台根域：申请的站点被某个根域盖住（含子域）就不用问，算已允许。
-// 已经批准或拒绝过的不重复问。额外网站总数不超过 SITES_MAX，多出来的放 overflow。
+// covered 是允许名单：申请的站点被某个根域盖住（含子域）就不用问。
+// 已经批准或拒绝过的不重复问。本任务新批的网站总数不超过 SITES_MAX，多出来的放 overflow。
 export function sitesToAsk(add, { covered = [], sites = [], refused = [] } = {}) {
   const have = new Set(sites);
   const no = new Set(refused);
-  const byPlatform = [];
+  const byList = [];
   const fresh = [];
   const seen = new Set();
   for (const h of Array.isArray(add) ? add : []) {
     if (typeof h !== 'string' || seen.has(h)) continue;
     seen.add(h);
-    if (covered.some((root) => hostMatches(h, root))) { byPlatform.push(h); continue; }
+    if (covered.some((root) => hostMatches(h, root))) { byList.push(h); continue; }
     if (have.has(h) || no.has(h)) continue;
     fresh.push(h);
   }
   const room = Math.max(0, SITES_MAX - sites.length);
-  return { ask: fresh.slice(0, room), covered: byPlatform, overflow: fresh.slice(room) };
+  return { ask: fresh.slice(0, room), covered: byList, overflow: fresh.slice(room) };
 }
 
 // 一个页面地址在不在白名单里。about:blank 是新开标签页的出生地，放行；
@@ -283,26 +249,21 @@ export function mediaAllowed(url, origin) {
   return u.origin === origin && u.pathname.startsWith('/api/ext/media/') && !u.username && !u.password;
 }
 
-// 任务真正生效的平台：服务器申请的 ∩ 用户在侧栏里勾选的
-export function grantedPlatforms(requested, enabled) {
-  const on = new Set(enabled || []);
-  return [...new Set(requested || [])].filter((id) => PLATFORMS[id] && on.has(id));
-}
-
-// 一条新任务开场时的批准状态。platforms 是已经求过交集的生效平台。
-// auto 打开：发布任务（有生效平台）和通用任务都直接 approved。通用任务信封上
-// 已经带着的网站写入 sites，不要留在 ask，否则紧接着的 sites 命令会把同一份清单再问一遍。
+// 一条新任务开场时的批准状态。sites 是信封上一开始的网站清单（已清洗），covered 是允许名单。
+// 名单里已有的放进 use，只给用户看；名单外的放进 ask，点「允许」才写进名单。
+// 有网站的任务没开自动允许就要用户点头，哪怕网站全在名单里：每个任务都要一次同意。
+// auto 打开：直接 approved，名单外的网站只给这个任务（写入 sites，不进名单），
+// 也不要留在 ask，否则紧接着的 sites 命令会把同一份清单再问一遍。
 // auto 盖不住任务开始之后追加的网站（sitesToAsk）和文件夹（foldersToAsk）。
-// 发布任务一个生效平台都没有：denied。没有网站的通用任务本来就是 approved（文件夹仍另批）。
-export function initialTask({ browse = false, sites = [], platforms = [], auto = false } = {}) {
+// 没有网站的任务本来就是 approved（只能申请文件夹，文件夹仍另批）。
+export function initialTask({ sites = [], covered = [], auto = false } = {}) {
   const list = Array.isArray(sites) ? sites.slice() : [];
-  if (browse) {
-    return auto
-      ? { state: 'approved', sites: list, ask: [] }
-      : { state: list.length ? 'pending' : 'approved', sites: [], ask: list };
-  }
-  if (!(Array.isArray(platforms) ? platforms : []).length) return { state: 'denied', sites: [], ask: [] };
-  return { state: auto ? 'approved' : 'pending', sites: [], ask: [] };
+  const use = list.filter((h) => covered.some((root) => hostMatches(h, root)));
+  const fresh = list.filter((h) => !use.includes(h));
+  if (!list.length) return { state: 'approved', sites: [], ask: [], use: [] };
+  return auto
+    ? { state: 'approved', sites: fresh, ask: [], use }
+    : { state: 'pending', sites: [], ask: fresh, use };
 }
 
 // act 剧本静态检查：每一步都要是允许的动作，导航目标都要在白名单里。
@@ -314,7 +275,7 @@ function checkSteps(steps, hosts, depth = 0) {
     if (!st || typeof st !== 'object') throw err('CLOUD_DENIED', 'act 的步骤必须是对象');
     if (!ACT_STEPS.has(st.do)) throw err('CLOUD_DENIED', `云端任务的 act 里不能用 ${JSON.stringify(st.do)}`);
     if (st.do === 'navigate' && st.url !== undefined && !urlAllowed(st.url, hosts)) {
-      throw err('CLOUD_DENIED', `不在本任务允许的平台上：${hostOf(st.url) || st.url}`);
+      throw err('CLOUD_DENIED', `不在本任务允许的网站上：${hostOf(st.url) || st.url}`);
     }
     if (st.do === 'if') { checkSteps(st.then || [], hosts, depth + 1); checkSteps(st.else || [], hosts, depth + 1); }
     if (st.do === 'repeat') checkSteps(st.steps || [], hosts, depth + 1);
@@ -332,14 +293,14 @@ export function checkCommand(cmd, params, { hosts, origin }) {
     case 'tabs': {
       if (!['new', 'list', 'select', 'close'].includes(p.action)) throw err('CLOUD_DENIED', `tabs 不支持 ${p.action}`);
       if (p.action === 'new' && p.url !== undefined && !urlAllowed(p.url, hosts)) {
-        throw err('CLOUD_DENIED', `不在本任务允许的平台上：${hostOf(p.url) || p.url}`);
+        throw err('CLOUD_DENIED', `不在本任务允许的网站上：${hostOf(p.url) || p.url}`);
       }
       p.focus = false;   // 后台干活，不抢用户的视线
       return p;
     }
     case 'navigate': {
       if (p.url !== undefined) {
-        if (!urlAllowed(p.url, hosts)) throw err('CLOUD_DENIED', `不在本任务允许的平台上：${hostOf(p.url) || p.url}`);
+        if (!urlAllowed(p.url, hosts)) throw err('CLOUD_DENIED', `不在本任务允许的网站上：${hostOf(p.url) || p.url}`);
       } else if (!['back', 'forward', 'reload'].includes(p.action || 'reload')) {
         throw err('CLOUD_DENIED', `navigate 不支持 ${p.action}`);
       }
@@ -417,7 +378,7 @@ export function checkCommand(cmd, params, { hosts, origin }) {
 export function redactOffList(url) {
   return {
     text: `⛔ 标签页跳到了本任务允许范围以外的地址（${hostOf(url) || '非网页地址'}），`
-      + '内容已屏蔽，标签页已退回。回到平台页面继续，或用 ask 请用户处理。',
+      + '内容已屏蔽，标签页已退回。回到允许的网站继续，或用 ask 请用户处理。',
     offList: true,
   };
 }

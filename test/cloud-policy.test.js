@@ -7,29 +7,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  checkCommand, urlAllowed, allowedHosts, grantedPlatforms, initialTask, normalizeOrigin, mediaAllowed, CLOUD_CMDS,
-  PROBES, PLATFORMS, judgeProbe, normalizeSite, cleanSites, SITES_MAX, taskHosts, sitesToAsk,
+  checkCommand, urlAllowed, initialTask, normalizeOrigin, mediaAllowed, CLOUD_CMDS,
+  normalizeSite, cleanSites, cleanAllowList, SITES_MAX, taskHosts, sitesToAsk,
   cleanFolderName, cleanFolderNames, foldersToAsk, normalizeRelPath, fileAllowed, skipEntry, matchGlob, pullUrlAllowed,
   FS_EXTS, FS_DEPTH_MAX, FS_FOLDERS_MAX,
 } from '../extension/cloud-policy.js';
 
-test('登录探测：每个平台都有探测，探测地址都在该平台自己的白名单里', () => {
-  assert.deepEqual(Object.keys(PROBES).sort(), Object.keys(PLATFORMS).sort());
-  for (const [id, p] of Object.entries(PROBES)) assert.ok(urlAllowed(p.url, allowedHosts([id])), id);
-});
-
-test('登录探测：重定向到登录页算没登录，看到账号号码算登录着，看不出来就再等', () => {
-  // 2026-10-26 实测：已登录的抖音、小红书首页；未登录的视频号被重定向到 login.html
-  assert.equal(judgeProbe(PROBES.douyin, { url: 'https://creator.douyin.com/creator-micro/home', text: '首页\n抖音号：84592557832\n关注' }), 'valid');
-  assert.equal(judgeProbe(PROBES.xiaohongshu, { url: 'https://creator.xiaohongshu.com/new/home', text: '小红书账号: 26539503357' }), 'valid');
-  assert.equal(judgeProbe(PROBES.shipinhao, { url: 'https://channels.weixin.qq.com/login.html', text: '登录视频号助手' }), 'invalid');
-  assert.equal(judgeProbe(PROBES.xiaohongshu, { url: 'https://creator.xiaohongshu.com/login', text: '' }), 'invalid');
-  assert.equal(judgeProbe(PROBES.douyin, { url: 'https://creator.douyin.com/', text: '扫码登录' }), 'invalid');
-  assert.equal(judgeProbe(PROBES.douyin, { url: 'https://creator.douyin.com/creator-micro/home', text: '' }), null);
-});
-
 const ORIGIN = 'https://maker.vcorp.ai';
-const hosts = allowedHosts(['douyin', 'shipinhao']);
+const hosts = ['douyin.com', 'channels.weixin.qq.com'];
 const ctx = { hosts, origin: ORIGIN };
 const denied = (fn) => assert.throws(fn, (e) => e.code === 'CLOUD_DENIED');
 
@@ -40,12 +25,12 @@ test('读接口、带 cookie 发请求、写盘、执行脚本的命令一律没
   }
 });
 
-test('白名单按平台根域放行子域，别的站和伪装域名一律不行', () => {
+test('白名单按根域放行子域，别的站和伪装域名一律不行', () => {
   assert.ok(urlAllowed('https://creator.douyin.com/creator-micro/content/upload', hosts));
   assert.ok(urlAllowed('https://douyin.com/', hosts));
   assert.ok(urlAllowed('https://channels.weixin.qq.com/platform/post/create', hosts));
   assert.ok(urlAllowed('about:blank', hosts));
-  assert.ok(!urlAllowed('https://mp.weixin.qq.com/', hosts), '视频号不等于整个 weixin.qq.com');
+  assert.ok(!urlAllowed('https://mp.weixin.qq.com/', hosts), 'channels.weixin.qq.com 不等于整个 weixin.qq.com');
   assert.ok(!urlAllowed('https://pay.weixin.qq.com/', hosts));
   assert.ok(!urlAllowed('https://evildouyin.com/', hosts));
   assert.ok(!urlAllowed('https://douyin.com.evil.cn/', hosts));
@@ -56,11 +41,10 @@ test('白名单按平台根域放行子域，别的站和伪装域名一律不�
   }
 });
 
-test('没授权的平台不进白名单', () => {
-  assert.deepEqual(grantedPlatforms(['douyin', 'xiaohongshu', 'bogus'], ['douyin', 'bilibili']), ['douyin']);
-  assert.deepEqual(grantedPlatforms(['douyin'], []), []);
-  assert.deepEqual(allowedHosts([]), []);
-  assert.ok(!urlAllowed('https://creator.douyin.com/', allowedHosts([])));
+test('允许名单：没有预设，存储里的坏数据不进白名单', () => {
+  assert.deepEqual(cleanAllowList(undefined), []);
+  assert.deepEqual(cleanAllowList(['www.Douyin.com', 'douyin.com', 'localhost', '10.0.0.1', 'com.cn', 42]), ['douyin.com']);
+  assert.ok(!urlAllowed('https://creator.douyin.com/', taskHosts({ sites: [] }, [])));
 });
 
 test('开页和导航只能去白名单里的地址', () => {
@@ -138,42 +122,48 @@ test('通用任务的站点：去重、限量，不合规的另列', () => {
   assert.deepEqual(cleanSites('zhipin.com').sites, []);
 });
 
-test('混合任务：平台根域和额外网站一起放行，老任务没有 sites 也不报错', () => {
-  const mixed = taskHosts({ platforms: ['douyin', 'shipinhao'], sites: ['pexels.com'] });
+test('任务白名单：允许名单和本任务批准的网站一起放行，没有 sites 也不报错', () => {
+  const mixed = taskHosts({ sites: ['pexels.com'] }, ['douyin.com', 'channels.weixin.qq.com']);
   assert.ok(urlAllowed('https://creator.douyin.com/creator-micro/content/upload', mixed));
   assert.ok(urlAllowed('https://www.pexels.com/search/cat/', mixed));
   assert.ok(urlAllowed('https://channels.weixin.qq.com/platform', mixed));
   assert.ok(!urlAllowed('https://unsplash.com/', mixed));
   assert.ok(!urlAllowed('https://mp.weixin.qq.com/', mixed));
-  assert.deepEqual(taskHosts({ platforms: ['douyin'] }), allowedHosts(['douyin']));
+  assert.deepEqual(taskHosts({}, ['douyin.com']), ['douyin.com']);
+  assert.deepEqual(taskHosts({ sites: ['douyin.com'] }, ['douyin.com']), ['douyin.com']);
   assert.deepEqual(taskHosts(undefined), []);
 });
 
 test('initialTask：自动允许放行新任务和它一开始的网站，追加的网站仍要问', () => {
-  assert.deepEqual(initialTask({ platforms: ['douyin'], auto: false }), { state: 'pending', sites: [], ask: [] });
-  assert.deepEqual(initialTask({ platforms: ['douyin'], auto: true }), { state: 'approved', sites: [], ask: [] });
-  assert.deepEqual(initialTask({ platforms: [], auto: true }), { state: 'denied', sites: [], ask: [] });
-
   const sites = ['zhipin.com', 'liepin.com'];
-  assert.deepEqual(initialTask({ browse: true, sites, auto: false }), { state: 'pending', sites: [], ask: ['zhipin.com', 'liepin.com'] });
+  assert.deepEqual(initialTask({ sites, auto: false }), { state: 'pending', sites: [], ask: ['zhipin.com', 'liepin.com'], use: [] });
   assert.deepEqual(sites, ['zhipin.com', 'liepin.com'], '不改调用方的清单');
-  assert.deepEqual(initialTask({ browse: true, sites, auto: true }), { state: 'approved', sites: ['zhipin.com', 'liepin.com'], ask: [] });
-  assert.deepEqual(initialTask({ browse: true, sites: [], auto: false }), { state: 'approved', sites: [], ask: [] });
-  assert.deepEqual(initialTask({ browse: true, sites: [], auto: true }), { state: 'approved', sites: [], ask: [] });
+  assert.deepEqual(initialTask({ sites, auto: true }), { state: 'approved', sites: ['zhipin.com', 'liepin.com'], ask: [], use: [] });
+  assert.deepEqual(initialTask({ sites: [], auto: false }), { state: 'approved', sites: [], ask: [], use: [] });
+  assert.deepEqual(initialTask({ sites: [], auto: true }), { state: 'approved', sites: [], ask: [], use: [] });
 
-  const opened = initialTask({ browse: true, sites, auto: true });
+  // 允许名单里已有的不再问，但新任务本身仍要点头
+  assert.deepEqual(initialTask({ sites: ['creator.douyin.com', 'pexels.com'], covered: ['douyin.com'], auto: false }),
+    { state: 'pending', sites: [], ask: ['pexels.com'], use: ['creator.douyin.com'] });
+  assert.deepEqual(initialTask({ sites: ['creator.douyin.com'], covered: ['douyin.com'], auto: false }),
+    { state: 'pending', sites: [], ask: [], use: ['creator.douyin.com'] });
+  // 自动允许：名单外的网站只给这个任务，不在 ask 里等人
+  assert.deepEqual(initialTask({ sites: ['creator.douyin.com', 'pexels.com'], covered: ['douyin.com'], auto: true }),
+    { state: 'approved', sites: ['pexels.com'], ask: [], use: ['creator.douyin.com'] });
+
+  const opened = initialTask({ sites, auto: true });
   assert.deepEqual(sitesToAsk(['zhipin.com', 'liepin.com', 'bank.example'], { sites: opened.sites }).ask, ['bank.example']);
   assert.deepEqual(foldersToAsk(['知识库'], { granted: [], refused: [] }).ask, ['知识库']);
 });
 
-test('sitesToAsk：平台已覆盖、已批准、已拒绝的不再问，到上限就截断', () => {
-  const covered = allowedHosts(['douyin', 'shipinhao']);
+test('sitesToAsk：允许名单已覆盖、已批准、已拒绝的不再问，到上限就截断', () => {
+  const covered = ['douyin.com', 'channels.weixin.qq.com'];
   const r = sitesToAsk(
     ['douyin.com', 'creator.douyin.com', 'pexels.com', 'unsplash.com', 'weixin.qq.com'],
     { covered, sites: ['pexels.com'], refused: ['unsplash.com'] },
   );
   assert.deepEqual(r.covered, ['douyin.com', 'creator.douyin.com']);
-  assert.deepEqual(r.ask, ['weixin.qq.com'], '视频号的根域盖不住整个 weixin.qq.com');
+  assert.deepEqual(r.ask, ['weixin.qq.com'], 'channels.weixin.qq.com 盖不住整个 weixin.qq.com');
   assert.deepEqual(r.overflow, []);
 
   const many = Array.from({ length: 5 }, (_, i) => `s${i}.com`);
@@ -185,7 +175,7 @@ test('sitesToAsk：平台已覆盖、已批准、已拒绝的不再问，到上�
 });
 
 test('混合白名单：额外网站能导航，没批的不行', () => {
-  const c = { hosts: taskHosts({ platforms: ['douyin'], sites: ['pexels.com'] }), origin: ORIGIN };
+  const c = { hosts: taskHosts({ sites: ['pexels.com'] }, ['douyin.com']), origin: ORIGIN };
   assert.ok(checkCommand('navigate', { url: 'https://www.pexels.com/search/cat' }, c));
   assert.ok(checkCommand('tabs', { action: 'new', url: 'https://creator.douyin.com/' }, c));
   assert.ok(checkCommand('act', { steps: [{ do: 'navigate', url: 'https://pexels.com/' }] }, c));

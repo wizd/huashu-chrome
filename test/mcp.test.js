@@ -29,7 +29,7 @@ test('agent 能通过 stdio 挂上 MCP server 并拿到工具表', async () => {
   const { tools } = await client.listTools();
   const names = tools.map((t) => t.name).sort();
 
-  assert.deepEqual(names, ['act', 'ask', 'click', 'download', 'eval', 'fetch', 'fill', 'key', 'learnings', 'navigate', 'network', 'query', 'read_text', 'reload', 'screenshot', 'scroll', 'select', 'snapshot', 'status', 'tabs', 'type', 'upload', 'wait']);
+  assert.deepEqual(names, ['act', 'ask', 'call', 'click', 'download', 'eval', 'fetch', 'fill', 'key', 'learnings', 'load', 'navigate', 'network', 'query', 'read_text', 'reload', 'screenshot', 'scroll', 'select', 'snapshot', 'status', 'tabs', 'type', 'upload', 'wait']);
 
   // 工具描述是每轮都在付的 context 成本，别让它悄悄膨胀
   // （16000 → 16500：v0.8 有意识地加了 learnings 工具，它自身已压到最短；
@@ -57,8 +57,10 @@ test('agent 能通过 stdio 挂上 MCP server 并拿到工具表', async () => {
   //   自己更新到最新代码」这件事一直靠人工。描述里的 DISRUPTIVE 警告不能省：
   //   这个命令影响的是同一台机器上*所有*标签页和*所有*其他 agent 会话共享的
   //   那一个扩展实例，说清楚代价比省字符更重要）
+  //   21800 → 22700：新增 load / call（能力包，2026-10-30）。eval 在云端永远不开，
+  //   有类型的站点能力只能走这两个命令；本机 agent 也该用它们，而不是 upload + eval 手工注入）
   const total = tools.reduce((n, t) => n + t.description.length + JSON.stringify(t.inputSchema).length, 0);
-  assert.ok(total < 21800, `工具表膨胀到 ${total} 字符了，压回 21800 以内`);
+  assert.ok(total < 22700, `工具表膨胀到 ${total} 字符了，压回 22700 以内`);
 
   // click 必须强制要 snapshotId，否则 ref 防呆整套失效
   assert.deepEqual(tools.find((t) => t.name === 'type').inputSchema.required, ['text']);

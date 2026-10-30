@@ -258,3 +258,32 @@ test('本地文件夹：命令只留安全字段，上传地址必须指回配�
   assert.ok(!pullUrlAllowed(`${PULL}?x=1`, ORIGIN));
   assert.ok(!pullUrlAllowed(`${ORIGIN}/api/ext/pull/short`, ORIGIN));
 });
+
+// 能力包：云端能点名装扩展自带的包、按白名单调 action，但不能借它塞进任何代码
+test('load/call：只认注册表里的包和白名单里的 action', () => {
+  assert.ok(CLOUD_CMDS.has('load') && CLOUD_CMDS.has('call'));
+  assert.ok(!CLOUD_CMDS.has('eval'));
+
+  assert.deepEqual(checkCommand('load', { name: 'eda', files: ['../../evil.js'] }, ctx), { name: 'eda' });
+  denied(() => checkCommand('load', { name: 'nope' }, ctx));
+  denied(() => checkCommand('load', { name: '__proto__' }, ctx));
+  denied(() => checkCommand('load', {}, ctx));
+
+  const r = checkCommand('call', { name: 'eda', action: 'project.current', tabId: 9 }, ctx);
+  assert.deepEqual(r, { name: 'eda', action: 'project.current', payload: {}, timeout: 120000 });
+  const w = checkCommand('call', { name: 'eda', action: 'schematic.component.place', payload: { lcscId: 'C25804', x: 0, y: 0 } }, ctx);
+  assert.equal(w.payload.lcscId, 'C25804');
+
+  // 白名单外的、明确拒绝的
+  for (const action of ['debug.exec_js', 'system.page_reload', 'project.import', 'board.delete', 'pcb.page.clear', 'toString', '']) {
+    denied(() => checkCommand('call', { name: 'eda', action }, ctx));
+  }
+  // payload：只收普通对象，有大小上限，函数留不下来
+  denied(() => checkCommand('call', { name: 'eda', action: 'project.find', payload: 'eda.sys_X()' }, ctx));
+  denied(() => checkCommand('call', { name: 'eda', action: 'project.find', payload: [1] }, ctx));
+  denied(() => checkCommand('call', { name: 'eda', action: 'project.find', payload: { s: 'x'.repeat(300000) } }, ctx));
+  const f = checkCommand('call', { name: 'eda', action: 'project.find', payload: { q: 'a', fn() {} } }, ctx);
+  assert.deepEqual(f.payload, { q: 'a' });
+  // 超时：夹在 limits 里
+  assert.equal(checkCommand('call', { name: 'eda', action: 'pcb.route.auto', timeout: 9e9 }, ctx).timeout, 600000);
+});

@@ -15,6 +15,7 @@ import { CRED_URL, redactCreds } from './redact.js';
 import { identityOf, stripMarkPrefix } from './identity.js';
 import { validateScript, condText, repeatMax, EXEC_BUDGET, collectRefs, toRecipe } from './script.js';
 import { initCloud, ensureCloud } from './cloud.js';
+import { loadDef, loadHostAllowed, checkLoadParams, checkCallParams } from './load.js';
 
 // ---------- 连接层 ----------
 //
@@ -870,6 +871,8 @@ function actText(cmd, p = {}) {
     case 'download': return '下载';
     case 'upload': return '上传文件';
     case 'eval': return '执行脚本';
+    case 'load': return `加载能力包 ${p.name || ''}`;
+    case 'call': return `${p.name || ''} ${p.action || ''}`;
     case 'wait': return '等待';
     case 'ask': return '请用户搭把手';
     // act 的每一步在批处理循环里单独同步过了（带「第 i/n 步」），
@@ -1904,6 +1907,63 @@ function sparse(text) {
   return n <= 3 && excerpt.replace(/\s+/g, '').length < 160;
 }
 
+// ---------- 能力包 ----------
+//
+// 装包的顺序：先核对页面在包的 hosts 里，再等页面自己的全局（waitFor）出现，
+// 最后注入扩展包里的文件、调 ready()。页面上已经是同一版本就不重复注入——
+// 重注会把上游里的模块状态（缓存、事件监听）再建一份。
+
+function withTimeout(promise, ms, what) {
+  let t;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      t = setTimeout(() => reject(err('TIMEOUT', `${what} 超过 ${Math.round(ms / 1000)} 秒没返回`)), ms);
+    }),
+  ]).finally(() => clearTimeout(t));
+}
+
+const LOAD_WAIT_MS = 30000;
+
+async function ensureLoad(id, def, { force = false } = {}) {
+  const tab = await chrome.tabs.get(id);
+  if (!loadHostAllowed(def, tab.url)) {
+    throw err('LOAD_DENIED', `能力包 ${def.name} 只能用在 ${def.hosts.join('、')}，这个标签页在 ${hostOf(tab.url) || '非网页地址'}`);
+  }
+  const probe = async () => (await chrome.scripting.executeScript({
+    target: { tabId: id },
+    world: 'MAIN',
+    func: (name, waitFor) => ({
+      page: !waitFor || typeof window[waitFor] !== 'undefined',
+      version: (window.__vcorpLoads && window.__vcorpLoads[name] && window.__vcorpLoads[name].version) || '',
+    }),
+    args: [def.name, def.waitFor],
+  }))[0]?.result;
+
+  const until = Date.now() + LOAD_WAIT_MS;
+  let st = await probe();
+  while (!st?.page) {
+    if (Date.now() > until) throw err('LOAD_NOT_READY', `页面 ${LOAD_WAIT_MS / 1000} 秒内没准备好（缺 ${def.waitFor}）。等编辑器加载完、或先打开一个工程再试`);
+    await sleep(500);
+    st = await probe();
+  }
+  if (force || st.version !== def.version) {
+    await chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: def.files });
+  }
+  const [{ result: ready } = {}] = await withTimeout(chrome.scripting.executeScript({
+    target: { tabId: id },
+    world: 'MAIN',
+    func: async (name) => {
+      const load = window.__vcorpLoads && window.__vcorpLoads[name];
+      if (!load) return { ok: false, reason: '注入后没注册上' };
+      try { return await load.ready(); } catch (e) { return { ok: false, reason: String((e && e.message) || e) }; }
+    },
+    args: [def.name],
+  }), LOAD_WAIT_MS, `${def.name}.ready`);
+  if (!ready?.ok) throw err('LOAD_NOT_READY', `能力包 ${def.name} 没准备好：${ready?.reason || '未知原因'}`);
+  return { version: def.version, ready };
+}
+
 const HANDLERS = {
   async snapshot(p, tabId, ctx) {
     const id = await resolveTab(tabId);
@@ -2368,6 +2428,63 @@ const HANDLERS = {
   //
   // 换到 MAIN world 之后受页面 CSP 管：没设 CSP 的站点能用了，大站仍然拦——
   // 但那是真实且可解释的边界，不再是「哪儿都不能用」。
+  // 能力包：把扩展包里的一套有类型的接口装进页面（见 load.js 顶部）。
+  // 和 eval 的区别：注入的是扩展自己的文件（executeScript files），调用传的是结构化克隆的数据，
+  // 没有字符串变代码这一步——所以云端可以开放它，页面 CSP 也拦不住。
+  async load(p, tabId) {
+    const { name } = checkLoadParams(p);
+    const id = await resolveTab(tabId);
+    const def = loadDef(name);
+    const info = await ensureLoad(id, def, { force: !!p.reload });
+    const lines = [
+      `已加载能力包 ${def.name}（${def.title}）${info.version}`,
+      `页面状态：${JSON.stringify(info.ready)}`,
+      `用 call {name:"${def.name}", action, payload} 调用。`,
+      `只读（${def.actions.read.length}）：${def.actions.read.join(' ')}`,
+      `改动设计（${def.actions.write.length}）：${def.actions.write.join(' ')}`,
+    ];
+    return { untrusted: true, text: lines.join('\n') };
+  },
+
+  async call(p, tabId) {
+    const { name, action, payload, timeout, kind } = checkCallParams(p);
+    const def = loadDef(name);
+    const id = await resolveTab(tabId);
+    const run = () => withTimeout(chrome.scripting.executeScript({
+      target: { tabId: id },
+      world: 'MAIN',
+      func: async (name, action, payload) => {
+        const load = window.__vcorpLoads && window.__vcorpLoads[name];
+        if (!load) return { gone: true };
+        try {
+          const v = await load.call(action, payload);
+          let text;
+          try { text = JSON.stringify(v === undefined ? null : v); } catch { text = JSON.stringify(String(v)); }
+          return { ok: true, text };
+        } catch (e) {
+          return { ok: false, code: (e && e.code) || '', message: String((e && e.message) || e) };
+        }
+      },
+      args: [name, action, payload],
+    }), timeout, `${name}.${action}`).then((r) => r?.[0]?.result);
+
+    let result;
+    try {
+      await ensureLoad(id, def);
+      result = await run();
+      // 页面刚好在两步之间刷新了：再装一次，只重试这一回
+      if (result?.gone) { await ensureLoad(id, def); result = await run(); }
+    } catch (e) {
+      if (e.code) throw e;
+      throw err('LOAD_GONE', `${name}.${action} 没跑完：${e.message}（页面可能刷新或关掉了，结果未知，先读一下现状再决定要不要重做）`);
+    }
+    if (!result || result.gone) throw err('LOAD_GONE', `页面里找不到能力包 ${name}`);
+    if (!result.ok) {
+      throw err(result.code === 'LOAD_DENIED' ? 'LOAD_DENIED' : 'LOAD_ERROR', `${name}.${action} 失败：${result.message}`);
+    }
+    return { untrusted: true, text: result.text, ...(kind === 'write' ? { audit: `${name}.${action}` } : {}) };
+  },
+
   async eval(p, tabId) {
     const id = await resolveTab(tabId);
 

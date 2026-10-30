@@ -23,6 +23,8 @@
 // 用户亲手点「允许」的网站进入允许名单（侧栏可逐个移除），以后的任务用到它们不再问；
 // 自动允许只放行这一个任务，不往名单里加。一个任务新批的网站最多 SITES_MAX 个。
 
+import { checkLoadParams, checkCallParams } from './load.js';
+
 export const DEFAULT_ORIGIN = 'https://maker.vcorp.ai';
 
 // 远端能调的命令。tabs 的子动作另外管（见 checkCommand）。
@@ -32,6 +34,9 @@ export const CLOUD_CMDS = new Set([
   // 本地文件夹：只读、按任务批准、扩展名白名单。读文件在 service worker 里做，
   // 选文件夹和重新授权只能发生在扩展自己的页面（见 folders.js 顶部的结论）。
   'folders', 'fs_list', 'fs_read',
+  // 能力包：只能按名字装扩展包里自带的包、按白名单调 action，payload 是纯数据（见 load.js）。
+  // 这是云端拿到「有类型的站点能力」的唯一途径，eval 依旧没有。
+  'load', 'call',
 ]);
 
 // ---------- 站点申请 ----------
@@ -370,6 +375,17 @@ export function checkCommand(cmd, params, { hosts, origin }) {
       if (skipEntry(base) || !fileAllowed(base)) throw err('CLOUD_DENIED', `不读取这种文件：${base}`);
       if (!pullUrlAllowed(p.upload?.url, origin)) throw err('CLOUD_DENIED', 'fs_read 只能把文件传到配对服务器的 /api/ext/pull/');
       return { folder, path: rel, upload: { url: p.upload.url } };
+    }
+    case 'load':
+    case 'call': {
+      // 能力包的 hosts 由 background.js 对着标签页再核一遍；这里管名字、action 和 payload
+      try {
+        if (cmd === 'load') return { ...checkLoadParams(p), ...(p.reload === true ? { reload: true } : {}) };
+        const { name, action, payload, timeout } = checkCallParams(p);
+        return { name, action, payload, timeout };
+      } catch (e) {
+        throw err('CLOUD_DENIED', e.message);
+      }
     }
     default:
       return p;

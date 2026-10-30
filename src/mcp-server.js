@@ -10,6 +10,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { BridgeClient } from './lib/rpc.js';
 import { resolveHost } from './lib/host.js';
 import { flatCount } from '../extension/script.js';
+import { LOADS } from '../extension/loads/index.js';
 import { getLearnings, saveLearnings, saveDraft, adoptDraft } from './lib/learnings.js';
 import { audit } from './lib/paths.js';
 import fs from 'node:fs';
@@ -458,6 +459,31 @@ const TOOLS = [
     },
   },
   {
+    name: 'load',
+    description:
+      'Install a capability pack bundled with the extension into the tab (e.g. "eda" on pro.lceda.cn / pro.easyeda.com). ' +
+      'Returns its read/write action list. Use `call` afterwards instead of eval.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string' }, reload: { type: 'boolean' }, tabId: TAB },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'call',
+    description:
+      'Call one action of a loaded pack with a JSON payload; result is JSON. Re-loads by itself after a page refresh. ' +
+      'timeout ms defaults to the pack limit (eda: 120000, max 600000).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' }, action: { type: 'string' }, payload: { type: 'object' },
+        timeout: { type: 'number' }, tabId: TAB,
+      },
+      required: ['name', 'action'],
+    },
+  },
+  {
     name: 'learnings',
     description:
       'Site notes: APIs, walls, pitfalls from past sessions. Call {domain} before first acting on a site ' +
@@ -627,6 +653,12 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
         // 扩展侧的执行预算同源（extension/script.js），否则预算会判死一个
         // 还在老实跑的剧本，「已经在做」被报成「没做，去重试」。
         if (n === 'act') return cap(Math.min(flatCount(a.steps) || 1, 60) * 8000 + 20000);
+        // 能力包：load 要等编辑器加载（最多 30 秒）再等 ready()；call 的上限由参数和包的 limits 决定
+        if (n === 'load') return 80000;
+        if (n === 'call') {
+          const lim = LOADS[a.name]?.limits;
+          return cap(Math.min(Number(a.timeout) || lim?.timeoutMs || 120000, lim?.timeoutMaxMs || 600000) + 15000);
+        }
         return undefined;   // 其余维持默认，它们的真实耗时离墙还很远
       };
 

@@ -9,6 +9,7 @@
   "files": [
     "src",
     "extension",
+    "native-host",
     "docs",
     "README.md"
   ],
@@ -20,7 +21,7 @@
     "bridge": "node src/cli.js bridge --foreground",
     "doctor": "node src/cli.js doctor",
     "build:loads": "node scripts/build-loads.mjs",
-    "test": "node --test test/protocol.test.js test/mcp.test.js test/fetch-pages.test.js test/liveness.test.js test/redact.test.js test/audit-redact.test.js test/learnings.test.js test/risk.test.js test/identity.test.js test/host.test.js test/presence.test.js test/act-script.test.js test/multi-instance.test.js test/compat.test.js test/cloud-policy.test.js test/loads.test.js",
+    "test": "node --test test/protocol.test.js test/mcp.test.js test/fetch-pages.test.js test/liveness.test.js test/redact.test.js test/audit-redact.test.js test/learnings.test.js test/risk.test.js test/identity.test.js test/host.test.js test/presence.test.js test/act-script.test.js test/multi-instance.test.js test/compat.test.js test/cloud-policy.test.js test/loads.test.js test/desktop-policy.test.js",
     "test:live": "node --test test/scenarios.test.js"
   },
   "dependencies": {
@@ -45,5 +46,8 @@
   "devDependencies": {
     "esbuild": "^0.24.2",
     "jszip": "^3.10.1"
+  },
+  "optionalDependencies": {
+    "agent-desktop": "1.0.2"
   }
 }

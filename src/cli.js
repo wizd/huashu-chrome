@@ -102,6 +102,28 @@ switch (cmd) {
     await doctor();
     break;
 
+  // 云端任务够到桌面要经原生消息宿主；本机 MCP 的 desktop 工具不需要这一步
+  case 'desktop': {
+    const nat = await import('./lib/native-install.js');
+    const sub = process.argv[3];
+    if (sub === 'install') {
+      const r = nat.install();
+      console.log(`已登记原生消息宿主 ${nat.HOST_NAME}（只允许扩展 ${r.id} 调用）`);
+      for (const p of r.placed) console.log(`  ✅ ${p}`);
+      if (!r.placed.length) console.log('  ⚠️ 没找到已安装的 Chrome / Edge / Chromium 配置目录');
+      console.log('\n回到扩展侧栏点「启用桌面能力」。');
+      for (const l of (await nat.status()).lines) console.log(`  ${l}`);
+    } else if (sub === 'uninstall') {
+      const r = nat.uninstall();
+      console.log(r.removed.length ? `已移除：\n  ${r.removed.join('\n  ')}` : '本来就没有登记。');
+    } else if (sub === 'status') {
+      for (const l of (await nat.status()).lines) console.log(`  ${l}`);
+    } else {
+      console.log('用法：vcorp-chrome desktop install | uninstall | status');
+    }
+    break;
+  }
+
   case 'extension':
     printExtension();
     // --reveal：在访达 / 资源管理器里选中扩展文件夹，用户拖进 chrome://extensions 就装好了。
@@ -133,6 +155,7 @@ switch (cmd) {
   vcorp-chrome audit --stats [--days 7]   真实 agent 的用法统计：回合数、哪类调用最多、在哪儿浪费
   vcorp-chrome bridge --foreground   前台跑桥（调试用）
   vcorp-chrome install --dry-run     只看会改哪些配置，不写
+  vcorp-chrome desktop install|uninstall|status   让云端任务也能操作桌面应用（登记原生消息宿主）
 
 配置目录 ${HOME}`);
 }
@@ -204,7 +227,6 @@ async function doctor() {
   fs.existsSync(mf)
     ? ok(`${path.join(ROOT, 'extension')}${alive ? '' : ''}（这只说明文件在；Chrome 是否从这里加载了，看上面「扩展在线」那行）`)
     : bad('扩展目录缺失', '重装 vcorp-chrome');
-
   // bridge.log 里最近一次断连：用户体感的「插件消失」到底是什么时候、断了多久
   try {
     const lines = fs.readFileSync(LOG_FILE, 'utf8').trim().split('\n').slice(-400);
@@ -215,6 +237,18 @@ async function doctor() {
     }
     if (lastDown) console.log(`  ·  最近一次断开 ${lastDown}${lastUp ? `，最近一次连上 ${lastUp}` : '，之后没再连上'}（bridge.log，只有时分秒）`);
   } catch { /* 没日志就没日志 */ }
+
+  console.log('\n桌面');
+  {
+    const { findBinary, runAgentDesktop } = await import('./lib/desktop.js');
+    const bin = findBinary();
+    const t0 = Date.now();
+    const env = await runAgentDesktop(['list-apps'], { bin, timeoutMs: 15000 });
+    if (env.ok) ok(`agent-desktop 可用 · ${(env.data?.apps || []).length} 个应用 · ${Date.now() - t0}ms（${bin}）`);
+    else if (env.error?.code === 'PERM_DENIED') bad(`agent-desktop 没有辅助功能权限：${env.error.message}`, env.error.suggestion);
+    else bad(`desktop 工具用不了：[${env.error?.code}] ${env.error?.message}`,
+      '在 vcorp-chrome 的安装目录里补装 agent-desktop（npm i agent-desktop@1.0.2），或设 AGENT_DESKTOP_BIN 指到它的可执行文件');
+  }
 
   // 经验库里 agent 记下的「vcorp-chrome 的 X 不生效」——产品 bug 住在经验库里，
   // 没有这一栏就永远回不到开发者手上（screenshot 的 savePath 就是这么躺了一周的）

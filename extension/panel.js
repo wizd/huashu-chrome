@@ -255,6 +255,9 @@ const LOG_TEXT = {
   paired: '配对', unpaired: '解除配对', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
   sites_on: '允许了新网站', sites_off: '拒绝了新网站', sites_timeout: '新网站没回应',
   folders_on: '允许了本地文件夹', folders_off: '拒绝了本地文件夹', folders_timeout: '本地文件夹没回应',
+  apps_on: '允许了桌面应用', apps_off: '拒绝了桌面应用', apps_timeout: '桌面应用没回应',
+  desk_confirm: '同意了桌面动作', desk_declined: '没同意桌面动作', desktop_on: '启用桌面能力', desktop_off: '停用桌面能力',
+  desktop_reload: '为启用桌面能力重载扩展', desktop_fail: '桌面能力没启用成功：',
   site_on: '网站加入允许名单', site_off: '从允许名单移除网站', auto_on: '打开自动允许', auto_off: '关闭自动允许',
   confirm_on: '打开对外动作免确认', confirm_off: '关闭对外动作免确认', ask_auto: '免确认放行', confirm_task: '本任务内都同意',
   paused: '暂停', resumed: '恢复',
@@ -290,8 +293,18 @@ function renderFolders(s) {
   }
 }
 
+function renderDesktop(s) {
+  const d = s.desktop || {};
+  $('deskOn').hidden = !!d.device;
+  $('deskOff').hidden = !d.device;
+  $('deskState').textContent = d.device
+    ? `已启用 · ${d.device.id}${d.ready === false ? ' · agent-desktop 用不了，终端里运行 npx vcorp-chrome desktop status 看原因' : ''}`
+    : d.error || '未启用';
+}
+
 function renderCloud(s) {
   renderFolders(s);
+  renderDesktop(s);
   const on = !!s.cfg;
   $('cloudPair').hidden = on || !!s.claim;
   $('cloudClaim').hidden = on || !s.claim;
@@ -367,6 +380,27 @@ function renderCloud(s) {
         ask.append(yes, no);
         box.appendChild(ask);
       }
+      if (t.apps?.length) box.appendChild(el('div', 'sub', `可操作桌面应用：${t.apps.join('、')}`));
+      if (t.appAsk?.length) {
+        box.appendChild(el('div', 'sub', `还想操作桌面应用：${t.appAsk.join('、')}${t.appAskWhy ? `。用途：${t.appAskWhy}` : ''}`));
+        const ask = el('div', 'row');
+        const yes = el('button', 'btn', '允许这些应用');
+        const no = el('button', 'btn ghost', '不允许');
+        yes.onclick = () => cloudCall('decideApps', { jobId: t.jobId, allow: true });
+        no.onclick = () => cloudCall('decideApps', { jobId: t.jobId, allow: false });
+        ask.append(yes, no);
+        box.appendChild(ask);
+      }
+      if (t.deskAsk) {
+        box.appendChild(el('div', 'sub', `要在桌面上：${t.deskAsk}`));
+        const ask = el('div', 'row');
+        const yes = el('button', 'btn', '同意');
+        const no = el('button', 'btn ghost', '不同意');
+        yes.onclick = () => cloudCall('decideDesk', { jobId: t.jobId, allow: true });
+        no.onclick = () => cloudCall('decideDesk', { jobId: t.jobId, allow: false });
+        ask.append(yes, no);
+        box.appendChild(ask);
+      }
       const row = el('div', 'row');
       const stop = el('button', 'btn ghost', '收回（关掉它的标签页）');
       stop.onclick = () => cloudCall('endTask', { jobId: t.jobId });
@@ -410,12 +444,23 @@ $('cloudUnpair').onclick = () => {
   if (confirm('断开后这个服务器再也不能在本浏览器里发布，它开的标签页会被关掉。要再用得重新配对。')) cloudCall('unpair');
 };
 $('folderAdd').onclick = () => cloudCall('openMount');
+// 原生消息权限只能在用户手势里申请，所以在侧栏这里要，而不是在后台
+$('deskOn').onclick = async () => {
+  const granted = await chrome.permissions.request({ permissions: ['nativeMessaging'] }).catch(() => false);
+  if (!granted) { $('deskState').textContent = '没有拿到权限，桌面能力保持关闭'; return; }
+  $('deskState').textContent = '启用中…第一次启用要重载扩展，侧栏若关掉了，重新打开即可';
+  await cloudCall('desktopEnable');
+};
+$('deskOff').onclick = async () => {
+  await cloudCall('desktopDisable');
+  await chrome.permissions.remove({ permissions: ['nativeMessaging'] }).catch(() => {});
+};
 
 // ---------- 订阅 ----------
 
 chrome.storage.onChanged.addListener((changes, area) => {
   const keys0 = Object.keys(changes);
-  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudLog', 'cloudStatus', 'cloudClaim', 'folderTick'].includes(k))) void cloudCall('state');
+  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudLog', 'cloudStatus', 'cloudClaim', 'folderTick', 'cloudDesktop'].includes(k))) void cloudCall('state');
   if (area !== 'session') return;
   const keys = Object.keys(changes);
   if (keys.includes(`panel:${tabId}`) || keys.includes('liveSids')) renderPage();

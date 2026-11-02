@@ -11,7 +11,27 @@ export const AUDIT_FILE = path.join(HOME, 'audit.jsonl');
 export const ALLOWLIST_FILE = path.join(HOME, 'allowlist.json');
 export const LOG_FILE = path.join(HOME, 'bridge.log');
 
+export const MACHINE_FILE = path.join(HOME, 'machine.json');
+
 export const DEFAULT_PORT = 8899;
+
+// 这台电脑（这个系统用户）的身份。本机 MCP 和原生宿主（native-host/）读同一个文件，
+// 所以同一台电脑上的桌面设备在两条通道里是同一个设备号。第一次用时生成，之后不变。
+export function machineId() {
+  try {
+    const id = JSON.parse(fs.readFileSync(MACHINE_FILE, 'utf8')).machineId;
+    if (/^m_[0-9a-f]{16}$/.test(id)) return id;
+  } catch { /* 还没有，下面生成 */ }
+  ensureHome();
+  const id = `m_${crypto.randomBytes(8).toString('hex')}`;
+  const tmp = `${MACHINE_FILE}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ machineId: id, createdAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
+  try { fs.linkSync(tmp, MACHINE_FILE); } catch { /* 别的进程抢先写好了，用它的 */ }
+  fs.rmSync(tmp, { force: true });
+  return JSON.parse(fs.readFileSync(MACHINE_FILE, 'utf8')).machineId;
+}
+
+export const desktopDeviceId = (machine) => `desktop-${machine}`;
 
 export function ensureHome() {
   fs.mkdirSync(HOME, { recursive: true, mode: 0o700 });

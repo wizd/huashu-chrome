@@ -12,8 +12,12 @@ import { resolveHost } from './lib/host.js';
 import { flatCount } from '../extension/script.js';
 import { LOADS } from '../extension/loads/index.js';
 import { getLearnings, saveLearnings, saveDraft, adoptDraft } from './lib/learnings.js';
-import { audit } from './lib/paths.js';
+import { audit, machineId, desktopDeviceId } from './lib/paths.js';
+import { DesktopSession, findBinary } from './lib/desktop.js';
+import { redact } from './bridge.js';
+import { describeDevices } from '../extension/device.js';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { VERSION } from './lib/version.js';
 import { compat, compatNote } from '../extension/compat.js';
@@ -208,6 +212,7 @@ const TOOLS = [
         tabId: TAB,
         label: { type: 'string', description: 'With new/select: what this tab is for ("CRM import — batch 2"). Shown in list, page panel, and to the user.' },
         focus: { type: 'boolean', description: 'Also bring the tab to the foreground. Interrupts the user — off by default.' },
+        device: { type: 'string', description: 'With 2+ Chromes: id from devices. That tabId then sticks to it.' },
       },
       required: ['action'],
     },
@@ -501,6 +506,39 @@ const TOOLS = [
     },
   },
   {
+    name: 'desktop',
+    description:
+      'Native apps and OS dialogs (the file picker a page opens) via the accessibility tree. '
+      + 'list-windows → snapshot {app|window} → act on the FULL ref "@s…:eN" → read the effect line. '
+      + 'Browser windows are refused (use browser tools). headed:true = real mouse/keys. '
+      + 'steps:[{cmd,…}] (≤20) stops on failure or send/delete.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cmd: {
+          type: 'string',
+          enum: ['list-apps', 'list-windows', 'snapshot', 'find', 'get', 'screenshot', 'wait', 'click', 'double-click',
+            'right-click', 'type', 'set-value', 'clear', 'focus', 'select', 'toggle', 'check', 'uncheck', 'expand',
+            'collapse', 'scroll', 'scroll-to', 'press', 'launch', 'focus-window', 'clipboard-set', 'clipboard-get',
+            'list-notifications', 'notification-action'],
+        },
+        app: { type: 'string' }, window: { type: 'string' }, ref: { type: 'string' },
+        root: { type: 'string' }, skeleton: { type: 'boolean' }, all: { type: 'boolean' },
+        text: { type: 'string' }, value: { type: 'string' }, keys: { type: 'string', description: 'press: "ctrl+s"' },
+        role: { type: 'string' }, name: { type: 'string' }, nth: { type: 'number' }, property: { type: 'string' },
+        direction: { type: 'string' }, amount: { type: 'number' },
+        ms: { type: 'number' }, windowTitle: { type: 'string' }, timeout: { type: 'number' },
+        index: { type: 'number' }, action: { type: 'string' }, headed: { type: 'boolean' },
+        steps: { type: 'array', items: { type: 'object' } },
+      },
+    },
+  },
+  {
+    name: 'devices',
+    description: 'Devices this session can drive: each connected Chrome and this computer\'s desktop.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'reload',
     description:
       'Reload the vcorp-chrome extension (chrome.runtime.reload()) so an updated build takes effect — ' +
@@ -552,7 +590,7 @@ warning change target or approach, never repeat the same call.
 
 A STEP NEEDS A HUMAN (captcha, QR login, OTP, payment)? Call \`ask\` — never retry or work
 around. Never let a download put a dialog on their screen: see the \`download\` tool for the
-required order. OS file dialogs are beyond any extension.`;
+required order. Native apps and OS file dialogs: \`desktop\`.`;
 
 // 页面来的文本全部走这里。边界标记 + 降权说明，both 是给模型看的。
 function wrapUntrusted(body, meta = '') {
@@ -572,6 +610,9 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+
+  let desk = null;
+  const tabDevice = new Map();
 
   // 宿主身份：--client 只是兜底，真名以 initialize 里宿主自报的 clientInfo 为准
   // （见 src/lib/host.js）。握手一定先于第一条工具调用，所以在那时认一次就够。
@@ -598,12 +639,51 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
         return { content: [{ type: 'text', text }] };
       }
 
+      // desktop 也不经过桥：本机直接起 agent-desktop 子进程。审计照记，设备号写本机桌面
+      if (name === 'desktop') {
+        desk ??= new DesktopSession({ session: `vc-${bridge.sessionId}` });
+        const t0 = Date.now();
+        const id = `desktop:${t0}`;
+        const cmd = `desktop.${args.steps !== undefined ? 'steps' : args.cmd}`;
+        audit({ ev: 'cmd', id, cmd, client: bridge.client, sid: bridge.sessionId, device: desktopDeviceId(machineId()), params: redact(args) });
+        let r;
+        try {
+          r = await desk.run(args, { timeoutMs: args.steps ? 120000 : Math.min(Math.max((Number(args.timeout) || 0) + 10000, 30000), 600000) });
+        } catch (e) {
+          audit({ ev: 'res', id, cmd, ok: false, ms: Date.now() - t0, error: e.code || 'INTERNAL' });
+          throw e;
+        }
+        const ok = r.env ? !!r.env.ok : !r.stopped;
+        audit({ ev: 'res', id, cmd, ok, ms: Date.now() - t0, error: ok ? undefined : r.env?.error?.code, effect: r.env?.data?.disposition?.delivery });
+        if (r.image) return { content: [{ type: 'image', data: r.image, mimeType: 'image/png' }] };
+        return { content: [{ type: 'text', text: wrapUntrusted(r.text, 'source="desktop"') }], isError: !ok || undefined };
+      }
+
+      if (name === 'devices') {
+        const machine = machineId();
+        const list = [{ id: desktopDeviceId(machine), kind: 'desktop', name: `${os.hostname()} 桌面`, machine, online: true,
+          caps: { platform: process.platform } }];
+        let browserNote = '';
+        try {
+          if (!bridge.ws) await bridge.connect();
+          const d = await bridge.call('devices', {}, { timeoutMs: 8000 });
+          list.unshift(...d.devices.map((x) => (x.primary ? { ...x, name: `${x.name}（默认）` } : x)));
+        } catch (e) {
+          browserNote = `\n浏览器设备查不到：[${e.code || 'INTERNAL'}] ${e.message}`;
+        }
+        return { content: [{ type: 'text', text: describeDevices(list) + browserNote }] };
+      }
+
       if (!bridge.ws) await bridge.connect();
+
+      // 指定设备：tabs 带 device 时记住新开/选中的 tabId 属于哪台，之后同一 tabId 自动跟过去
+      const device = args.device || (args.tabId != null ? tabDevice.get(args.tabId) : undefined);
+      if (args.device !== undefined) delete args.device;
 
       // 翻页在这一侧循环：审计里 fetch→fetch 相邻 386 次，agent 在一页一个回合地
       // 手动翻。扩展只管发单次请求，翻页的循环、落盘、停机判定都不该经过模型。
       if (name === 'fetch' && args.pages && !args.binary) {
-        return { content: [{ type: 'text', text: await fetchPages(bridge, args) }] };
+        return { content: [{ type: 'text', text: await fetchPages(bridge, args, device) }] };
       }
 
       // upload：先把**路径**交给扩展，让它用 CDP 的 DOM.setFileInputFiles 让浏览器
@@ -617,7 +697,7 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
         const base = { path: args.path, name: path.basename(args.path), type: mime, bytes: st.size, selector: args.selector, dropSelector: args.dropSelector };
         // 上传本身可能很慢（本机→浏览器只是投喂，但页面自己的上传要时间），给足预算
         const timeoutMs = Math.max(60000, Math.round(st.size / (1024 * 1024)) * 1000);
-        let out = args.dropSelector ? null : await bridge.call('upload', base, { tabId: args.tabId, timeoutMs });
+        let out = args.dropSelector ? null : await bridge.call('upload', base, { tabId: args.tabId, timeoutMs, device });
         if (!out || out.needBytes) {
           // 走拖放：这条必须有文件字节。超过 DROP_MAX 就明确报错，不要拿桥去撞——
           // 桥一断，当前 agent 会话就再也连不回来了，比报错难查得多。
@@ -629,7 +709,7 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
               `先压小，或改用页面上真实存在的 file input（给 selector）。`);
           }
           out = await bridge.call('upload', { ...base, base64: fs.readFileSync(args.path).toString('base64') },
-            { tabId: args.tabId, timeoutMs });
+            { tabId: args.tabId, timeoutMs, device });
         }
         return { content: [{ type: 'text', text: out.text }] };
       }
@@ -670,7 +750,11 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
         // 无人值守（cron、服务器）没有人可问。开关放在 MCP 这一侧读环境变量，
         // 扩展只管照做——扩展不该知道自己跑在什么场景里。
         name === 'ask' ? { ...args, disabled: process.env.HUASHU_CHROME_ASK === 'off' } : args,
-        { tabId: args.tabId, timeoutMs: budgetOf(name, args, askMs) });
+        { tabId: args.tabId, timeoutMs: budgetOf(name, args, askMs), device });
+      if (device && name === 'tabs') {
+        const tid = data?.tabId ?? (args.action === 'select' ? args.tabId : undefined);
+        if (tid != null) tabDevice.set(tid, device);
+      }
 
       // 浏览器只能下到 Downloads 里；下完再挪到 agent 要的位置，对它保持透明
       if (name === 'download' && args.savePath && data.path) {
@@ -782,7 +866,7 @@ function watchIdle() {
 const pathGet = (obj, p) => String(p || '').split('.').filter(Boolean).reduce((o, k) => (o == null ? undefined : o[k]), obj);
 const EMPTY_BODY = /^\s*(\[\s*\]|\{\s*\}|null)?\s*$/;
 
-export async function fetchPages(bridge, args) {
+export async function fetchPages(bridge, args, device) {
   const pg = args.pages || {};
   if (!pg.param && !pg.cursorParam) throw Object.assign(new Error('pages 需要 param（页码参数名）或 cursorParam（游标参数名）'), { code: 'INTERNAL' });
   const max = Math.min(Math.max(Number(pg.max) || 10, 1), 50);
@@ -797,7 +881,7 @@ export async function fetchPages(bridge, args) {
     const url = new URL(base);
     if (pg.param) url.searchParams.set(pg.param, String(n));
     if (pg.cursorParam && cursor) url.searchParams.set(pg.cursorParam, cursor);
-    const data = await bridge.call('fetch', { url: url.toString(), init: args.init, maxBody: args.maxBody || 2000000, via: args.via }, { tabId: args.tabId });
+    const data = await bridge.call('fetch', { url: url.toString(), init: args.init, maxBody: args.maxBody || 2000000, via: args.via }, { tabId: args.tabId, device });
     const m = /^(\d+)\n\n([\s\S]*)$/.exec(data?.text || '');
     const status = Number(m?.[1] || 0), body = m?.[2] ?? '';
     if (!(status >= 200 && status < 300)) { stop = `第 ${i + 1} 页返回 ${status}，停下`; break; }
@@ -857,6 +941,12 @@ function hint(e) {
       + '在「高保真模式」那一栏点「开启」——只需一次。',
     L2_BUSY: '真实输入事件用不了（多半是用户自己开着 DevTools，一个标签页只允许一个调试器）。'
       + '已经用普通事件完成了；如果结果不对，让用户关掉 DevTools 再试。',
+    DEVICE_OFFLINE: '指定的设备不在线。devices 看现在有哪些，换一台或请用户把它打开。',
+    AMBIGUOUS_DEVICE: '有不止一台设备能做这件事。从候选里挑一个，用 device 指定。',
+    DESKTOP_DENIED: '这条桌面命令被安全规则拦下（原因见上）。浏览器窗口用浏览器工具；别换个写法绕。',
+    DESKTOP_UNAVAILABLE: '这台电脑上的桌面能力没装好。运行 npx vcorp-chrome doctor 看缺什么。',
+    PAY_REFUSED: '付款类按钮只能由用户亲手点。用 ask 把要付的东西说清楚，请用户自己完成。',
+    NEEDS_SINGLE_CALL: '发送/删除一类的动作不在批处理里做。先确认目标没错，再单独调用一次。',
   };
   return `[${e.code || 'INTERNAL'}] ${e.message}` + (map[e.code] ? `\n→ ${map[e.code]}` : '');
 }

@@ -100,6 +100,7 @@ export class BridgeClient {
           this.extensionVersion = msg.extensionVersion;
           this.versionMismatch = !!msg.versionMismatch;
           this.extensionProtocol = msg.extensionProtocol;
+          this.bridgeDevices = !!msg.devices;
           ws.onmessage = (e2) => this.#dispatch(JSON.parse(e2.data));
           ws.onclose = () => { this.ws = null; this.#failAll('桥连接已断开'); };
           ws.onerror = () => {};
@@ -144,7 +145,11 @@ export class BridgeClient {
   }
 
   // 桥侧已有 30s 超时兜底；这里的 35s 只防「桥自己也没了」的情况
-  async call(cmd, params = {}, { tabId, timeoutMs = 35000 } = {}) {
+  // device：指定投给哪一个浏览器设备（devices 列出的 id）。不给就由桥挑有窗口、最近活跃的那个。
+  async call(cmd, params = {}, { tabId, timeoutMs = 35000, device } = {}) {
+    if ((device || cmd === 'devices') && this.ws && !this.bridgeDevices) {
+      throw Object.assign(new Error('在跑的桥是旧版本，不认识设备：指定 device 的命令会被它投给默认的 Chrome。所有会话都退出、桥自动重启之后再用。'), { code: 'BRIDGE_OLD' });
+    }
     if (!this.ws) await this.connect();
     const id = 'c' + ++this.seq;
     return new Promise((resolve, reject) => {
@@ -154,7 +159,7 @@ export class BridgeClient {
       }, timeoutMs);
       this.waiting.set(id, { resolve, reject, timer });
       // 桥侧也要知道这条命令能等多久，否则它按默认 30s 就把慢命令判死了
-      this.ws.send(JSON.stringify({ type: 'cmd', id, cmd, params, tabId, timeout: timeoutMs - 3000 }));
+      this.ws.send(JSON.stringify({ type: 'cmd', id, cmd, params, tabId, timeout: timeoutMs - 3000, ...(device ? { to: { device } } : {}) }));
     });
   }
 }

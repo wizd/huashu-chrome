@@ -8,7 +8,7 @@
 // 网页的 Origin 是自己的域名，扩展的是 chrome-extension://<id>。只放后者进来。
 import { WebSocketServer } from 'ws';
 import fs from 'node:fs';
-import { DEFAULT_PORT, writeBridgeInfo, newToken, tokenEquals, audit, ensureHome, ALLOWLIST_FILE } from './lib/paths.js';
+import { DEFAULT_PORT, writeBridgeInfo, newToken, tokenEquals, audit, ensureHome, ALLOWLIST_FILE, machineId } from './lib/paths.js';
 import { VERSION } from './lib/version.js';
 // 纯字符串判定、不碰 chrome API，所以桥这边直接复用，不再抄一份
 import { scrubProse } from '../extension/redact.js';
@@ -112,6 +112,8 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
     return pool.reduce((a, b) => (a.lastRx >= b.lastRx ? a : b));
   }
   const extLabel = (ws) => `Chrome ${ws.chromeVersion || '?'}${ws.headless ? ' · headless' : ''} · 扩展 ${ws.extVersion}`;
+  let machineCache = null;
+  const machine = () => (machineCache ??= machineId());
 
   const wss = new WebSocketServer({
     host: '127.0.0.1',
@@ -216,6 +218,8 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
       // 老扩展不报 instanceId。退回按扩展 id 认——行为和单槽那版一样
       // （同一份代码的两个实例仍会互相替换），但至少不会跟新扩展混着算。
       ws.instanceId = msg.instanceId || `ext:${msg.extId || '?'}`;
+      // 设备号由实例号派生：同一个 Chrome profile 重启、重载扩展都不变（见 extension/device.js）
+      ws.deviceId = `browser-${String(ws.instanceId).replace(/[^\w.-]/g, '').slice(0, 64) || 'unknown'}`;
 
       // 同一个实例又连了一条：那是断线重连或重载扩展，旧的那条已经是死的，
       // 顶掉它。**只顶同实例的**——顶错了就退回单槽，每秒互踢的老毛病就回来了。
@@ -269,6 +273,8 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
       const ext = primary();
       send(ws, {
         type: 'welcome', bridge: VERSION, v: PROTOCOL,
+        // 设备目录与按 to.device 投递。老桥没有这一项：它会把指名的命令照样投给默认的那个 Chrome
+        devices: true,
         extensionOnline: !!ext,
         extensionVersion: ext?.extVersion,
         // 老 MCP 只认 versionMismatch：只在真需要人处理时置位，补丁号差异不再惊动它
@@ -290,6 +296,25 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
     // agent → extension
     if (msg.type === 'cmd') {
       if (!agents.has(ws)) return;
+      // 本机设备目录：桥是唯一知道「有几个 Chrome 连着」的一方，这条由它自己答
+      if (msg.cmd === 'devices') {
+        const main = primary();
+        return send(ws, { type: 'res', id: msg.id, ok: true, data: { devices: liveExtensions().map((e) => ({
+          id: e.deviceId, kind: 'browser', name: extLabel(e), machine: machine(), online: true,
+          caps: { platform: 'chrome', version: e.extVersion, cmds: [] }, primary: e === main,
+        })) } });
+      }
+      // 指名道姓的命令只投给那一个实例。它不在就直说，不改投别的 Chrome——
+      // agent 指定设备正是因为它在意落在哪一台上
+      const want = msg.to?.device;
+      if (want) {
+        const hit = liveExtensions().find((e) => e.deviceId === want);
+        if (!hit) {
+          return send(ws, { type: 'res', id: msg.id, ok: false, error: { code: 'DEVICE_OFFLINE',
+            message: `浏览器设备 ${String(want).slice(0, 80)} 没有连着。用 devices 看看现在有哪些。` } });
+        }
+        return dispatch(ws, msg, hit);
+      }
       const target = primary();
       if (!target) return enqueue(ws, msg);
       return dispatch(ws, msg, target);
@@ -353,7 +378,7 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
     // 只有 281 个不同的 id，最多的一个出现了 1088 次。
     // 路由用的一直是 connId:id，审计却记裸 id——「出事能查」这条承诺
     // 在数据结构层面就不成立。
-    audit({ ev: 'cmd', id: key, cmd: msg.cmd, client: ws.client, sid: ws.sid, params: redact(msg.params) });
+    audit({ ev: 'cmd', id: key, cmd: msg.cmd, client: ws.client, sid: ws.sid, device: target.deviceId, params: redact(msg.params) });
     // sid 盖章：扩展据此维护每个会话自己的受控 tab 槽（多 agent 并发隔离）。
     // live 是此刻还连着的会话，扩展拿它判断某个标签页「还有没有主」。
     // client / label 是给人看的：页面上的控制标记要写出「Codex CLI」而不是一串 sid。

@@ -203,6 +203,36 @@ test('老扩展不报 instanceId —— 退回按扩展 id 认，不跟新扩展
   await settle();
 });
 
+test('指定设备 —— devices 列出每个实例，to.device 只投给那一个，不在就直说', async () => {
+  const head = await ext({ instanceId: 'inst-dev-head', headless: true });
+  const real = await ext({ instanceId: 'inst-dev-real' });
+  await settle();
+  const g = await agent('s-dev');
+  assert.equal(g.welcome.devices, true, 'welcome 要声明认得设备，MCP 据此拒绝在老桥上指定设备');
+
+  const list = nextOf(g.ws, 'res');
+  g.ws.send(JSON.stringify({ type: 'cmd', id: 'd1', cmd: 'devices', params: {} }));
+  const { data } = await list;
+  assert.deepEqual(data.devices.map((d) => d.id).sort(), ['browser-inst-dev-head', 'browser-inst-dev-real']);
+  assert.equal(data.devices.find((d) => d.primary).id, 'browser-inst-dev-real');
+  assert.equal(head.cmds.length + real.cmds.length, 0, 'devices 由桥自己答，不打扰扩展');
+
+  // 指名 headless 那个：哪怕它不是默认实例，也落在它身上
+  g.ws.send(JSON.stringify({ type: 'cmd', id: 'd2', cmd: 'status', params: {}, to: { device: 'browser-inst-dev-head' } }));
+  await settle(300);
+  assert.equal(head.cmds.length, 1);
+  assert.equal(real.cmds.length, 0);
+
+  const miss = nextOf(g.ws, 'res');
+  g.ws.send(JSON.stringify({ type: 'cmd', id: 'd3', cmd: 'status', params: {}, to: { device: 'browser-gone' } }));
+  const r = await miss;
+  assert.equal(r.error.code, 'DEVICE_OFFLINE', '不在的设备不能改投给别的 Chrome');
+  assert.equal(real.cmds.length, 0);
+
+  head.ws.close(); real.ws.close(); g.ws.close();
+  await settle();
+});
+
 test('扩展一连上就收到在线名单 —— 上一个桥留下的死会话靠它冲掉', async () => {
   // 11-2 现场：桥换过一次，扩展手里还是旧桥最后推的名单，侧栏把早已不在的
   // Claude Code、Cursor 一直算作在线。新桥不推，就只能等下一条命令来冲。

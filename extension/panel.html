@@ -188,6 +188,16 @@
   </section>
 
   <section>
+    <h2>桌面应用</h2>
+    <div class="muted">启用后，配对的网站可以申请操作这台电脑上的某个应用（比如微信、Excel）。每个任务要用的应用都会先问你。浏览器窗口、密码管理器、终端一律不碰；付款不做，发送和删除之前会问你。需要先在终端运行一次 <code>npx vcorp-chrome desktop install</code>。</div>
+    <div id="deskState" class="sub"></div>
+    <div class="row">
+      <button class="btn" id="deskOn" type="button">启用桌面能力</button>
+      <button class="btn ghost" id="deskOff" type="button" hidden>停用</button>
+    </div>
+  </section>
+
+  <section>
     <h2>设置</h2>
     <a class="sw-row guide" id="guide" href="welcome.html">
       <span class="txt">开始使用<div class="sub">配对码、接上本机 agent、第一句怎么说</div></span>

@@ -24,6 +24,7 @@
 // 自动允许只放行这一个任务，不往名单里加。一个任务新批的网站最多 SITES_MAX 个。
 
 import { checkLoadParams, checkCallParams } from './load.js';
+import { cleanApps } from './desktop-policy.js';
 
 export const DEFAULT_ORIGIN = 'https://maker.vcorp.ai';
 
@@ -37,6 +38,9 @@ export const CLOUD_CMDS = new Set([
   // 能力包：只能按名字装扩展包里自带的包、按白名单调 action，payload 是纯数据（见 load.js）。
   // 这是云端拿到「有类型的站点能力」的唯一途径，eval 依旧没有。
   'load', 'call',
+  // 桌面：经同机的原生宿主转给 agent-desktop。按任务批准应用（apps），规矩在 desktop-policy.js；
+  // 用户没在侧栏里启用桌面能力时宿主根本连不上，这几条只会报「没有桌面设备」。
+  'desktop', 'apps', 'devices',
 ]);
 
 // ---------- 站点申请 ----------
@@ -348,6 +352,16 @@ export function checkCommand(cmd, params, { hosts, origin }) {
       if (!sites.length && !bad.length) throw err('CLOUD_DENIED', 'sites 要给 add：要访问的网站，如 ["zhipin.com"]');
       return { add: sites, bad, reason: String(p.reason || '').replace(/\s+/g, ' ').trim().slice(0, 200) };
     }
+    case 'apps': {
+      // add 可以是空的：那是在问「本任务能操作哪些应用」
+      const { apps, bad, overflow } = cleanApps(p.add);
+      return { add: apps, bad, overflow, reason: String(p.reason || '').replace(/\s+/g, ' ').trim().slice(0, 200) };
+    }
+    // desktop 的参数要对着本任务的应用和快照户口审，在 cloud.js 里过 checkDesktop
+    case 'desktop':
+      return p;
+    case 'devices':
+      return {};
     case 'folders': {
       // use 可以是空的：那是在问「这个浏览器挂了哪些」，不是在申请。
       const { names, bad } = cleanFolderNames(p.use);

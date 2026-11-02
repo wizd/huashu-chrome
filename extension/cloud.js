@@ -18,6 +18,9 @@
 
 import * as policy from './cloud-policy.js';
 import * as folders from './folders.js';
+import { checkDesktop, checkObserved, recordOf, filterWindows, appsToAsk, APPS_MAX } from './desktop-policy.js';
+import { renderEnvelope } from './desktop-render.js';
+import { routeHere, stampFrom, capOf, cleanDevice, describeDevices } from './device.js';
 
 const CFG = 'cloud';                 // storage.local：配对信息和用户的选择
 const TASKS = 'cloudTasks';          // storage.local：任务（批准状态、自己开的标签页）
@@ -240,10 +243,14 @@ export async function connect() {
             try {
               const sig = await sign(helloText(cfg.origin, cfg.deviceId, String(m.nonce || '')));
               const mounted = await folders.names().catch(() => []);
+              // 名下的设备（目前只有同机的桌面）。签名只盖浏览器自己：桌面经这条已认证的连接中继，
+              // 服务器能见到的桌面只有这个浏览器报上来的
+              const child = await desktopChild();
               sock.send(JSON.stringify({
                 type: 'hello', v: 1, deviceId: cfg.deviceId, sig,
                 version: chrome.runtime.getManifest().version, sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm,
                 folders: mounted,
+                devices: child ? [{ ...child, parent: cfg.deviceId }] : [],
               }));
             } catch { try { sock.close(); } catch { /* 已经废了 */ } }
             return;
@@ -348,7 +355,7 @@ async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
     await log({ ev: 'approved', job: jobId, msg: '自动放行' });
     await pushLive();
   }
-  if (t.state === 'nosites') throw err('NO_SITES', '先用 sites 申请要访问的网站（如 sites {"add":["zhipin.com"],"reason":"找兼职"}），或用 folders 申请本地文件夹。用户批准后才能继续。');
+  if (t.state === 'nosites') throw err('NO_SITES', '先用 sites 申请要访问的网站（如 sites {"add":["zhipin.com"],"reason":"找兼职"}），或用 folders 申请本地文件夹、apps 申请桌面应用。用户批准后才能继续。');
   if (t.state === 'denied') throw err('CLOUD_DENIED', '用户拒绝了这个任务。不要重试。');
   if (t.state === 'approved') return t;
 
@@ -653,12 +660,212 @@ const updateTask = (jobId, fn) => serial(async () => {
   return tasks[jobId];
 });
 
+// ---------- 桌面 ----------
+//
+// 同机的桌面是这个浏览器名下的子设备：命令经原生消息宿主 ai.vcorp.desktop 交给 agent-desktop。
+// 规矩全在 desktop-policy.js（云端那一列），宿主那边再审一遍。快照户口记在任务上，任务结束一起删。
+
+const HOST = 'ai.vcorp.desktop';
+const DESK = 'cloudDesktop';   // storage.local：启用桌面能力时宿主报的设备
+const DESK_PENDING = 'cloudDesktopPending';   // 为补上 nativeMessaging 绑定而重载，重载后接着启用
+const DESK_SNAPS = 4;          // 每个任务记几份快照的户口。户口按 ref 存名字，大应用一份上百 KB
+
+const deskInfo = async () => (await chrome.storage.local.get(DESK))[DESK] || null;
+
+function hostCall(msg) {
+  if (!chrome.runtime.sendNativeMessage) {
+    return Promise.reject(err('NO_DEVICE', '这个浏览器没有启用桌面能力。请用户在扩展侧栏「桌面应用」里点「启用桌面能力」。'));
+  }
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendNativeMessage(HOST, msg, (r) => {
+      const e = chrome.runtime.lastError;
+      if (e) reject(err('DEVICE_OFFLINE', `桌面宿主没有应答（${e.message}）。请用户在终端运行 npx vcorp-chrome desktop install。`));
+      else if (!r || typeof r !== 'object') reject(err('DEVICE_OFFLINE', '桌面宿主的回包不对'));
+      else resolve(r);
+    });
+  });
+}
+
+// 名下的桌面设备：启用过、权限还在才算
+async function desktopChild() {
+  const info = await deskInfo();
+  if (!info?.device || !chrome.runtime.sendNativeMessage) return null;
+  return info.device;
+}
+
+async function enableDesktop() {
+  // 运行时才授予的 nativeMessaging，Chrome 不给已经在跑的 service worker 补上绑定，重载后才有
+  if (!chrome.runtime.sendNativeMessage) {
+    if (!(await chrome.permissions.contains({ permissions: ['nativeMessaging'] }))) {
+      throw err('NO_DEVICE', '没有 nativeMessaging 权限，桌面能力保持关闭');
+    }
+    await chrome.storage.local.set({ [DESK_PENDING]: Date.now() });
+    await log({ ev: 'desktop_reload' });
+    chrome.runtime.reload();
+    return;
+  }
+  const r = await hostCall({ op: 'hello' });
+  const device = cleanDevice(r.device);
+  if (!device || device.kind !== 'desktop') throw err('DEVICE_OFFLINE', '桌面宿主报上来的设备不对');
+  await chrome.storage.local.set({ [DESK]: { device, ready: !!r.ready, at: Date.now() } });
+  await log({ ev: 'desktop_on', msg: device.id });
+  // 重连一次，服务器在 hello 里看到这台设备
+  disconnect(); retryDelay = 0; void connect();
+}
+
+async function disableDesktop() {
+  await chrome.storage.local.remove(DESK);
+  await log({ ev: 'desktop_off' });
+  disconnect(); retryDelay = 0; void connect();
+}
+
+async function devicesCmd(cfg) {
+  const child = await desktopChild();
+  const list = [
+    { id: cfg.deviceId, kind: 'browser', name: deviceName(), online: true },
+    ...(child ? [{ ...child, parent: cfg.deviceId }] : []),
+  ].map(cleanDevice).filter(Boolean);
+  return { text: describeDevices(list), devices: list };
+}
+
+function notifyApps(t, cfg) {
+  chrome.notifications?.create(`hc-cloud-apps:${t.jobId}`, {
+    type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
+    title: `${policy.hostOf(cfg.origin)} 的任务想操作你电脑上的应用`,
+    message: `${t.title ? `「${t.title}」` : '任务'} → ${(t.appAsk || []).join('、')}${t.appAskWhy ? `\n用途：${t.appAskWhy}` : ''}`,
+    buttons: [{ title: '允许' }, { title: '拒绝' }],
+  }, () => void chrome.runtime.lastError);
+}
+
+// 和文件夹一样：自动允许管不到应用，每个任务逐个点头；批准只记在这个任务上
+async function requestApps(task, p, cfg) {
+  if (!(await desktopChild())) throw err('NO_DEVICE', '这个浏览器没有启用桌面能力。请用户在扩展侧栏「桌面应用」里点「启用桌面能力」。');
+  const split = appsToAsk(p.add, { apps: task.apps || [], refused: task.appRefused || [] });
+  if (split.ask.length) {
+    const t = await updateTask(task.jobId, (x) => {
+      x.appAsk = split.ask;
+      x.appAskWhy = p.reason;
+    });
+    if (!t) throw err('CLOUD_DENIED', '这个任务已经结束');
+    notifyApps(t, cfg);
+    const allow = await waitFor(`apps:${task.jobId}`);
+    await updateTask(task.jobId, (x) => {
+      if (!Array.isArray(x.apps)) x.apps = [];
+      if (!Array.isArray(x.appRefused)) x.appRefused = [];
+      if (allow) for (const a of split.ask) if (!x.apps.includes(a) && x.apps.length < APPS_MAX) x.apps.push(a);
+      else if (allow === false) for (const a of split.ask) if (!x.appRefused.includes(a)) x.appRefused.push(a);
+      x.appAsk = [];
+      x.appAskWhy = '';
+    });
+    chrome.notifications?.clear(`hc-cloud-apps:${task.jobId}`, () => void chrome.runtime.lastError);
+    await log({ ev: allow ? 'apps_on' : allow === false ? 'apps_off' : 'apps_timeout', job: task.jobId, msg: split.ask.join(',') });
+  }
+  const now = (await getTasks())[task.jobId] || task;
+  const granted = now.apps || [];
+  const refused = now.appRefused || [];
+  const lines = [`本任务可以操作：${granted.join('、') || '（无）'}`];
+  const no = p.add.filter((a) => refused.includes(a));
+  const later = split.ask.filter((a) => !granted.includes(a) && !refused.includes(a));
+  if (no.length) lines.push(`用户不同意：${no.join('、')}。不要再申请。`);
+  if (later.length) lines.push(`用户 5 分钟内没有回应：${later.join('、')}。可以稍后再申请一次。`);
+  if (p.overflow.length) lines.push(`超出一个任务最多 ${APPS_MAX} 个应用的上限，这次没有询问：${p.overflow.join('、')}`);
+  if (p.bad.length) lines.push(`不能申请（浏览器、密码管理器、终端这类一律不碰，或名字不合法）：${p.bad.join('、')}`);
+  return { text: lines.join('\n'), apps: granted, audit: `apps ${p.add.join(',') || '(list)'}` };
+}
+
+function decideApps(jobId, allow) {
+  chrome.notifications?.clear(`hc-cloud-apps:${jobId}`, () => void chrome.runtime.lastError);
+  for (const fn of waiters.get(`apps:${jobId}`) || []) fn(!!allow);
+}
+
+// 发送、删除一类的桌面动作：和页面上的对外动作同一套免确认开关；否则弹通知等用户点头。
+// 桌面没有标签页可以挂浮条，所以走通知和侧栏卡片。
+async function confirmDesk(chk, task, cfg) {
+  const jobId = task.jobId;
+  const what = `${chk.cmd}「${String(chk.target?.name || '').slice(0, 40)}」（${chk.app}）`;
+  if (cfg.autoConfirm || task.confirmAll) {
+    await log({ ev: 'ask_auto', job: jobId, msg: what });
+    return;
+  }
+  await updateTask(jobId, (x) => { x.deskAsk = what; });
+  chrome.notifications?.create(`hc-cloud-desk:${jobId}`, {
+    type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
+    title: `${policy.hostOf(cfg.origin)} 的任务要在你的电脑上做一件对外的事`,
+    message: what,
+    buttons: [{ title: '同意' }, { title: '不同意' }],
+  }, () => void chrome.runtime.lastError);
+  const allow = await waitFor(`desk:${jobId}`);
+  await updateTask(jobId, (x) => { x.deskAsk = ''; });
+  chrome.notifications?.clear(`hc-cloud-desk:${jobId}`, () => void chrome.runtime.lastError);
+  await log({ ev: allow ? 'desk_confirm' : 'desk_declined', job: jobId, msg: what });
+  if (!allow) {
+    throw err('CONFIRM_DECLINED', allow === null
+      ? `用户 5 分钟内没有确认 ${what}，没有执行。在报告里写明，不要重试。`
+      : `用户没有同意 ${what}，没有执行。这是明确的「别做」，不要换个方式重试。`);
+  }
+}
+
+function decideDesk(jobId, allow) {
+  chrome.notifications?.clear(`hc-cloud-desk:${jobId}`, () => void chrome.runtime.lastError);
+  for (const fn of waiters.get(`desk:${jobId}`) || []) fn(!!allow);
+}
+
+const windowsMap = (list) => Object.fromEntries((Array.isArray(list) ? list : []).map((w) => [w.id, { app: w.app_name, title: w.title || '' }]));
+
+async function desktopCmd(p, task, cfg) {
+  if (!(await desktopChild())) throw err('NO_DEVICE', '这个浏览器没有启用桌面能力。请用户在扩展侧栏「桌面应用」里点「启用桌面能力」。');
+  if (p.steps !== undefined) throw err('DESKTOP_DENIED', '云端的桌面命令一条一条发，不支持 steps');
+  const session = `cloud-${task.jobId}`;
+  const desk = { snaps: { ...(task.desk?.snaps || {}) }, windows: { ...(task.desk?.windows || {}) } };
+  if (p.window !== undefined && !desk.windows[String(p.window)]) {
+    const env = await hostCall({ op: 'run', argv: ['list-windows', `--session=${session}`] });
+    if (env.ok) desk.windows = windowsMap(env.data);
+  }
+  const chk = checkDesktop(p, {
+    channel: 'cloud', session, apps: task.apps || [],
+    lookup: (id) => desk.snaps[id] || null,
+    windows: (id) => desk.windows[id] || null,
+  });
+  if (chk.sensitive === 'pay') throw err('PAY_REFUSED', `「${chk.target?.name}」像是要花钱的按钮。桌面能力不代做付款，请用户亲手点。`);
+  if (chk.sensitive === 'sensitive') await confirmDesk(chk, task, cfg);
+
+  const env = await hostCall({ op: 'run', argv: chk.argv, timeoutMs: Math.min(Math.max((Number(p.timeout) || 0) + 10000, 30000), 90000) });
+  if (env.ok && (chk.cmd === 'snapshot' || chk.cmd === 'find')) {
+    const rec = recordOf(env.data);
+    if (rec && !rec.app) rec.app = chk.app;
+    if (chk.cmd === 'snapshot') checkObserved(rec);
+    if (rec) {
+      const prev = chk.cmd === 'find' ? desk.snaps[rec.id] : null;
+      delete desk.snaps[rec.id];
+      desk.snaps[rec.id] = prev ? { ...prev, refs: { ...prev.refs, ...rec.refs } } : rec;
+      const ids = Object.keys(desk.snaps);
+      while (ids.length > DESK_SNAPS) delete desk.snaps[ids.shift()];
+    }
+  }
+  if (env.ok && chk.cmd === 'list-windows') {
+    env.data = filterWindows(env.data, 'cloud');
+    desk.windows = windowsMap(env.data);
+  }
+  const held = await updateTask(task.jobId, (x) => { x.desk = desk; });
+  if (!held) throw err('CLOUD_DENIED', '这个任务已经结束');
+  const text = renderEnvelope(chk.cmd, env, { target: chk.target });
+  if (!env.ok) throw err(env.error?.code || 'INTERNAL', text);
+  return { text, audit: `${chk.cmd}${chk.app ? ` ${chk.app}` : ''}${chk.target?.name ? ` ${String(chk.target.name).slice(0, 40)}` : ''}` };
+}
+
 // ---------- 命令 ----------
 
+// 结果盖上执行它的设备（from）。服务器据此知道回包来自浏览器还是它名下的桌面。
 async function handle(m) {
   const started = Date.now();
   const jobId = String(m.job?.id || '');
+  const cfg = await getCfg();
+  const self = { id: cfg?.deviceId, kind: 'browser' };
+  let from = self;
   try {
+    const child = await desktopChild();
+    const where = routeHere({ ...m, cap: m.cmd === 'desktop' ? 'desktop' : capOf(m) }, { self, children: child ? [child] : [] });
+    from = where.device;
     const data = await exec(m);
     let out = data;
     const audit = out && typeof out === 'object' ? out.audit : '';
@@ -666,10 +873,10 @@ async function handle(m) {
     if (JSON.stringify(out ?? null).length > policy.RESULT_MAX) {
       out = { text: String(data?.text || '').slice(0, 200000) + '\n…（结果太大，已截断）' };
     }
-    send({ type: 'res', id: m.id, ok: true, data: out });
+    send(stampFrom({ type: 'res', id: m.id, ok: true, data: out }, from));
     await log({ job: jobId, cmd: m.cmd, ok: true, ms: Date.now() - started, ...(audit ? { msg: String(audit).slice(0, 160) } : {}) });
   } catch (e) {
-    send({ type: 'res', id: m.id, ok: false, error: { code: e.code || 'INTERNAL', message: e.message || String(e) } });
+    send(stampFrom({ type: 'res', id: m.id, ok: false, error: { code: e.code || 'INTERNAL', message: e.message || String(e) } }, from));
     await log({ job: jobId, cmd: m.cmd, ok: false, code: e.code || 'INTERNAL', msg: String(e.message || e).slice(0, 120) });
   }
 }
@@ -695,8 +902,9 @@ async function exec(m) {
   if (recent.length >= PER_MINUTE) throw err('CLOUD_RATE', '命令太密（每分钟最多 120 条），放慢一点');
   recent.push(now);
 
-  const reason = m.cmd === 'sites' || m.cmd === 'folders' ? String(m.params?.reason || '').slice(0, 200) : '';
-  const task = await taskFor(m.job, cfg, reason, { allowEmpty: m.cmd === 'folders' });
+  if (m.cmd === 'devices') return devicesCmd(cfg);
+  const reason = ['sites', 'folders', 'apps'].includes(m.cmd) ? String(m.params?.reason || '').slice(0, 200) : '';
+  const task = await taskFor(m.job, cfg, reason, { allowEmpty: m.cmd === 'folders' || m.cmd === 'apps' });
   const jobId = task.jobId;
   const updated = await updateTask(jobId, (t) => { t.count += 1; t.lastAt = Date.now(); });
   if (!updated) throw err('CLOUD_DENIED', '这个任务已经结束');
@@ -706,6 +914,8 @@ async function exec(m) {
   const p = policy.checkCommand(m.cmd, m.params, { hosts, origin: cfg.origin });
   if (m.cmd === 'sites') return requestSites(updated, p, cfg);
   if (m.cmd === 'folders') return requestFolders(updated, p, cfg);
+  if (m.cmd === 'apps') return requestApps(updated, p, cfg);
+  if (m.cmd === 'desktop') return desktopCmd(p, updated, cfg);
   if (m.cmd === 'fs_list' || m.cmd === 'fs_read') return fsCmd(m.cmd, p, updated);
   const sid = sidOf(jobId);
   const label = labelOf(cfg.origin);
@@ -867,8 +1077,9 @@ async function panelState() {
     cfg: cfg && { origin: cfg.origin, account: cfg.account, sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, paused: cfg.paused, pairedAt: cfg.pairedAt },
     status: status || { state: 'off' },
     claim: claimed && claimed.expiresAt > Date.now() ? { origin: claimed.origin, account: claimed.account } : null,
-    tasks: Object.values(tasks).sort((a, b) => b.lastAt - a.lastAt),
+    tasks: Object.values(tasks).sort((a, b) => b.lastAt - a.lastAt).map(({ desk: _desk, ...t }) => t),
     folders: await folders.listFolders().catch(() => []),
+    desktop: await deskInfo().then((d) => (d && chrome.runtime.sendNativeMessage ? d : null)),
     log: list.slice(-40).reverse(),
     defaultOrigin: policy.DEFAULT_ORIGIN,
   };
@@ -930,6 +1141,10 @@ async function onPanel(m) {
     case 'decide': await decide(String(m.jobId), !!m.allow); return panelState();
     case 'decideSites': decideSites(String(m.jobId), !!m.allow); return panelState();
     case 'decideFolders': decideFolders(String(m.jobId), !!m.allow); return panelState();
+    case 'decideApps': decideApps(String(m.jobId), !!m.allow); return panelState();
+    case 'decideDesk': decideDesk(String(m.jobId), !!m.allow); return panelState();
+    case 'desktopEnable': await enableDesktop(); return panelState();
+    case 'desktopDisable': await disableDesktop(); return panelState();
     case 'openMount': await openMount(m.folderId ? String(m.folderId) : ''); return panelState();
     case 'removeFolder': await folders.removeFolder(String(m.id || '')); await reportFolders(); return panelState();
     case 'foldersChanged': await reportFolders(); return panelState();
@@ -956,6 +1171,8 @@ export function initCloud(d) {
 
   chrome.notifications?.onButtonClicked.addListener((id, idx) => {
     if (id.startsWith('hc-cloud-folders:')) decideFolders(id.slice('hc-cloud-folders:'.length), idx === 0);
+    else if (id.startsWith('hc-cloud-apps:')) decideApps(id.slice('hc-cloud-apps:'.length), idx === 0);
+    else if (id.startsWith('hc-cloud-desk:')) decideDesk(id.slice('hc-cloud-desk:'.length), idx === 0);
     else if (id.startsWith('hc-cloud-sites:')) decideSites(id.slice('hc-cloud-sites:'.length), idx === 0);
     else if (id.startsWith('hc-cloud:')) void decide(id.slice('hc-cloud:'.length), idx === 0);
     else if (id.startsWith('hc-folder:')) void openMount(id.slice('hc-folder:'.length));
@@ -1002,4 +1219,10 @@ export function initCloud(d) {
   }).then(pushLive);
 
   void ensureCloud();
+
+  void chrome.storage.local.get(DESK_PENDING).then(async (r) => {
+    if (!r[DESK_PENDING]) return;
+    await chrome.storage.local.remove(DESK_PENDING);
+    await enableDesktop().catch((e) => log({ ev: 'desktop_fail', msg: e.message || String(e) }));
+  });
 }

@@ -78,3 +78,30 @@ test('agent 能通过 stdio 挂上 MCP server 并拿到工具表', async () => {
     await client.close();
   }
 });
+
+// 闲置自退：宿主不关 stdin 也不再调用时，进程自己收掉。
+// 11-2 现场：Goose 每个会话起一个 mcp、会话结束从不关管道，一个 goose serve 下面攒了 34 个。
+test('宿主一直不说话，mcp 到点自行退出；关掉开关就不退', async () => {
+  const { spawn } = await import('node:child_process');
+  const run = (idleMin) => new Promise((resolve) => {
+    const c = spawn(process.execPath, [CLI, 'mcp', '--client', 'test'], {
+      stdio: ['pipe', 'pipe', 'ignore'],
+      env: { ...process.env, HUASHU_CHROME_MCP_IDLE_MIN: idleMin },
+    });
+    c.stdout.on('data', () => {});
+    const t = setTimeout(() => { c.kill(); resolve('still running'); }, 3000);
+    c.on('exit', (code) => { clearTimeout(t); resolve(`exit ${code}`); });
+  });
+  // 0.01 分钟 = 600ms，3 秒内必须退；stdin 一直开着，所以不是 EOF 让它退的
+  assert.equal(await run('0.01'), 'exit 0');
+  assert.equal(await run('0'), 'still running', 'HUASHU_CHROME_MCP_IDLE_MIN=0 应该关掉自退');
+});
+
+test('闲置上限：默认 4 小时，0 和乱填都按「关掉」或默认处理', async () => {
+  const { idleLimitMs } = await import('../src/mcp-server.js');
+  assert.equal(idleLimitMs({}), 240 * 60000);
+  assert.equal(idleLimitMs({ HUASHU_CHROME_MCP_IDLE_MIN: '' }), 240 * 60000);
+  assert.equal(idleLimitMs({ HUASHU_CHROME_MCP_IDLE_MIN: '30' }), 30 * 60000);
+  assert.equal(idleLimitMs({ HUASHU_CHROME_MCP_IDLE_MIN: '0' }), 0);
+  assert.equal(idleLimitMs({ HUASHU_CHROME_MCP_IDLE_MIN: 'abc' }), 0);
+});

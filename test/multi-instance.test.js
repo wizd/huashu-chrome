@@ -202,3 +202,19 @@ test('老扩展不报 instanceId —— 退回按扩展 id 认，不跟新扩展
   ws2.close();
   await settle();
 });
+
+test('扩展一连上就收到在线名单 —— 上一个桥留下的死会话靠它冲掉', async () => {
+  // 11-2 现场：桥换过一次，扩展手里还是旧桥最后推的名单，侧栏把早已不在的
+  // Claude Code、Cursor 一直算作在线。新桥不推，就只能等下一条命令来冲。
+  const a = await agent('sess-live');
+  const ws = new WebSocket(URL, { origin: 'chrome-extension://testid' });
+  await new Promise((r) => ws.on('open', r));
+  const ev = nextOf(ws, 'event');
+  ws.send(JSON.stringify({ type: 'hello', role: 'extension', extId: 'testid', version: VERSION, instanceId: 'inst-sessions', v: 1 }));
+  const m = await ev;
+  assert.equal(m.event, 'sessions');
+  assert.deepEqual(m.live, ['sess-live']);
+
+  a.ws.close(); ws.close();
+  await settle();
+});

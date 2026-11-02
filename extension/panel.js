@@ -179,9 +179,13 @@ async function renderConn(sessionCount) {
   }
   $('reconnRow').hidden = !!r.connected;
 
+  // 没连着桥时，名单里只剩云端任务——本机 agent 不是「没有」，是看不见，话要说准
+  const localUnknown = '本机 agent 要等本地端连上才看得到';
   box.appendChild(sessionCount
-    ? light('ok', `${sessionCount} 个 agent 在线`, '每个 agent 用自己的颜色，页面描边和标签组同色')
-    : light('', '暂无 agent 在线', '在你的 agent 里说一句「用 vcorp-chrome 打开……」就会出现在这里'));
+    ? light('ok', `${sessionCount} 个 agent 在线`, r.connected ? '每个 agent 用自己的颜色，页面描边和标签组同色' : `这里只算云端任务；${localUnknown}`)
+    : r.connected
+      ? light('', '暂无 agent 在线', '在你的 agent 里说一句「用 vcorp-chrome 打开……」就会出现在这里')
+      : light('', '本机 agent 状态未知', localUnknown));
 
   $('pilldot').className = `dot ${pill[0]}`;
   $('pilltxt').textContent = pill[1];

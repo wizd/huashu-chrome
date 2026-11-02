@@ -241,6 +241,10 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
           + `命令路由到：${extLabel(primary())}`);
       }
       send(ws, { type: 'welcome', bridge: VERSION, v: PROTOCOL });
+      // 连上就给一份名单，哪怕是空的。扩展手里那份可能是上一个桥留下的：桥换过之后
+      // 旧连接不会再发 close，不推的话死会话要等下一条命令才被冲掉——面板就一直
+      // 显示着已经不在的 agent。
+      send(ws, { type: 'event', event: 'sessions', live: liveSessions() });
       broadcast({ type: 'event', event: 'extension_online' });
       flushWaiting();
       return;

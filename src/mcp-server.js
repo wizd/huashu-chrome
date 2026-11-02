@@ -585,7 +585,7 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
     return host;
   };
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler(CallToolRequestSchema, busy(async (req) => {
     const { name, arguments: args = {} } = req.params;
     identify();
     try {
@@ -721,7 +721,7 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
     } catch (e) {
       return { content: [{ type: 'text', text: hint(e) + mismatchNote(true) }], isError: true };
     }
-  });
+  }));
 
   // 扩展和本地端版本对不上时在回执里说一次——回执是唯一一定有人读的通道。
   // 分级见 extension/compat.js：补丁号差异静默；本地端旧了提一次怎么升级；
@@ -738,7 +738,42 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
   }
 
   await server.connect(new StdioServerTransport());
+  watchIdle();
   return server;
+}
+
+// 闲置自退。
+//
+// 本该是宿主的事：会话结束就关掉 stdin，我们读到 EOF 自然就退了（实测成立）。
+// 可 Goose 桌面版每开一个会话起一个 mcp、会话结束却从不关管道——11-2 查到
+// 一个 goose serve 下面挂着 34 个，最老的一周前，合计约 2 GB。宿主不收，只能自己收。
+//
+// 判据是「stdin 上多久没来过任何东西」，且手上没有在跑的工具调用。默认 4 小时：
+// 一个真在用的会话很少静默这么久；万一真是，宿主下一次调用会看到连接已断，
+// 代价是重开一次会话，远小于无限期地攒进程。HUASHU_CHROME_MCP_IDLE_MIN=0 关掉。
+let inflight = 0;
+let lastActive = Date.now();
+const busy = (fn) => async (...a) => {
+  inflight++;
+  try { return await fn(...a); } finally { inflight--; lastActive = Date.now(); }
+};
+
+export function idleLimitMs(env = process.env) {
+  const raw = env.HUASHU_CHROME_MCP_IDLE_MIN;
+  const min = raw == null || raw === '' ? 240 : Number(raw);
+  return Number.isFinite(min) && min > 0 ? min * 60000 : 0;
+}
+
+function watchIdle() {
+  const limit = idleLimitMs();
+  if (!limit) return;
+  process.stdin.on('data', () => { lastActive = Date.now(); });
+  const tick = setInterval(() => {
+    if (inflight || Date.now() - lastActive < limit) return;
+    console.error(`[vcorp-chrome] ${Math.round(limit / 60000)} 分钟没有任何请求，宿主大概已经不用这个进程了，自行退出`);
+    process.exit(0);
+  }, Math.min(60000, Math.max(limit / 4, 50)));
+  tick.unref();   // 吊着进程的该是 stdin，不是这个检查
 }
 
 // 自动翻页。页码型：改一个 query 参数递增；游标型：从上一页响应里按路径取下一个游标。

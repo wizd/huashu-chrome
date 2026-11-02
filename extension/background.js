@@ -659,6 +659,22 @@ async function runCloud(cmd, params, tabId, sid, label) {
 
 const liveList = async () => (await chrome.storage.session.get(LIVE_SIDS))[LIVE_SIDS] || [];
 
+// 桥的名单只有桥能更新，而桥一死就没人再推了——扩展不自己清，死会话会一直算在线，
+// 它们留在页面上的标记也摘不掉。只在确认重连失败之后调（见 hc-keepalive），
+// 瞬断时不能清，否则标记会闪一下。桥回来时会在 welcome 后补一份真名单。
+async function dropBridgeSessions() {
+  const { [BRIDGE_SIDS]: bridge = [] } = await chrome.storage.session.get(BRIDGE_SIDS).catch(() => ({}));
+  if (bridge.length) await onBridgeEvent({ event: 'sessions', live: [] });
+}
+
+// 面板显示用：没连着桥时只有云端名单可信。比 dropBridgeSessions 更早生效，
+// 否则「未连接」旁边最多还会挂 30 秒已经过期的本机 agent。
+async function shownSids() {
+  if (await connected()) return liveList();
+  const { [CLOUD_SIDS]: cloud = [] } = await chrome.storage.session.get(CLOUD_SIDS);
+  return cloud;
+}
+
 // 这个标签页此刻的主人们。只算**还连着**的会话——判据和 liveOwnersOf 一致：
 // 已结束的会话留下的槽不算数，否则关掉一个终端窗口之后，它的标记会永远挂在那儿。
 //
@@ -2857,7 +2873,9 @@ chrome.alarms?.onAlarm.addListener(async () => {
   const kicked = await chrome.runtime.sendMessage({ __hcBridge: 'kick' }).catch(() => null);
   if (kicked?.connected) return setBadge(true);
   await directConnect();
-  setBadge(await connected());
+  const up = await connected();
+  setBadge(up);
+  if (!up) await dropBridgeSessions();
 });
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   // 全局槽 + 所有会话级槽一次扫清，别留指向死 tab 的槽
@@ -2968,7 +2986,7 @@ chrome.runtime.onMessage.addListener((m, sender, sendResponse) => {
   if (m.__hcPopup === 'sessions') {
     (async () => {
       try {
-        const [all, lives] = await Promise.all([chrome.storage.local.get(null), liveList()]);
+        const [all, lives] = await Promise.all([chrome.storage.local.get(null), shownSids()]);
         const clients = await chrome.storage.session.get(lives.map(sidClientKey));
         const rows = [];
         for (const sid of lives) {

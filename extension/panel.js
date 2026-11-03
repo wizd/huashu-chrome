@@ -302,9 +302,35 @@ function renderDesktop(s) {
     : d.error || '未启用';
 }
 
+// 一条待批准的申请，放进顶上的「需要你处理」
+function askBox(title, lines, yesText, noText, op, jobId) {
+  const box = el('div', 'task pending');
+  box.appendChild(el('div', 't', title));
+  for (const line of lines) box.appendChild(el('div', 'sub', line));
+  const row = el('div', 'row');
+  const yes = el('button', 'btn', yesText);
+  const no = el('button', 'btn ghost', noText);
+  yes.onclick = () => cloudCall(op, { jobId, allow: true });
+  no.onclick = () => cloudCall(op, { jobId, allow: false });
+  row.append(yes, no);
+  box.appendChild(row);
+  $('asks').appendChild(box);
+}
+
+// 有事要处理：顶上区块和标题栏的闪烁徽标一起亮，处理完一起收
+function syncAlert() {
+  const n = $('asks').childElementCount + ($('cloudClaim').hidden ? 0 : 1);
+  $('alert').hidden = !n;
+  $('needPill').hidden = !n;
+  $('needPill').textContent = `${n} 项待处理`;
+  document.title = n ? `(${n}) vcorp-chrome` : 'vcorp-chrome';
+}
+$('needPill').onclick = () => $('alert').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
 function renderCloud(s) {
   renderFolders(s);
   renderDesktop(s);
+  $('asks').textContent = '';
   const on = !!s.cfg;
   $('cloudPair').hidden = on || !!s.claim;
   $('cloudClaim').hidden = on || !s.claim;
@@ -314,7 +340,7 @@ function renderCloud(s) {
     $('claimOrigin').textContent = new URL(s.claim.origin).host;
     $('claimAccount').textContent = `「${s.claim.account || '（未命名）'}」`;
   }
-  if (!on) return;
+  if (!on) { syncAlert(); return; }
 
   const [cls, word] = CLOUD_STATE[s.status?.state] || CLOUD_STATE.off;
   $('cloudDot').className = `dot ${cls}`;
@@ -338,77 +364,38 @@ function renderCloud(s) {
     sites.appendChild(row);
   }
 
+  // 要用户点头的一律进顶上的「需要你处理」，这里只留进行中任务的状态
   const tasks = $('cloudTasks');
   tasks.textContent = '';
   for (const t of s.tasks.filter((x) => x.state !== 'denied')) {
-    const box = el('div', `task ${t.state}`);
-    box.appendChild(el('div', 't', t.title || `任务 ${t.jobId}`));
+    const title = t.title || `任务 ${t.jobId}`;
     if (t.state === 'pending') {
       const lines = [];
       if (t.ask?.length) lines.push(`请求访问这些网站：${t.ask.join('、')}（允许后加入允许名单）`);
       if (t.use?.length) lines.push(`要用允许名单里的：${t.use.join('、')}`);
       if (t.purpose) lines.push(`用途：${t.purpose}`);
-      for (const line of lines) box.appendChild(el('div', 'sub', line));
-      const row = el('div', 'row');
-      const yes = el('button', 'btn', '允许');
-      const no = el('button', 'btn ghost', '拒绝');
-      yes.onclick = () => cloudCall('decide', { jobId: t.jobId, allow: true });
-      no.onclick = () => cloudCall('decide', { jobId: t.jobId, allow: false });
-      row.append(yes, no);
-      box.appendChild(row);
-    } else {
-      const where = [...new Set([...(t.use || []), ...(t.sites || [])])].join('、') || '（还没有网站）';
-      box.appendChild(el('div', 'sub', `进行中 · ${where} · ${t.count} 条命令 · ${relTime(t.lastAt)}`));
-      if (t.ask?.length) {
-        box.appendChild(el('div', 'sub', `还想访问：${t.ask.join('、')}${t.askWhy ? `。用途：${t.askWhy}` : ''}`));
-        const ask = el('div', 'row');
-        const yes = el('button', 'btn', '允许这些网站');
-        const no = el('button', 'btn ghost', '不允许');
-        yes.onclick = () => cloudCall('decideSites', { jobId: t.jobId, allow: true });
-        no.onclick = () => cloudCall('decideSites', { jobId: t.jobId, allow: false });
-        ask.append(yes, no);
-        box.appendChild(ask);
-      }
-      if (t.folders?.length) box.appendChild(el('div', 'sub', `可读本地文件夹：${t.folders.join('、')}`));
-      if (t.folderAsk?.length) {
-        box.appendChild(el('div', 'sub', `还想读取本地文件夹：${t.folderAsk.join('、')}${t.folderAskWhy ? `。用途：${t.folderAskWhy}` : ''}`));
-        const ask = el('div', 'row');
-        const yes = el('button', 'btn', '允许这些文件夹');
-        const no = el('button', 'btn ghost', '不允许');
-        yes.onclick = () => cloudCall('decideFolders', { jobId: t.jobId, allow: true });
-        no.onclick = () => cloudCall('decideFolders', { jobId: t.jobId, allow: false });
-        ask.append(yes, no);
-        box.appendChild(ask);
-      }
-      if (t.apps?.length) box.appendChild(el('div', 'sub', `可操作桌面应用：${t.apps.join('、')}`));
-      if (t.appAsk?.length) {
-        box.appendChild(el('div', 'sub', `还想操作桌面应用：${t.appAsk.join('、')}${t.appAskWhy ? `。用途：${t.appAskWhy}` : ''}`));
-        const ask = el('div', 'row');
-        const yes = el('button', 'btn', '允许这些应用');
-        const no = el('button', 'btn ghost', '不允许');
-        yes.onclick = () => cloudCall('decideApps', { jobId: t.jobId, allow: true });
-        no.onclick = () => cloudCall('decideApps', { jobId: t.jobId, allow: false });
-        ask.append(yes, no);
-        box.appendChild(ask);
-      }
-      if (t.deskAsk) {
-        box.appendChild(el('div', 'sub', `要在桌面上：${t.deskAsk}`));
-        const ask = el('div', 'row');
-        const yes = el('button', 'btn', '同意');
-        const no = el('button', 'btn ghost', '不同意');
-        yes.onclick = () => cloudCall('decideDesk', { jobId: t.jobId, allow: true });
-        no.onclick = () => cloudCall('decideDesk', { jobId: t.jobId, allow: false });
-        ask.append(yes, no);
-        box.appendChild(ask);
-      }
-      const row = el('div', 'row');
-      const stop = el('button', 'btn ghost', '收回（关掉它的标签页）');
-      stop.onclick = () => cloudCall('endTask', { jobId: t.jobId });
-      row.appendChild(stop);
-      box.appendChild(row);
+      askBox(`新任务：${title}`, lines, '允许', '拒绝', 'decide', t.jobId);
+      continue;
     }
+    if (t.ask?.length) askBox(title, [`还想访问网站：${t.ask.join('、')}${t.askWhy ? `。用途：${t.askWhy}` : ''}`], '允许这些网站', '不允许', 'decideSites', t.jobId);
+    if (t.folderAsk?.length) askBox(title, [`还想读取本地文件夹：${t.folderAsk.join('、')}${t.folderAskWhy ? `。用途：${t.folderAskWhy}` : ''}`], '允许这些文件夹', '不允许', 'decideFolders', t.jobId);
+    if (t.appAsk?.length) askBox(title, [`还想操作桌面应用：${t.appAsk.join('、')}${t.appAskWhy ? `。用途：${t.appAskWhy}` : ''}`], '允许这些应用', '不允许', 'decideApps', t.jobId);
+    if (t.deskAsk) askBox(title, [`要在桌面上：${t.deskAsk}`], '同意', '不同意', 'decideDesk', t.jobId);
+
+    const box = el('div', 'task');
+    box.appendChild(el('div', 't', title));
+    const where = [...new Set([...(t.use || []), ...(t.sites || [])])].join('、') || '（还没有网站）';
+    box.appendChild(el('div', 'sub', `进行中 · ${where} · ${t.count} 条命令 · ${relTime(t.lastAt)}`));
+    if (t.folders?.length) box.appendChild(el('div', 'sub', `可读本地文件夹：${t.folders.join('、')}`));
+    if (t.apps?.length) box.appendChild(el('div', 'sub', `可操作桌面应用：${t.apps.join('、')}`));
+    const row = el('div', 'row');
+    const stop = el('button', 'btn ghost', '收回（关掉它的标签页）');
+    stop.onclick = () => cloudCall('endTask', { jobId: t.jobId });
+    row.appendChild(stop);
+    box.appendChild(row);
     tasks.appendChild(box);
   }
+  syncAlert();
 
   const log = $('cloudLog');
   log.textContent = '';

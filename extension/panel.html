@@ -101,15 +101,55 @@
   a.guide { display: flex; text-decoration: none; color: inherit; cursor: pointer; border-radius: 8px; margin: 0 -6px; padding-left: 6px; padding-right: 6px; }
   a.guide:hover { background: var(--soft); }
   a.guide .go { color: var(--accent); font-size: 12px; flex: none; }
+  /* 需要你处理：置顶、闪烁，处理完就收起 */
+  header .right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .need { all: unset; cursor: pointer; font-size: 11.5px; font-weight: 600; color: #fff; background: var(--warn);
+          padding: 3px 9px; border-radius: 999px; animation: blink 1.2s ease-in-out infinite; }
+  .alert { border: 1.5px solid var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--card));
+           animation: flash 1.2s ease-in-out infinite; }
+  .alert h2 { color: var(--warn); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .alert .pulse { background: var(--warn); }
+  .alert .task:first-child, .alert #cloudClaim:not([hidden]) + #asks .task:first-child { margin-top: 0; }
+  .alert .confirm { margin-top: 0; }
+  @keyframes flash { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--warn) 50%, transparent); }
+                     50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 22%, transparent); } }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+  @media (prefers-reduced-motion: reduce) { .alert, .need, .pulse { animation: none; } }
+  .top-err { margin: 0; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--bad) 10%, var(--card)); }
+  /* 帮助：全部折叠在最下面 */
+  .help details { border-top: 1px solid var(--line); padding: 2px 0 4px; }
+  .help details:first-of-type { border-top: 0; }
+  .help details summary { color: var(--ink); font-size: 12.5px; margin: 4px 0; }
+  .help details > div { color: var(--mute); font-size: 12px; margin: 2px 0 6px; }
+  .help code { flex: none; }
 </style>
 
 <header>
   <img src="icons/icon128.png" alt="" />
   <div class="t">vcorp-chrome<span class="v" id="ver"></span></div>
-  <div class="pill"><span class="dot" id="pilldot"></span><span id="pilltxt">检查中…</span></div>
+  <div class="right">
+    <button class="need" id="needPill" type="button" hidden></button>
+    <div class="pill"><span class="dot" id="pilldot"></span><span id="pilltxt">检查中…</span></div>
+  </div>
 </header>
 
 <main>
+  <div class="msg bad top-err" id="cloudErr" hidden></div>
+
+  <!-- 1. 要你马上点头的：配对确认、任务批准、追加的网站/文件夹/应用/桌面动作 -->
+  <section id="alert" class="alert" hidden>
+    <h2><span class="pulse"></span>需要你处理</h2>
+    <div id="cloudClaim" hidden>
+      <div class="confirm">
+        <div>要把这个浏览器交给 <b id="claimOrigin"></b> 上的账号 <b id="claimAccount"></b> 吗？</div>
+        <div class="muted" style="margin-top:4px">配对码如果是别人发给你的，点取消。</div>
+        <div class="row"><button class="btn" id="claimYes">确认连接</button><button class="btn ghost" id="claimNo">取消</button></div>
+      </div>
+    </div>
+    <div id="asks"></div>
+  </section>
+
+  <!-- 2. 正在发生的 -->
   <section>
     <h2>这一页</h2>
     <div id="page"><div class="empty">读取中…</div></div>
@@ -120,6 +160,7 @@
     <div class="sess" id="sess"></div>
   </section>
 
+  <!-- 3. 状态 -->
   <section>
     <h2>连接</h2>
     <div id="lights"></div>
@@ -131,45 +172,34 @@
     <h2>云端发布</h2>
     <!-- 没配对 -->
     <div id="cloudPair" hidden>
-      <div class="muted">让 maker.vcorp.ai 在这个浏览器里替你发布作品、查资料、办事——用的是你已经登录好的账号，
-        网站的 cookie 不会离开这台电脑。到网页上「浏览器扩展」里拿一个配对码填在这里。</div>
+      <div class="muted">到 maker.vcorp.ai「浏览器扩展」里拿一个配对码填在这里。</div>
       <div class="field">
         <input type="text" class="code" id="pairCode" maxlength="9" placeholder="ABCD-EFGH" autocomplete="off" spellcheck="false" />
       </div>
       <details>
-        <summary>服务器地址</summary>
+        <summary>服务器地址（自建服务才需要改）</summary>
         <div class="field"><input type="text" id="pairOrigin" spellcheck="false" /></div>
-        <div class="muted">只有自建了服务才需要改。</div>
       </details>
       <div class="row"><button class="btn" id="pairGo">下一步</button></div>
-    </div>
-    <!-- 配对第一步完成，等用户确认账号 -->
-    <div id="cloudClaim" hidden>
-      <div class="confirm">
-        <div>要把这个浏览器交给 <b id="claimOrigin"></b> 上的账号 <b id="claimAccount"></b> 吗？</div>
-        <div class="muted" style="margin-top:4px">确认后，这个账号可以申请在你允许的网站上替你操作，每个任务都要你点头。配对码如果是别人发给你的，点取消。</div>
-        <div class="row"><button class="btn" id="claimYes">确认连接</button><button class="btn ghost" id="claimNo">取消</button></div>
-      </div>
     </div>
     <!-- 已配对 -->
     <div id="cloudOn" hidden>
       <div class="light"><span class="dot" id="cloudDot"></span>
         <div><div class="name" id="cloudName"></div><div class="sub" id="cloudSub"></div></div></div>
-      <div class="lab" style="margin-top:6px">允许它使用的网站</div>
-      <div class="sites" id="cloudSites"></div>
-      <div class="muted" style="margin-top:4px">任务申请网站、你点了允许，就记在这里（含子域）。不在这里、也没在任务里批准的网站，它连页面都打不开。</div>
       <div id="cloudTasks"></div>
+      <div class="lab" style="margin-top:10px">允许它使用的网站</div>
+      <div class="sites" id="cloudSites"></div>
       <label class="sw-row">
-        <span class="txt">自动允许新任务<div class="sub">不再逐个弹窗确认。只在你信任这个账号时打开：新任务，以及它一开始就要去的网站，会直接放行。任务开始之后再加的网站，还有本地文件夹，仍然要你逐个点头</div></span>
+        <span class="txt">暂停<div class="sub">云端的命令一条都不接，直到你再打开</div></span>
+        <input type="checkbox" class="toggle" id="cloudPause" />
+      </label>
+      <label class="sw-row">
+        <span class="txt">自动允许新任务<div class="sub">只在你信任这个账号时打开</div></span>
         <input type="checkbox" class="toggle" id="cloudAuto" />
       </label>
       <label class="sw-row">
-        <span class="txt">对外动作不再逐条确认<div class="sub">发消息、投递、发帖之前不再问你。扫码、验证码仍然要你本人来。付款一律不做</div></span>
+        <span class="txt">对外动作不再逐条确认<div class="sub">发消息、发帖前不再问你；付款一律不做</div></span>
         <input type="checkbox" class="toggle" id="cloudAutoConfirm" />
-      </label>
-      <label class="sw-row">
-        <span class="txt">暂停<div class="sub">立刻断开，云端的命令一条都不接，直到你再打开</div></span>
-        <input type="checkbox" class="toggle" id="cloudPause" />
       </label>
       <details>
         <summary>操作记录</summary>
@@ -177,19 +207,17 @@
       </details>
       <div class="row"><button class="btn ghost" id="cloudReconn">重连</button><button class="btn ghost" id="cloudUnpair">断开并忘记这个服务器</button></div>
     </div>
-    <div class="msg bad" id="cloudErr" hidden></div>
   </section>
 
+  <!-- 4. 设置 -->
   <section>
     <h2>本地文件夹</h2>
-    <div class="muted">挂载之后，配对的网站可以申请读取里面的文档（Markdown、文本、PDF、Word、CSV、JSON、HTML）。只读，不会改你的文件。每次真正读取之前还会再问你一次。浏览器重启后如果这里显示需要恢复，点「恢复访问」。</div>
     <div id="folderList"></div>
     <div class="row"><button class="btn" id="folderAdd" type="button">添加文件夹</button></div>
   </section>
 
   <section>
     <h2>桌面应用</h2>
-    <div class="muted">启用后，配对的网站可以申请操作这台电脑上的某个应用（比如微信、Excel）。每个任务要用的应用都会先问你。浏览器窗口、密码管理器、终端一律不碰；付款不做，发送和删除之前会问你。需要先在终端运行一次 <code>npx vcorp-chrome desktop install</code>。</div>
     <div id="deskState" class="sub"></div>
     <div class="row">
       <button class="btn" id="deskOn" type="button">启用桌面能力</button>
@@ -199,22 +227,55 @@
 
   <section>
     <h2>设置</h2>
+    <label class="sw-row">
+      <span class="txt">高保真模式<div class="sub">需要时用浏览器级真实输入；用完自动断开</div></span>
+      <input type="checkbox" class="toggle" id="l2" />
+    </label>
+    <label class="sw-row">
+      <span class="txt">页面标记<div class="sub">被操作的页面带彩色描边和小头像；录屏时可以关掉</div></span>
+      <input type="checkbox" class="toggle" id="mark" />
+    </label>
+  </section>
+
+  <!-- 5. 帮助：都折叠在最下面 -->
+  <section class="help">
+    <h2>帮助</h2>
     <a class="sw-row guide" id="guide" href="welcome.html">
       <span class="txt">开始使用<div class="sub">配对码、接上本机 agent、第一句怎么说</div></span>
       <span class="go">打开</span>
     </a>
-    <label class="sw-row">
-      <span class="txt">高保真模式<div class="sub">需要时用浏览器级真实输入，应付严格的站点和富文本编辑器；用完自动断开</div></span>
-      <input type="checkbox" class="toggle" id="l2" />
-    </label>
-    <label class="sw-row">
-      <span class="txt">页面标记<div class="sub">被操作的页面带彩色描边、光标和小头像；录屏演示时可以关掉</div></span>
-      <input type="checkbox" class="toggle" id="mark" />
-    </label>
+    <details>
+      <summary>连不上怎么办</summary>
+      <div>在终端跑 <code>npx vcorp-chrome doctor</code>，它会告诉你卡在哪一步。</div>
+    </details>
+    <details>
+      <summary>云端发布是什么</summary>
+      <div>让 maker.vcorp.ai 在这个浏览器里替你发布作品、查资料、办事——用的是你已经登录好的账号，网站的 cookie 不会离开这台电脑。
+        配对后，这个账号可以申请在你允许的网站上替你操作，每个任务都要你点头。</div>
+    </details>
+    <details>
+      <summary>允许的网站</summary>
+      <div>任务申请网站、你点了允许，就记在名单里（含子域）。不在名单里、也没在任务里批准的网站，它连页面都打不开。没有预设的平台。</div>
+    </details>
+    <details>
+      <summary>自动允许和免确认</summary>
+      <div>「自动允许新任务」：新任务，以及它一开始就要去的网站，会直接放行。任务开始之后再加的网站，还有本地文件夹，仍然要你逐个点头。</div>
+      <div>「对外动作不再逐条确认」：发消息、投递、发帖之前不再问你。扫码、验证码仍然要你本人来。付款一律不做。</div>
+    </details>
+    <details>
+      <summary>本地文件夹</summary>
+      <div>挂载之后，配对的网站可以申请读取里面的文档（Markdown、文本、PDF、Word、CSV、JSON、HTML）。只读，不会改你的文件。每次真正读取之前还会再问你一次。浏览器重启后如果显示需要恢复，点「恢复访问」。</div>
+    </details>
+    <details>
+      <summary>桌面应用</summary>
+      <div>启用后，配对的网站可以申请操作这台电脑上的某个应用（比如微信、Excel）。每个任务要用的应用都会先问你。浏览器窗口、密码管理器、终端一律不碰；付款不做，发送和删除之前会问你。需要先在终端运行一次 <code>npx vcorp-chrome desktop install</code>。</div>
+    </details>
+    <details>
+      <summary>高保真模式</summary>
+      <div>需要时用浏览器级真实输入，应付严格的站点和富文本编辑器；用完自动断开。</div>
+    </details>
   </section>
 </main>
-
-<footer>连不上时在终端跑 <code style="padding:1px 5px">npx vcorp-chrome doctor</code>，它会告诉你卡在哪一步。</footer>
 
 <script type="module" src="panel.js"></script>
 </html>

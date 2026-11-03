@@ -187,11 +187,13 @@ function browserGate(app, title, fileDialog, { preflight = false } = {}) {
 export function checkDesktop(params, ctx = {}) {
   const p = params && typeof params === 'object' ? params : {};
   const channel = ctx.channel === 'cloud' ? 'cloud' : 'local';
+  // 完全模式（用户在本机打开的）：不认应用名单、不挡浏览器窗口、不查快照户口，参数形状照旧规整
+  const full = ctx.full === true;
   const cmd = String(p.cmd || '');
   const spec = DESKTOP_CMDS[cmd];
-  if (!spec) throw err('DESKTOP_DENIED', `desktop 不支持 ${cmd || '（没写 cmd）'}`);
-  if (!spec[channel]) throw err('DESKTOP_DENIED', `${channel === 'cloud' ? '云端任务' : '本机'}不能用 desktop ${cmd}`);
-  if (p.headed && channel === 'cloud') throw err('DESKTOP_DENIED', '云端任务不能用真实鼠标键盘（headed）');
+  if (!spec) throw err('DESKTOP_DENIED', `desktop 不支持 ${cmd || '（没写 cmd）'}${full ? '：其它命令用 argv 原样传' : ''}`);
+  if (!full && !spec[channel]) throw err('DESKTOP_DENIED', `${channel === 'cloud' ? '云端任务' : '本机'}不能用 desktop ${cmd}`);
+  if (!full && p.headed && channel === 'cloud') throw err('DESKTOP_DENIED', '云端任务不能用真实鼠标键盘（headed）');
 
   const argv = [cmd];
   let app = p.app !== undefined ? str(p.app, 80).trim() : '';
@@ -200,10 +202,12 @@ export function checkDesktop(params, ctx = {}) {
   let title = '';
   if (win) {
     const w = ctx.windows?.(win);
-    if (!w) throw err('DESKTOP_DENIED', `不认识窗口 ${win}：先 list-windows`);
-    app = app || w.app;
-    title = w.title || '';
-    if (appKey(w.app) !== appKey(app)) throw err('DESKTOP_DENIED', `窗口 ${win} 属于 ${w.app}，不是 ${app}`);
+    if (!w && !full) throw err('DESKTOP_DENIED', `不认识窗口 ${win}：先 list-windows`);
+    if (w) {
+      app = app || w.app;
+      title = w.title || '';
+      if (appKey(w.app) !== appKey(app)) throw err('DESKTOP_DENIED', `窗口 ${win} 属于 ${w.app}，不是 ${app}`);
+    }
   }
 
   let rec = null;
@@ -212,19 +216,21 @@ export function checkDesktop(params, ctx = {}) {
     const ref = str(spec.ref ? p.ref : p.root, 60);
     if (!REF_RE.test(ref)) throw err('DESKTOP_DENIED', 'ref 要用快照里完整的形式，如 @s8f3k2p9:e8');
     rec = ctx.lookup?.(snapshotIdOf(ref)) || null;
-    if (!rec) throw err('DESKTOP_DENIED', `不认识 ${ref} 所属的快照：先在这个会话里 snapshot 一次`);
-    app = rec.app;
-    title = rec.window?.title || '';
-    target = rec.refs[/:(e\d+)$/.exec(ref)[1]] || null;
+    if (!rec && !full) throw err('DESKTOP_DENIED', `不认识 ${ref} 所属的快照：先在这个会话里 snapshot 一次`);
+    if (rec) {
+      app = rec.app;
+      title = rec.window?.title || '';
+      target = rec.refs[/:(e\d+)$/.exec(ref)[1]] || null;
+    }
     if (spec.ref) argv.push(ref);
     else argv.push('--root', ref);
   }
 
   const appless = ['list-apps', 'clipboard-set', 'clipboard-get', 'list-notifications', 'notification-action'];
-  if (!app && !appless.includes(cmd) && !(cmd === 'wait' && p.ms !== undefined && p.text === undefined)) {
+  if (!full && !app && !appless.includes(cmd) && !(cmd === 'wait' && p.ms !== undefined && p.text === undefined)) {
     if (channel === 'cloud' || cmd !== 'list-windows') throw err('DESKTOP_DENIED', `desktop ${cmd} 要给 app 或 window`);
   }
-  if (app) {
+  if (app && !full) {
     const why = deniedApp(app, channel);
     if (why) throw err('DESKTOP_DENIED', why);
     if (channel === 'cloud' && !(ctx.apps || []).includes(appKey(app))) {

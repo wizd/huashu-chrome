@@ -41,6 +41,8 @@ export const CLOUD_CMDS = new Set([
   // 桌面：经同机的原生宿主转给 agent-desktop。按任务批准应用（apps），规矩在 desktop-policy.js；
   // 用户没在侧栏里启用桌面能力时宿主根本连不上，这几条只会报「没有桌面设备」。
   'desktop', 'apps', 'devices',
+  // 桌面完全模式：跑命令、读写文件。开关在用户本机，宿主每条现查；没开时这两条只会报 FULL_OFF
+  'shell', 'file',
 ]);
 
 // ---------- 站点申请 ----------
@@ -362,6 +364,13 @@ export function checkCommand(cmd, params, { hosts, origin }) {
       return p;
     case 'devices':
       return {};
+    // 原样交给宿主，由完全模式开关决定能不能跑
+    case 'shell':
+      if (typeof p.command !== 'string' || !p.command.trim()) throw err('CLOUD_DENIED', 'shell 要给 command');
+      return p;
+    case 'file':
+      if (typeof p.path !== 'string' || !p.path.trim()) throw err('CLOUD_DENIED', 'file 要给 path');
+      return p;
     case 'folders': {
       // use 可以是空的：那是在问「这个浏览器挂了哪些」，不是在申请。
       const { names, bad } = cleanFolderNames(p.use);

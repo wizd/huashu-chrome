@@ -117,9 +117,23 @@ switch (cmd) {
       const r = nat.uninstall();
       console.log(r.removed.length ? `已移除：\n  ${r.removed.join('\n  ')}` : '本来就没有登记。');
     } else if (sub === 'status') {
+      const { fullMode } = await import('./lib/paths.js');
       for (const l of (await nat.status()).lines) console.log(`  ${l}`);
+      console.log(`  完全模式：${fullMode() ? '开（云端任务可以跑命令、读写文件、用全部桌面命令）' : '关'}`);
+    } else if (sub === 'full') {
+      const { setFullMode, FULL_FILE } = await import('./lib/paths.js');
+      const v = process.argv[4];
+      if (v !== 'on' && v !== 'off') {
+        console.log('用法：vcorp-chrome desktop full on | off');
+        break;
+      }
+      if (setFullMode(v === 'on')) {
+        console.log(`已打开桌面完全模式（${FULL_FILE}）。`);
+        console.log('配对服务器上的任务现在可以在这台电脑上跑任意命令、读写任意文件、操作任何应用。');
+        console.log('关掉：npx vcorp-chrome desktop full off');
+      } else console.log('已关闭桌面完全模式。');
     } else {
-      console.log('用法：vcorp-chrome desktop install | uninstall | status');
+      console.log('用法：vcorp-chrome desktop install | uninstall | status | full on|off');
     }
     break;
   }
@@ -156,6 +170,7 @@ switch (cmd) {
   vcorp-chrome bridge --foreground   前台跑桥（调试用）
   vcorp-chrome install --dry-run     只看会改哪些配置，不写
   vcorp-chrome desktop install|uninstall|status   让云端任务也能操作桌面应用（登记原生消息宿主）
+  vcorp-chrome desktop full on|off   完全模式：云端任务能跑命令、读写文件、用全部桌面命令
 
 配置目录 ${HOME}`);
 }

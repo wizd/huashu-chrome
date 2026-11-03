@@ -13,6 +13,21 @@ export const LOG_FILE = path.join(HOME, 'bridge.log');
 
 export const MACHINE_FILE = path.join(HOME, 'machine.json');
 
+// 桌面完全模式的开关。只在这台电脑上用 `vcorp-chrome desktop full on|off` 改，
+// 原生宿主每条命令现读一次——服务器、网页、扩展都写不到这个文件。
+export const FULL_FILE = path.join(HOME, 'desktop-full.json');
+
+export function fullMode() {
+  try { return JSON.parse(fs.readFileSync(FULL_FILE, 'utf8')).on === true; } catch { return false; }
+}
+
+export function setFullMode(on) {
+  ensureHome();
+  if (!on) { fs.rmSync(FULL_FILE, { force: true }); return false; }
+  fs.writeFileSync(FULL_FILE, JSON.stringify({ on: true, at: new Date().toISOString() }, null, 2), { mode: 0o600 });
+  return true;
+}
+
 export const DEFAULT_PORT = 8899;
 
 // 这台电脑（这个系统用户）的身份。本机 MCP 和原生宿主（native-host/）读同一个文件，

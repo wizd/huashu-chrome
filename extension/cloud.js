@@ -672,7 +672,30 @@ const DESK_SNAPS = 4;          // 每个任务记几份快照的户口。户口�
 
 const deskInfo = async () => (await chrome.storage.local.get(DESK))[DESK] || null;
 
-function hostCall(msg) {
+// 宿主回包超过 1MB 时先回 { paged }，这里一段一段取回再拼（见 native-host/full.js）
+async function hostCall(msg) {
+  const r = await hostCallOnce(msg);
+  if (!r.paged) return r;
+  const { id, size } = r.paged;
+  const parts = [];
+  let offset = 0;
+  for (let i = 0; i < 200; i++) {
+    const pg = await hostCallOnce({ op: 'page', id, offset });
+    if (!pg.ok || !pg.page) return pg;
+    const bin = atob(pg.page.data);
+    const bytes = new Uint8Array(bin.length);
+    for (let j = 0; j < bin.length; j++) bytes[j] = bin.charCodeAt(j);
+    parts.push(bytes);
+    offset += bytes.length;
+    if (pg.page.done || offset >= size) break;
+  }
+  const all = new Uint8Array(offset);
+  let at = 0;
+  for (const b of parts) { all.set(b, at); at += b.length; }
+  return JSON.parse(new TextDecoder().decode(all));
+}
+
+function hostCallOnce(msg) {
   if (!chrome.runtime.sendNativeMessage) {
     return Promise.reject(err('NO_DEVICE', '这个浏览器没有启用桌面能力。请用户在扩展侧栏「桌面应用」里点「启用桌面能力」。'));
   }
@@ -812,8 +835,70 @@ function decideDesk(jobId, allow) {
 
 const windowsMap = (list) => Object.fromEntries((Array.isArray(list) ? list : []).map((w) => [w.id, { app: w.app_name, title: w.title || '' }]));
 
+const NO_DESK = '这个浏览器没有启用桌面能力。请用户在扩展侧栏「桌面应用」里点「启用桌面能力」。';
+const FULL_OFF = '这台电脑没有打开桌面完全模式。请用户在这台电脑的终端运行 npx vcorp-chrome desktop full on';
+
+async function hostFull() {
+  try { return (await hostCallOnce({ op: 'mode' })).full === true; } catch { return false; }
+}
+
+const hostTimeout = (p, base = 30000) => Math.min(Math.max((Number(p.timeout) || 0) + 10000, base), 7 * 60 * 1000);
+
+// 完全模式的 desktop：argv 原样交给 agent-desktop（任意命令），或照常写 cmd/app/ref，
+// 只做参数规整、不做任何闸门。截图回 dataUrl，客户端存成文件。
+async function desktopFull(p, task) {
+  const session = `cloud-${task.jobId}`;
+  let argv;
+  let cmd;
+  let target = null;
+  if (Array.isArray(p.argv)) {
+    argv = p.argv.map(String);
+    cmd = argv[0] || '';
+    if (!argv.some((a) => a.startsWith('--session'))) argv.push(`--session=${session}`);
+  } else {
+    const chk = checkDesktop(p, { channel: 'cloud', session, full: true, lookup: () => null, windows: () => null });
+    ({ argv, cmd, target } = chk);
+  }
+  const env = await hostCall({ op: 'run', argv, timeoutMs: hostTimeout(p) });
+  if (!env.ok) throw err(env.error?.code || 'INTERNAL', renderEnvelope(cmd, env, { target }));
+  if (cmd === 'screenshot' && typeof env.data?.data === 'string') {
+    const { data, format = 'png', width, height } = env.data;
+    return { text: `截图 ${width}×${height}`, dataUrl: `data:image/${format};base64,${data}`, audit: `screenshot ${p.app || ''}` };
+  }
+  return { text: renderEnvelope(cmd, env, { target }), audit: `${cmd}${p.app ? ` ${p.app}` : ''}` };
+}
+
+// shell / file：只在完全模式下有，宿主那边再查一次开关
+async function fullCmd(cmd, p) {
+  if (!(await desktopChild())) throw err('NO_DEVICE', NO_DESK);
+  if (!(await hostFull())) throw err('FULL_OFF', FULL_OFF);
+  const env = await hostCall({ op: cmd, params: p });
+  if (!env.ok) throw err(env.error?.code || 'INTERNAL', `${env.error?.code || 'INTERNAL'} ${env.error?.message || ''}`.trim());
+  const d = env.data || {};
+  if (cmd === 'shell') {
+    const lines = [`exit ${d.exitCode}${d.timedOut ? '（超时被杀）' : ''}${d.truncated ? '（输出过长，已截断）' : ''} · ${d.ms}ms · ${d.cwd}`];
+    if (d.stdout) lines.push(d.stdout);
+    if (d.stderr) lines.push(`--- stderr ---\n${d.stderr}`);
+    const { stdout: _o, stderr: _e, ...meta } = d;   // 正文已在 text 里，不再传第二份
+    return { text: lines.join('\n'), ...meta, audit: `shell ${String(p.command).slice(0, 120)}` };
+  }
+  if (p.action === 'read') {
+    const { content, ...meta } = d;
+    // base64 的内容放 content，客户端按 out 存成文件；文本直接给 text
+    return d.encoding === 'utf8'
+      ? { text: content, ...meta, audit: `file read ${d.path}` }
+      : { text: `（base64，${d.bytes} 字节）`, content, ...meta, audit: `file read ${d.path}` };
+  }
+  if (p.action === 'list') {
+    const text = d.items.map((x) => `${x.type === 'dir' ? 'd' : '-'} ${String(x.size ?? '').padStart(10)}  ${x.mtime || ''}  ${x.path}`).join('\n') + (d.more ? '\n…（超过 2000 项，没列完）' : '');
+    return { text, path: d.path, count: d.items.length, more: d.more, audit: `file list ${d.path}` };
+  }
+  return { text: JSON.stringify(d), ...d, audit: `file ${p.action} ${d.path || d.from || ''}` };
+}
+
 async function desktopCmd(p, task, cfg) {
-  if (!(await desktopChild())) throw err('NO_DEVICE', '这个浏览器没有启用桌面能力。请用户在扩展侧栏「桌面应用」里点「启用桌面能力」。');
+  if (!(await desktopChild())) throw err('NO_DEVICE', NO_DESK);
+  if (await hostFull()) return desktopFull(p, task);
   if (p.steps !== undefined) throw err('DESKTOP_DENIED', '云端的桌面命令一条一条发，不支持 steps');
   const session = `cloud-${task.jobId}`;
   const desk = { snaps: { ...(task.desk?.snaps || {}) }, windows: { ...(task.desk?.windows || {}) } };
@@ -864,7 +949,7 @@ async function handle(m) {
   let from = self;
   try {
     const child = await desktopChild();
-    const where = routeHere({ ...m, cap: m.cmd === 'desktop' ? 'desktop' : capOf(m) }, { self, children: child ? [child] : [] });
+    const where = routeHere({ ...m, cap: ['desktop', 'shell', 'file'].includes(m.cmd) ? 'desktop' : capOf(m) }, { self, children: child ? [child] : [] });
     from = where.device;
     const data = await exec(m);
     let out = data;
@@ -904,7 +989,7 @@ async function exec(m) {
 
   if (m.cmd === 'devices') return devicesCmd(cfg);
   const reason = ['sites', 'folders', 'apps'].includes(m.cmd) ? String(m.params?.reason || '').slice(0, 200) : '';
-  const task = await taskFor(m.job, cfg, reason, { allowEmpty: m.cmd === 'folders' || m.cmd === 'apps' });
+  const task = await taskFor(m.job, cfg, reason, { allowEmpty: ['folders', 'apps', 'desktop', 'shell', 'file'].includes(m.cmd) });
   const jobId = task.jobId;
   const updated = await updateTask(jobId, (t) => { t.count += 1; t.lastAt = Date.now(); });
   if (!updated) throw err('CLOUD_DENIED', '这个任务已经结束');
@@ -916,6 +1001,7 @@ async function exec(m) {
   if (m.cmd === 'folders') return requestFolders(updated, p, cfg);
   if (m.cmd === 'apps') return requestApps(updated, p, cfg);
   if (m.cmd === 'desktop') return desktopCmd(p, updated, cfg);
+  if (m.cmd === 'shell' || m.cmd === 'file') return fullCmd(m.cmd, p);
   if (m.cmd === 'fs_list' || m.cmd === 'fs_read') return fsCmd(m.cmd, p, updated);
   const sid = sidOf(jobId);
   const label = labelOf(cfg.origin);

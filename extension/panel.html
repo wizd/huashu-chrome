@@ -17,11 +17,12 @@
   [hidden] { display: none !important; }
   body { margin: 0; background: var(--bg); color: var(--ink);
          font: 13px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; }
-  header { display: flex; align-items: center; gap: 10px; padding: 14px 16px 10px; }
-  header img { width: 30px; height: 30px; border-radius: 50%; }
-  header .t { font-weight: 600; font-size: 14px; }
-  header .v { color: var(--mute); font-size: 11px; margin-left: 4px; font-weight: 400; }
-  .pill { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--mute);
+  header { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px;
+           padding: 10px 12px 8px; background: var(--bg); }
+  header .jump { font-size: 12px; text-decoration: none; }
+  header .jump:hover { text-decoration: underline; }
+  header .jump.bad { color: var(--bad); font-weight: 500; }
+  .pill { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--mute);
           padding: 3px 9px; border-radius: 999px; background: var(--soft); }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: #a8a29e; flex: none; }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
@@ -102,8 +103,7 @@
   a.guide:hover { background: var(--soft); }
   a.guide .go { color: var(--accent); font-size: 12px; flex: none; }
   /* 需要你处理：置顶、闪烁，处理完就收起 */
-  header .right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
-  .need { all: unset; cursor: pointer; font-size: 11.5px; font-weight: 600; color: #fff; background: var(--warn);
+  .need { margin-left: auto; all: unset; cursor: pointer; font-size: 11.5px; font-weight: 600; color: #fff; background: var(--warn);
           padding: 3px 9px; border-radius: 999px; animation: blink 1.2s ease-in-out infinite; }
   .alert { border: 1.5px solid var(--warn); background: color-mix(in srgb, var(--warn) 8%, var(--card));
            animation: flash 1.2s ease-in-out infinite; }
@@ -124,13 +124,11 @@
   .help code { flex: none; }
 </style>
 
+<!-- 侧栏自带标题栏已经写了名字，这里只留状态 -->
 <header>
-  <img src="icons/icon128.png" alt="" />
-  <div class="t">vcorp-chrome<span class="v" id="ver"></span></div>
-  <div class="right">
-    <button class="need" id="needPill" type="button" hidden></button>
-    <div class="pill"><span class="dot" id="pilldot"></span><span id="pilltxt">检查中…</span></div>
-  </div>
+  <div class="pill"><span class="dot" id="pilldot"></span><span id="pilltxt">检查中…</span></div>
+  <a class="jump" id="connJump" href="#conn">连接详情</a>
+  <button class="need" id="needPill" type="button" hidden></button>
 </header>
 
 <main>
@@ -160,14 +158,7 @@
     <div class="sess" id="sess"></div>
   </section>
 
-  <!-- 3. 状态 -->
-  <section>
-    <h2>连接</h2>
-    <div id="lights"></div>
-    <div class="cmd" id="reconnRow" hidden><button class="btn" id="reconn">重连</button>
-      <span class="sub" style="color:var(--mute);font-size:12px">插件没消失，断的只是到终端的连接</span></div>
-  </section>
-
+  <!-- 3. 云端 -->
   <section id="cloud">
     <h2>云端发布</h2>
     <!-- 没配对 -->
@@ -237,7 +228,14 @@
     </label>
   </section>
 
-  <!-- 5. 帮助：都折叠在最下面 -->
+  <!-- 5. 帮助：连接诊断 + 折叠说明，都在最下面；顶上状态旁的「连接详情」跳到这里 -->
+  <section id="conn">
+    <h2>连接</h2>
+    <div id="lights"></div>
+    <div class="cmd" id="reconnRow" hidden><button class="btn" id="reconn">重连</button>
+      <span class="sub" style="color:var(--mute);font-size:12px">插件没消失，断的只是到终端的连接</span></div>
+  </section>
+
   <section class="help">
     <h2>帮助</h2>
     <a class="sw-row guide" id="guide" href="welcome.html">

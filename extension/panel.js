@@ -21,7 +21,10 @@ const send = (msg) => chrome.runtime.sendMessage(msg).catch(() => null);
 const MINE = chrome.runtime.getManifest().version;
 const ACT_MS = 5000;   // 「正在做」只亮 5 秒——停手了还亮着就是在骗人
 
-$('ver').textContent = `v${MINE}`;
+$('connJump').onclick = (e) => {
+  e.preventDefault();
+  $('conn').scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
 
 const relTime = (t) => {
   const s = Math.max(0, Math.round((Date.now() - t) / 1000));
@@ -189,6 +192,9 @@ async function renderConn(sessionCount) {
 
   $('pilldot').className = `dot ${pill[0]}`;
   $('pilltxt').textContent = pill[1];
+  // 断了或有更新时，跳转链接改成「去修复」，修法在下面的连接区
+  $('connJump').textContent = pill[0] === 'ok' ? '连接详情' : '去修复';
+  $('connJump').className = `jump${pill[0] === 'bad' ? ' bad' : ''}`;
 }
 
 async function refreshAll() {

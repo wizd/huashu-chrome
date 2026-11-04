@@ -1,6 +1,6 @@
 # 隐私政策（vcorp-chrome）
 
-最后更新：2026-11-02
+最后更新：2026-11-04
 
 vcorp-chrome 是基于花叔（alchaincyf）的开源项目 [huashu-chrome](https://github.com/alchaincyf/huashu-chrome) 修改的版本，许可证为 MIT。本政策说明这一修改版如何处理数据。这一份的源代码在 [github.com/wizd/huashu-chrome](https://github.com/wizd/huashu-chrome)。
 
@@ -30,6 +30,7 @@ vcorp-chrome 是基于花叔（alchaincyf）的开源项目 [huashu-chrome](http
 - 侧栏里点「启用桌面能力」时，浏览器才会申请可选权限 `nativeMessaging`。不点就不会申请，也不会登记原生宿主。
 - 启用前要在本机运行一次 `npx vcorp-chrome desktop install`。它在 `~/.vcorp-chrome/desktop-host/` 放下一个只允许本扩展调用的原生宿主，并在当前用户的 Chrome / Edge 注册表里登记。宿主在你的电脑上启动 agent-desktop，用来查看和操作本机应用窗口。
 - 每个任务要用哪个应用，扩展都会先问你。浏览器主窗口、密码管理器、终端和系统设置不操作。付款类按钮不做。
+- 完全模式默认关闭，只能在这台电脑上用 `vcorp-chrome desktop full on` 打开。打开之后，已配对的云端任务可以在这台电脑上执行 shell、读写任意文件，并操作任意桌面应用，不再逐个批准。这些命令和结果会发到你配对的那台服务器。`desktop full off` 回到上面的限制。
 - 本机 agent 走本机通道，内容不出这台电脑。已经配对的云端任务，操作结果会发到你配对的那台服务器，和页面内容同一条路。
 - 机器标识写在 `~/.vcorp-chrome/machine.json`，只用来区分这台电脑。
 

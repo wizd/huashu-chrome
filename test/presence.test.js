@@ -25,14 +25,14 @@ test('虚拟光标的钩子名两侧一致', () => {
 
 test('光标钩子在遮挡检测之前调用', () => {
   // 顺序是安全约束不是风格：钩子内部会让驾驶舱对落点让路（pointer-events:none
-  // 同步生效）。反过来的话，elementFromPoint 会把我们自己的面板当成遮挡物，
+  // 同步生效）。反过来的话，命中检测会把我们自己的面板当成遮挡物，
   // L2 的真实点击更会直接点进面板里。
-  // 范围限定在 doLocate 里：realClick 在文件更早的位置也有一个
-  // elementFromPoint，那个不归这条约束管
+  // 范围限定在 doLocate 里：realClick 在文件更早的位置也做命中检测，
+  // 那个不归这条约束管
   const fn = content.slice(content.indexOf('async function doLocate'));
   const i = fn.indexOf('window.__hcCursor?.(x, y');
-  const j = fn.indexOf('document.elementFromPoint(x, y)');
-  assert.ok(i > 0 && j > 0 && i < j, 'doLocate 里光标钩子必须在 elementFromPoint 之前');
+  const j = fn.indexOf('occluderAt(el, x, y)');
+  assert.ok(i > 0 && j > 0 && i < j, 'doLocate 里光标钩子必须在遮挡检测之前');
 });
 
 test('ask 协议的四个动词都由 mark.js 接住', () => {

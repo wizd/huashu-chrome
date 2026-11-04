@@ -18,6 +18,7 @@ const PORT = 8124;
 const PAGE = `http://127.0.0.1:${PORT}/playground.html`;
 const FLOW = `http://127.0.0.1:${PORT}/flow.html`;
 const CREDS = `http://127.0.0.1:${PORT}/creds.html`;
+const SHADOW = `http://127.0.0.1:${PORT}/shadow.html`;
 const NEWTAB = `http://127.0.0.1:${PORT}/newtab.html`;
 
 let server, server6, c, mainTab;
@@ -113,7 +114,55 @@ test('shadow DOM 里的控件进得了快照，也点得动', async () => {
   const snap = await c.call('snapshot', {});
   assert.match(snap.text, /影子里的输入框/);
   assert.match(snap.text, /影子按钮/);
+  const ref = /\[(e\d+)\]\s+button\s+"影子按钮"/.exec(snap.text)[1];
+  await c.call('click', { ref, snapshotId: snap.snapshotId });
+  assert.equal(await val('shadowHost.shadowRoot.getElementById("shadowOut").textContent'), '"已点击"');
 });
+
+// 靶场 shadow.html 按 ?case= 摆不同的局面，都是微前端（<wujie-app>）的形状
+const shadowPage = async (kase) => {
+  await c.call('navigate', { url: `${SHADOW}?case=${kase}&t=${Math.random().toString(36).slice(2)}` });
+  const snap = await c.call('snapshot', {});
+  const m = /\[(e\d+)\]\s+button\s+"发表视频"/.exec(snap.text);
+  assert.ok(m, '快照里没有目标按钮：\n' + snap.text.slice(0, 400));
+  return { ref: m[1], snapshotId: snap.snapshotId };
+};
+const shadowClicks = () => val('window.__clicks');
+
+for (const [kase, why] of [
+  ['plain', 'shadow 里没遮挡的按钮'],
+  ['nested', '两层 shadow 嵌套'],
+  ['slotted', '塞进 <slot> 的按钮'],
+]) {
+  test(`shadow：${why}点得动，不会被判成被宿主遮挡`, async () => {
+    await c.call('click', await shadowPage(kase));
+    assert.equal(await shadowClicks(), '1');
+  });
+}
+
+test('后台稀疏页：快照返回的 snapshotId 就是当前有效的那个', async () => {
+  // 内容少的后台页，snapshot 会自动重拍一次。曾经把作废的第一份还给 agent，
+  // 页面没变，下一次点击也报 STALE_SNAPSHOT。这里不用 shadow，只看编号这一件事。
+  await c.call('click', await shadowPage('light'));
+  assert.equal(await shadowClicks(), '1');
+});
+
+test('shadow：real:true 走的 L2 也过得了定位，事件是真实的', async () => {
+  await c.call('click', { ...(await shadowPage('plain')), real: true });
+  assert.equal(await shadowClicks(), '1');
+  assert.equal(await val('window.__trusted'), 'true');
+});
+
+for (const [kase, why] of [
+  ['innerOverlay', '宿主内部的弹层'],
+  ['outerOverlay', '宿主外面的弹层'],
+]) {
+  test(`shadow：${why}盖住按钮时仍然报遮挡，不能点穿`, async () => {
+    const r = await c.call('click', await shadowPage(kase)).catch((e) => e);
+    assert.match(String(r?.message || r?.text || JSON.stringify(r)), /NOT_INTERACTABLE|遮挡/);
+    assert.equal(await shadowClicks(), '0');
+  });
+}
 
 test('iframe 里的元素带 @fN 后缀出现在快照里，并且能操作', async () => {
   await go();

@@ -702,6 +702,36 @@
     }
   };
 
+  // ---------- 穿透 shadow 的命中检测 ----------
+  //
+  // document.elementFromPoint 碰到 shadow 只返回最外层宿主，Node.contains 又不跨
+  // shadow 边界。两个一起用，shadow 里的控件永远「被自己的宿主遮挡」——微前端
+  // （wujie 把整个子应用放进 <wujie-app> 的 shadow root）上每个按钮都点不了。
+  // 不能简单放行「命中宿主」：宿主里盖着弹层时那才是真遮挡，所以要逐层钻到底。
+  // closed root 读不到、停在宿主上：快照本来也进不去，那里头的元素拿不到 ref。
+  function deepElementFromPoint(x, y) {
+    let hit = document.elementFromPoint(x, y);
+    while (hit?.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    return hit;
+  }
+
+  // 沿渲染树往上走（assignedSlot 优先）：a 是否在渲染上包含 n。
+  // 只走 parentNode 的话，shadow 里的容器「不包含」塞进它 <slot> 的内容。
+  function flatContains(a, n) {
+    for (; n; n = n.assignedSlot || n.parentNode || n.host) if (n === a) return true;
+    return false;
+  }
+
+  // 点这个坐标会打到别的东西上时返回那个东西，否则 null
+  function occluderAt(el, x, y) {
+    const hit = deepElementFromPoint(x, y);
+    return hit && !flatContains(el, hit) && !flatContains(hit, el) ? hit : null;
+  }
+
   function realClick(el) {
     const r = el.getBoundingClientRect();
     const x = r.left + r.width / 2;
@@ -710,8 +740,8 @@
     // 真实点击的 event.target 是光标下**最内层**的元素，事件再往上冒泡。
     // 直接派发在容器上，target 就成了容器本身——组件按 event.target 分支的逻辑
     // 会走进另一条路。react-select 的 Control 就读 event.target.tagName。
-    const inner = document.elementFromPoint(x, y);
-    if (inner && el.contains(inner)) el = inner;
+    const inner = deepElementFromPoint(x, y);
+    if (inner && flatContains(el, inner)) el = inner;
     const base = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, button: 0 };
     const ptr = { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true };
 
@@ -925,15 +955,14 @@
 
     // 虚拟光标（mark.js，和本文件同一个 isolated world）：坐标就地递过去，
     // 零消息往返。L1 和 L2 都走 locate，所以两条路的光标一致。
-    // **必须在下面的 elementFromPoint 之前调**——坐标落在驾驶舱底下时它要
+    // **必须在下面的遮挡检测之前调**——坐标落在驾驶舱底下时它要
     // 先让路（pointer-events:none 同步生效），否则遮挡检测会把我们自己的
     // 面板当成遮挡物，L2 的真实点击更会直接点进面板里。
     window.__hcCursor?.(x, y, ({ click: 'click', type: 'type', select: 'type', key: 'key' })[p.forCmd] || 'aim');
 
     // 遮挡检测和 doClick 保持同一套判断——L2 打的是坐标，遮挡时点中的是遮挡物，
     // 比 L1 更危险，更不能放过
-    const top = document.elementFromPoint(x, y);
-    if (top && top !== el && !el.contains(top) && !top.contains(el)) {
+    if (occluderAt(el, x, y)) {
       throw fail('NOT_INTERACTABLE', `${p.ref || p.selector} 被其它元素遮挡（可能有弹窗/浮层）。先处理遮挡物。`);
     }
     // 视口外的坐标 CDP 打不中。scrollIntoView 之后仍在视口外，说明它在一个
@@ -1228,8 +1257,7 @@
     el.scrollIntoView({ block: 'center', behavior: 'instant' });
     // 被遮挡检测：点下去要是命中别的元素，多半有弹层盖着，这时候点了就是误操作
     const r = el.getBoundingClientRect();
-    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-    if (top && top !== el && !el.contains(top) && !top.contains(el)) {
+    if (occluderAt(el, r.left + r.width / 2, r.top + r.height / 2)) {
       throw fail('NOT_INTERACTABLE', `${p.ref} 被其它元素遮挡（可能有弹窗/浮层）。先处理遮挡物。`);
     }
     realClick(el);

@@ -2002,7 +2002,9 @@ const HANDLERS = {
         await cdp.forceFrame(id);
         await domQuiet(id, { quiet: 300, cap: 1500, deadline: Date.now() + 2500 });
         const again = await guardCreds(id, await snapshotAll(id, p));
-        if (!sparse(again.text)) snap = { ...again, text: '（这一页在后台没渲染完，已自动推了一帧再拍）\n' + again.text };
+        // 重拍过，页面上生效的就是这一份。不管内容多不多都得返回它：还给 agent 第一份的话，
+        // 它手里的 snapshotId 已经作废，下一次点击必报 STALE_SNAPSHOT，而页面其实没变
+        snap = sparse(again.text) ? again : { ...again, text: '（这一页在后台没渲染完，已自动推了一帧再拍）\n' + again.text };
       } catch { /* 推不动就按原样返回 */ }
     }
     return drift ? { ...snap, text: drift + '\n' + snap.text } : snap;

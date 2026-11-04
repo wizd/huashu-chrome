@@ -13,7 +13,7 @@ import { resolveTarget, routeHere, stampFrom, cleanDevice, capOf } from '../exte
 import { DesktopSession } from '../src/lib/desktop.js';
 import { recheck } from '../native-host/host.js';
 import { CLOUD_CMDS, checkCommand } from '../extension/cloud-policy.js';
-import { extensionId } from '../src/lib/native-install.js';
+import { extensionId, allowedOrigins, STORE_EXTENSION_ID } from '../src/lib/native-install.js';
 
 const denied = (fn, code = 'DESKTOP_DENIED') => assert.throws(fn, (e) => e.code === code);
 
@@ -189,6 +189,12 @@ test('宿主清单只放行本扩展：扩展 id 由 manifest 的 key 算出', (
   const id = extensionId(Buffer.from('test-key').toString('base64'));
   assert.match(id, /^[a-p]{32}$/);
   assert.equal(id, extensionId(Buffer.from('test-key').toString('base64')));
+});
+
+test('宿主清单同时放行开发者模式版和商店版：商店包没有 key，id 算不出来', () => {
+  const id = extensionId(Buffer.from('test-key').toString('base64'));
+  assert.deepEqual(allowedOrigins(id), [`chrome-extension://${id}/`, `chrome-extension://${STORE_EXTENSION_ID}/`]);
+  assert.deepEqual(allowedOrigins(STORE_EXTENSION_ID), [`chrome-extension://${STORE_EXTENSION_ID}/`]);
 });
 
 test('云端命令表：desktop / apps 可用，apps 申请过滤掉浏览器和终端', () => {

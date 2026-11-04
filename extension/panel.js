@@ -442,7 +442,9 @@ $('deskOn').onclick = async () => {
   const granted = await chrome.permissions.request({ permissions: ['nativeMessaging'] }).catch(() => false);
   if (!granted) { $('deskState').textContent = '没有拿到权限，桌面能力保持关闭'; return; }
   $('deskState').textContent = '启用中…第一次启用要重载扩展，侧栏若关掉了，重新打开即可';
-  await cloudCall('desktopEnable');
+  const r = await cloudCall('desktopEnable');
+  // 失败原因写在桌面这一栏，不要留着「启用中…」，也不用在顶上再报一遍
+  if (r && !r.ok && r.error) { $('deskState').textContent = r.error; $('cloudErr').hidden = true; }
 };
 $('deskOff').onclick = async () => {
   await cloudCall('desktopDisable');
@@ -453,7 +455,7 @@ $('deskOff').onclick = async () => {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   const keys0 = Object.keys(changes);
-  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudLog', 'cloudStatus', 'cloudClaim', 'folderTick', 'cloudDesktop'].includes(k))) void cloudCall('state');
+  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudLog', 'cloudStatus', 'cloudClaim', 'folderTick', 'cloudDesktop', 'cloudDesktopError'].includes(k))) void cloudCall('state');
   if (area !== 'session') return;
   const keys = Object.keys(changes);
   if (keys.includes(`panel:${tabId}`) || keys.includes('liveSids')) renderPage();

@@ -2,7 +2,7 @@
 //
 // Chrome 找宿主靠一份清单：Windows 在注册表 HKCU 下登记清单路径，macOS / Linux 把清单放进
 // 浏览器约定的目录。清单的 path 指向一个启动脚本，脚本用装它时的那个 node 跑 native-host/host.js。
-// allowed_origins 只写本扩展：扩展 id 由 manifest.json 里的 key 算出来，不手抄。
+// allowed_origins 只写本扩展：开发者模式加载的 id 由 manifest.json 里的 key 算出来，再加上商店版的 id。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,6 +26,14 @@ export function extensionId(manifestKey) {
 function ourExtensionId() {
   const mf = JSON.parse(fs.readFileSync(path.join(ROOT, 'extension', 'manifest.json'), 'utf8'));
   return extensionId(mf.key);
+}
+
+// 商店版的 id 是商店分配的：打商店包时 manifest.key 被剥掉（scripts/pack-extension.mjs），算不出来，只能写死
+export const STORE_EXTENSION_ID = 'migojdmaegllchbambngejkclndannnf';
+
+// 清单放行的来源：开发者模式加载的（id 由 key 算出）和商店装的，两种都是本扩展
+export function allowedOrigins(id = ourExtensionId()) {
+  return [...new Set([id, STORE_EXTENSION_ID])].map((x) => `chrome-extension://${x}/`);
 }
 
 const REG_KEYS = [
@@ -57,7 +65,7 @@ export function install() {
     description: 'vcorp-chrome desktop host',
     path: launcher,
     type: 'stdio',
-    allowed_origins: [`chrome-extension://${id}/`],
+    allowed_origins: allowedOrigins(id),
   }, null, 2));
   const placed = [];
   if (win) {

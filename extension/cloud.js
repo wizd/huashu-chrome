@@ -668,6 +668,7 @@ const updateTask = (jobId, fn) => serial(async () => {
 const HOST = 'ai.vcorp.desktop';
 const DESK = 'cloudDesktop';   // storage.local：启用桌面能力时宿主报的设备
 const DESK_PENDING = 'cloudDesktopPending';   // 为补上 nativeMessaging 绑定而重载，重载后接着启用
+const DESK_ERR = 'cloudDesktopError';   // 上次启用失败的原因，给侧栏看。重载后的那次启用没人接它抛的错
 const DESK_SNAPS = 4;          // 每个任务记几份快照的户口。户口按 ref 存名字，大应用一份上百 KB
 
 const deskInfo = async () => (await chrome.storage.local.get(DESK))[DESK] || null;
@@ -717,6 +718,7 @@ async function desktopChild() {
 }
 
 async function enableDesktop() {
+  await chrome.storage.local.remove(DESK_ERR);
   // 运行时才授予的 nativeMessaging，Chrome 不给已经在跑的 service worker 补上绑定，重载后才有
   if (!chrome.runtime.sendNativeMessage) {
     if (!(await chrome.permissions.contains({ permissions: ['nativeMessaging'] }))) {
@@ -727,9 +729,16 @@ async function enableDesktop() {
     chrome.runtime.reload();
     return;
   }
-  const r = await hostCall({ op: 'hello' });
-  const device = cleanDevice(r.device);
-  if (!device || device.kind !== 'desktop') throw err('DEVICE_OFFLINE', '桌面宿主报上来的设备不对');
+  let device;
+  let r;
+  try {
+    r = await hostCall({ op: 'hello' });
+    device = cleanDevice(r.device);
+    if (!device || device.kind !== 'desktop') throw err('DEVICE_OFFLINE', '桌面宿主报上来的设备不对');
+  } catch (e) {
+    await chrome.storage.local.set({ [DESK_ERR]: (e.message || String(e)).replace('请用户在终端', '请在终端') });
+    throw e;
+  }
   await chrome.storage.local.set({ [DESK]: { device, ready: !!r.ready, at: Date.now() } });
   await log({ ev: 'desktop_on', msg: device.id });
   // 重连一次，服务器在 hello 里看到这台设备
@@ -737,7 +746,7 @@ async function enableDesktop() {
 }
 
 async function disableDesktop() {
-  await chrome.storage.local.remove(DESK);
+  await chrome.storage.local.remove([DESK, DESK_ERR]);
   await log({ ev: 'desktop_off' });
   disconnect(); retryDelay = 0; void connect();
 }
@@ -1156,8 +1165,8 @@ async function uploadMedia(p, tid, sid, label) {
 const fromPanel = (sender) => !sender.tab && typeof sender.url === 'string' && sender.url.startsWith(chrome.runtime.getURL(''));
 
 async function panelState() {
-  const [cfg, { [STATUS]: status }, { [CLAIM]: claimed }, tasks, { [LOG]: list = [] }] = await Promise.all([
-    getCfg(), chrome.storage.session.get(STATUS), chrome.storage.session.get(CLAIM), getTasks(), chrome.storage.local.get(LOG),
+  const [cfg, { [STATUS]: status }, { [CLAIM]: claimed }, tasks, { [LOG]: list = [], [DESK_ERR]: deskErr }] = await Promise.all([
+    getCfg(), chrome.storage.session.get(STATUS), chrome.storage.session.get(CLAIM), getTasks(), chrome.storage.local.get([LOG, DESK_ERR]),
   ]);
   return {
     cfg: cfg && { origin: cfg.origin, account: cfg.account, sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, paused: cfg.paused, pairedAt: cfg.pairedAt },
@@ -1165,7 +1174,7 @@ async function panelState() {
     claim: claimed && claimed.expiresAt > Date.now() ? { origin: claimed.origin, account: claimed.account } : null,
     tasks: Object.values(tasks).sort((a, b) => b.lastAt - a.lastAt).map(({ desk: _desk, ...t }) => t),
     folders: await folders.listFolders().catch(() => []),
-    desktop: await deskInfo().then((d) => (d && chrome.runtime.sendNativeMessage ? d : null)),
+    desktop: await deskInfo().then((d) => (d && chrome.runtime.sendNativeMessage ? d : deskErr ? { error: deskErr } : null)),
     log: list.slice(-40).reverse(),
     defaultOrigin: policy.DEFAULT_ORIGIN,
   };

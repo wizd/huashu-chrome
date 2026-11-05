@@ -349,6 +349,8 @@ function renderCloud(s) {
   }
   if (!on) { syncAlert(); return; }
   if (document.activeElement !== $('deviceName')) $('deviceName').value = s.cfg.name;
+  // 改名时没连上：连上那一刻 hello 已把名字写进服务器，提示跟着变
+  if (namePending === s.cfg.name && s.status?.state === 'online') nameSaved(s);
 
   const [cls, word] = CLOUD_STATE[s.status?.state] || CLOUD_STATE.off;
   $('cloudDot').className = `dot ${cls}`;
@@ -432,11 +434,39 @@ $('claimYes').onclick = async () => {
   $('claimName').value = '';
 };
 $('claimNo').onclick = () => { $('claimName').value = ''; cloudCall('cancelClaim'); };
+// 改名的结果就写在输入框下面，不弹窗；服务器确认写入才说「已保存」
+let namePending = null;
+let nameMsgTimer = null;
+function nameMsg(cls, text) {
+  clearTimeout(nameMsgTimer);
+  const box = $('deviceNameMsg');
+  box.className = `msg ${cls}`;
+  box.textContent = text;
+  box.hidden = !text;
+}
+function nameSaved(s) {
+  namePending = null;
+  nameMsg('ok', `已保存，${new URL(s.cfg.origin).host} 的「执行设备」里现在显示「${s.cfg.name}」`);
+  nameMsgTimer = setTimeout(() => nameMsg('', ''), 8000);
+}
 $('deviceNameSave').onclick = async () => {
+  const name = $('deviceName').value;
   $('deviceNameSave').disabled = true;
-  await cloudCall('rename', { name: $('deviceName').value });
-  $('deviceNameSave').disabled = false;
   $('deviceName').blur();
+  namePending = null;
+  nameMsg('muted', '保存中…');
+  const r = await cloudCall('rename', { name });
+  $('deviceNameSave').disabled = false;
+  if (!r?.ok) { nameMsg('bad', `没有保存：${r?.error || '扩展没有响应，稍后再试'}`); return; }
+  const host = new URL(r.state.cfg.origin).host;
+  if (r.state.rename === 'saved') nameSaved(r.state);
+  else if (r.state.rename === 'unconfirmed') nameMsg('warn', `已发给 ${host}，但没等到确认。请到它的「执行设备」里看一下名字对不对`);
+  else {
+    namePending = r.state.cfg.name;
+    nameMsg('warn', r.state.status?.state === 'paused'
+      ? `已存到本机。云端已暂停，恢复后会更新到 ${host}`
+      : `已存到本机，还没连上 ${host}，连上后会自动更新`);
+  }
 };
 $('deviceName').onkeydown = (e) => { if (e.key === 'Enter') $('deviceNameSave').click(); };
 $('cloudAuto').onchange = (e) => cloudCall('setAuto', { auto: e.target.checked });

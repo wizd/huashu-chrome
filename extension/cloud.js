@@ -36,6 +36,8 @@ const DROP_MAX = 48 * 1024 * 1024;   // SW 读字节再交给页面的那条路�
 
 let deps = null;     // background 注入：run(cmd, params, tabId, sid, label)、setCloudLive(sids)
 let ws = null;
+let welcomed = false;   // 服务器回了 welcome，之后才能发 hello 以外的消息
+let helloConfig = '';  // hello 里报上去的设置，welcome 时跟最新的比
 let pingTimer = null;
 let retryTimer = null;
 let retryDelay = 0;
@@ -228,6 +230,7 @@ export async function connect() {
     try { sock = new WebSocket(socketUrl(cfg.origin)); }
     catch { scheduleReconnect(); return; }
     ws = sock;
+    welcomed = false;
     lastRx = Date.now();
     sock.onopen = () => { opened = true; };
     sock.onerror = (ev) => { ev?.preventDefault?.(); };
@@ -240,10 +243,12 @@ export async function connect() {
           if (!m || typeof m !== 'object') return;
           if (m.type === 'ping') { if (sock.readyState === 1) sock.send(JSON.stringify({ type: 'pong' })); return; }
           if (m.type === 'pong') return;
+          if (m.type === 'config_ok') { configAcks.get(m.id)?.('saved'); return; }
           if (m.type === 'challenge') {
             try {
               const sig = await sign(helloText(cfg.origin, cfg.deviceId, String(m.nonce || '')));
               const mounted = await folders.names().catch(() => []);
+              helloConfig = JSON.stringify(configMessage(cfg, mounted));
               // 名下的设备（目前只有同机的桌面）。签名只盖浏览器自己：桌面经这条已认证的连接中继，
               // 服务器能见到的桌面只有这个浏览器报上来的
               const child = await desktopChild();
@@ -259,6 +264,13 @@ export async function connect() {
           }
           if (m.type === 'welcome') {
             retryDelay = 0;
+            welcomed = true;
+            // 握手途中用户改了设置（比如改名）：hello 带的是旧的，先补发，再报「已连接」
+            const latest = await getCfg();
+            if (latest) {
+              const now = configMessage(latest, await folders.names().catch(() => []));
+              if (JSON.stringify(now) !== helloConfig) send(now);
+            }
             await setStatus('online', String(m.account || cfg.account || ''));
             return;
           }
@@ -275,6 +287,9 @@ export async function connect() {
     sock.onclose = (ev) => {
       if (ws !== sock) return;
       ws = null;
+      welcomed = false;
+      // 没等到确认就断了：名字已存在本机，下次 hello 会带上
+      for (const finish of [...configAcks.values()]) finish('offline');
       clearInterval(pingTimer); pingTimer = null;
       if (ev.code === 4401) { void setStatus('error', '服务器不认这个设备的签名，请重新配对'); return; }
       void setStatus('connecting');
@@ -303,7 +318,28 @@ export async function ensureCloud() {
   if (cfg?.deviceId && !cfg.paused) await connect();
 }
 
-const send = (m) => { try { if (ws?.readyState === 1) ws.send(JSON.stringify(m)); } catch { /* 发送时已经断开 */ } };
+// 服务器要先收到 hello，别的消息抢在前面它会以 4401 断开，所以 welcome 之前一律不发。
+// 这期间改的设置由 welcome 那里补发。
+const send = (m) => { try { if (welcomed && ws?.readyState === 1) ws.send(JSON.stringify(m)); } catch { /* 发送时已经断开 */ } };
+
+const configMessage = (cfg, mounted) => ({ type: 'config', name: deviceName(cfg), sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, folders: mounted });
+
+// 把名字发给服务器，等它写进库。结果：
+// saved 服务器已写入；offline 没连上，连上时 hello 会带上；unconfirmed 发了但没等到确认（如服务器还是老版本）
+const CONFIG_ACK_MS = 5000;
+const configAcks = new Map();
+async function pushName(cfg) {
+  await ensureCloud();   // service worker 可能刚被叫醒，连接还没建
+  if (!welcomed || ws?.readyState !== 1) return 'offline';
+  const mounted = await folders.names().catch(() => []);
+  const id = crypto.randomUUID();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => finish('unconfirmed'), CONFIG_ACK_MS);
+    const finish = (result) => { clearTimeout(timer); configAcks.delete(id); resolve(result); };
+    configAcks.set(id, finish);
+    try { ws.send(JSON.stringify({ ...configMessage(cfg, mounted), id })); } catch { finish('offline'); }
+  });
+}
 
 // ---------- 任务 ----------
 
@@ -1189,7 +1225,7 @@ async function patchCfg(patch) {
   const next = { ...rest, ...patch };
   await setCfg(next);
   const mounted = await folders.names().catch(() => []);
-  send({ type: 'config', name: deviceName(next), sites: allowOf(next), auto: !!next.auto, autoConfirm: !!next.autoConfirm, folders: mounted });
+  send(configMessage(next, mounted));
   return next;
 }
 
@@ -1201,9 +1237,13 @@ async function onPanel(m) {
     case 'confirm': await confirmClaim(m.name); return panelState();
     case 'unpair': await unpair(); return panelState();
     case 'rename': {
-      const next = await patchCfg({ name: cleanDeviceName(m.name) });
+      const cfg = await getCfg();
+      if (!cfg) throw err('CLOUD_UNPAIRED', '还没有配对');
+      const next = { ...cfg, name: cleanDeviceName(m.name) };
+      await setCfg(next);
       await log({ ev: 'renamed', msg: deviceName(next) });
-      return panelState();
+      const sync = await pushName(next);
+      return { ...(await panelState()), rename: sync };
     }
     case 'removeSite': {
       const host = String(m.host || '');

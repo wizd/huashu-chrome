@@ -83,6 +83,8 @@
   .row { display: flex; gap: 6px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
   .msg { font-size: 12px; margin-top: 6px; }
   .msg.bad { color: var(--bad); }
+  .msg.ok { color: var(--ok); }
+  .msg.warn { color: var(--warn); }
   .confirm { border: 1px solid var(--warn); border-radius: 9px; padding: 9px 10px; margin-top: 8px; }
   .confirm b { word-break: break-all; }
   .sites { display: flex; flex-direction: column; margin-top: 4px; }
@@ -187,6 +189,7 @@
           <button class="btn ghost" id="deviceNameSave" type="button">保存</button>
         </span>
       </label>
+      <div class="msg" id="deviceNameMsg" role="status" aria-live="polite" hidden></div>
       <div id="cloudTasks"></div>
       <div class="lab" style="margin-top:10px">允许它使用的网站</div>
       <div class="sites" id="cloudSites"></div>

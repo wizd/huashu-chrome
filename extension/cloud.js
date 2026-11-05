@@ -20,7 +20,7 @@ import * as policy from './cloud-policy.js';
 import * as folders from './folders.js';
 import { checkDesktop, checkObserved, recordOf, filterWindows, appsToAsk, APPS_MAX } from './desktop-policy.js';
 import { renderEnvelope } from './desktop-render.js';
-import { routeHere, stampFrom, capOf, cleanDevice, describeDevices } from './device.js';
+import { routeHere, stampFrom, capOf, cleanDevice, describeDevices, browserIdentity, defaultDeviceName, cleanDeviceName } from './device.js';
 
 const CFG = 'cloud';                 // storage.local：配对信息和用户的选择
 const TASKS = 'cloudTasks';          // storage.local：任务（批准状态、自己开的标签页）
@@ -113,11 +113,11 @@ async function log(entry) {
   } catch { /* 日志写不进不影响干活 */ }
 }
 
-function deviceName() {
-  const plat = navigator.userAgentData?.platform || (/Windows/.test(navigator.userAgent) ? 'Windows' : /Mac/.test(navigator.userAgent) ? 'macOS' : 'Linux');
-  const ver = (navigator.userAgent.match(/Chrome\/(\d+)/) || [])[1] || '';
-  return `Chrome ${ver} · ${plat}`.trim();
-}
+const identity = () => browserIdentity({
+  brands: navigator.userAgentData?.brands, platform: navigator.userAgentData?.platform, ua: navigator.userAgent,
+});
+// 用户起的名字；没起过（含老版本配对的）就用「Edge · Windows」这样的默认名
+const deviceName = (cfg) => cleanDeviceName(cfg?.name) || defaultDeviceName(identity());
 
 // ---------- 配对 ----------
 //
@@ -147,16 +147,17 @@ async function claim(rawOrigin, rawCode) {
   return pending;
 }
 
-async function confirmClaim() {
+async function confirmClaim(rawName) {
   const { [CLAIM]: c } = await chrome.storage.session.get(CLAIM);
   if (!c) throw err('CLOUD_PAIR', '没有待确认的配对，重新输入配对码');
+  const old = await getCfg();
+  const name = cleanDeviceName(rawName) || deviceName(old);
   const key = await newKey();
-  const r = await post(c.origin, '/api/ext/pair/confirm', { code: c.code, publicKey: key.publicJwk, name: deviceName() });
+  const r = await post(c.origin, '/api/ext/pair/confirm', { code: c.code, publicKey: key.publicJwk, name });
   if (!r?.deviceId) throw err('CLOUD_PAIR', '服务器没有返回设备号');
   await keySet({ privateKey: key.privateKey, deviceId: r.deviceId, origin: c.origin });
-  const old = await getCfg();
   await setCfg({
-    origin: c.origin, deviceId: r.deviceId, account: String(r.account || c.account), pairedAt: Date.now(),
+    origin: c.origin, deviceId: r.deviceId, account: String(r.account || c.account), pairedAt: Date.now(), name,
     // 换绑时沿用之前允许的网站；第一次配对名单是空的，等任务申请、用户点允许
     sites: policy.cleanAllowList(old?.sites), auto: false, autoConfirm: false, paused: false,
   });
@@ -248,7 +249,8 @@ export async function connect() {
               const child = await desktopChild();
               sock.send(JSON.stringify({
                 type: 'hello', v: 1, deviceId: cfg.deviceId, sig,
-                version: chrome.runtime.getManifest().version, sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm,
+                version: chrome.runtime.getManifest().version, name: deviceName(cfg), ...identity(),
+                sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm,
                 folders: mounted,
                 devices: child ? [{ ...child, parent: cfg.deviceId }] : [],
               }));
@@ -754,7 +756,7 @@ async function disableDesktop() {
 async function devicesCmd(cfg) {
   const child = await desktopChild();
   const list = [
-    { id: cfg.deviceId, kind: 'browser', name: deviceName(), online: true },
+    { id: cfg.deviceId, kind: 'browser', name: deviceName(cfg), online: true },
     ...(child ? [{ ...child, parent: cfg.deviceId }] : []),
   ].map(cleanDevice).filter(Boolean);
   return { text: describeDevices(list), devices: list };
@@ -1169,9 +1171,9 @@ async function panelState() {
     getCfg(), chrome.storage.session.get(STATUS), chrome.storage.session.get(CLAIM), getTasks(), chrome.storage.local.get([LOG, DESK_ERR]),
   ]);
   return {
-    cfg: cfg && { origin: cfg.origin, account: cfg.account, sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, paused: cfg.paused, pairedAt: cfg.pairedAt },
+    cfg: cfg && { origin: cfg.origin, account: cfg.account, name: deviceName(cfg), sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, paused: cfg.paused, pairedAt: cfg.pairedAt },
     status: status || { state: 'off' },
-    claim: claimed && claimed.expiresAt > Date.now() ? { origin: claimed.origin, account: claimed.account } : null,
+    claim: claimed && claimed.expiresAt > Date.now() ? { origin: claimed.origin, account: claimed.account, name: deviceName(cfg) } : null,
     tasks: Object.values(tasks).sort((a, b) => b.lastAt - a.lastAt).map(({ desk: _desk, ...t }) => t),
     folders: await folders.listFolders().catch(() => []),
     desktop: await deskInfo().then((d) => (d && chrome.runtime.sendNativeMessage ? d : deskErr ? { error: deskErr } : null)),
@@ -1187,7 +1189,7 @@ async function patchCfg(patch) {
   const next = { ...rest, ...patch };
   await setCfg(next);
   const mounted = await folders.names().catch(() => []);
-  send({ type: 'config', sites: allowOf(next), auto: !!next.auto, autoConfirm: !!next.autoConfirm, folders: mounted });
+  send({ type: 'config', name: deviceName(next), sites: allowOf(next), auto: !!next.auto, autoConfirm: !!next.autoConfirm, folders: mounted });
   return next;
 }
 
@@ -1196,8 +1198,13 @@ async function onPanel(m) {
     case 'state': return panelState();
     case 'claim': await claim(m.origin, m.code); return panelState();
     case 'cancelClaim': await chrome.storage.session.remove(CLAIM); return panelState();
-    case 'confirm': await confirmClaim(); return panelState();
+    case 'confirm': await confirmClaim(m.name); return panelState();
     case 'unpair': await unpair(); return panelState();
+    case 'rename': {
+      const next = await patchCfg({ name: cleanDeviceName(m.name) });
+      await log({ ev: 'renamed', msg: deviceName(next) });
+      return panelState();
+    }
     case 'removeSite': {
       const host = String(m.host || '');
       const cfg = await getCfg();

@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import {
   checkDesktop, checkObserved, recordOf, filterWindows, checkSteps, cleanApps, appsToAsk, sensitivity, STEPS_MAX,
 } from '../extension/desktop-policy.js';
-import { resolveTarget, routeHere, stampFrom, cleanDevice, capOf } from '../extension/device.js';
+import { resolveTarget, routeHere, stampFrom, cleanDevice, capOf, browserIdentity, defaultDeviceName, cleanDeviceName, DEVICE_NAME_MAX } from '../extension/device.js';
 import { DesktopSession } from '../src/lib/desktop.js';
 import { recheck } from '../native-host/host.js';
 import { CLOUD_CMDS, checkCommand } from '../extension/cloud-policy.js';
@@ -238,4 +238,23 @@ test('来源由执行方盖章，payload 里自带的 from 被覆盖；坏设备
   assert.deepEqual(out.from, { device: 'desktop-m_1', kind: 'desktop', machine: 'm_1' });
   assert.equal(cleanDevice({ id: 'a b', kind: 'browser' }), null);
   assert.equal(cleanDevice({ id: 'x', kind: 'toaster' }), null);
+});
+
+test('浏览器实例自报种类和系统，默认名字由它们拼成，用户起的名字只做清洗', () => {
+  const winChrome = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
+  const brands = (...names) => names.map((brand) => ({ brand, version: '140' }));
+  assert.deepEqual(browserIdentity({ brands: brands('Chromium', 'Google Chrome', 'Not=A?Brand'), platform: 'Windows', ua: winChrome }), { browser: 'chrome', platform: 'windows' });
+  assert.deepEqual(browserIdentity({ brands: brands('Chromium', 'Microsoft Edge'), platform: 'macOS' }), { browser: 'edge', platform: 'macos' });
+  assert.deepEqual(browserIdentity({ brands: brands('Chromium', 'Brave'), platform: 'Linux' }), { browser: 'brave', platform: 'linux' });
+  assert.deepEqual(browserIdentity({ brands: brands('Chromium'), platform: 'Chrome OS' }), { browser: 'chromium', platform: 'chromeos' });
+  // 没有 userAgentData 的老浏览器只能看 UA；Edge 的 UA 里同时有 Chrome/ 和 Edg/
+  assert.deepEqual(browserIdentity({ ua: `${winChrome} Edg/140.0.0.0` }), { browser: 'edge', platform: 'windows' });
+  assert.deepEqual(browserIdentity({ ua: 'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) Chrome/140.0.0.0' }), { browser: 'chrome', platform: 'chromeos' });
+  assert.deepEqual(browserIdentity({}), { browser: 'chromium', platform: '' });
+
+  assert.equal(defaultDeviceName({ browser: 'edge', platform: 'windows' }), 'Edge · Windows');
+  assert.equal(defaultDeviceName({ browser: 'nope', platform: '' }), 'Chromium');
+  assert.equal(cleanDeviceName('  公司\n的  Edge\u0000 '), '公司 的 Edge');
+  assert.equal(cleanDeviceName('x'.repeat(100)).length, DEVICE_NAME_MAX);
+  assert.equal(cleanDeviceName(null), '');
 });

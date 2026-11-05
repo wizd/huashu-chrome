@@ -258,7 +258,7 @@ const CLOUD_STATE = {
   off: ['', '未连接'],
 };
 const LOG_TEXT = {
-  paired: '配对', unpaired: '解除配对', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
+  paired: '配对', unpaired: '解除配对', renamed: '改名为', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
   sites_on: '允许了新网站', sites_off: '拒绝了新网站', sites_timeout: '新网站没回应',
   folders_on: '允许了本地文件夹', folders_off: '拒绝了本地文件夹', folders_timeout: '本地文件夹没回应',
   apps_on: '允许了桌面应用', apps_off: '拒绝了桌面应用', apps_timeout: '桌面应用没回应',
@@ -345,8 +345,10 @@ function renderCloud(s) {
   if (s.claim) {
     $('claimOrigin').textContent = new URL(s.claim.origin).host;
     $('claimAccount').textContent = `「${s.claim.account || '（未命名）'}」`;
+    if (!$('claimName').value) $('claimName').value = s.claim.name;
   }
   if (!on) { syncAlert(); return; }
+  if (document.activeElement !== $('deviceName')) $('deviceName').value = s.cfg.name;
 
   const [cls, word] = CLOUD_STATE[s.status?.state] || CLOUD_STATE.off;
   $('cloudDot').className = `dot ${cls}`;
@@ -424,11 +426,19 @@ $('pairGo').onclick = async () => {
 $('pairCode').onkeydown = (e) => { if (e.key === 'Enter') $('pairGo').click(); };
 $('claimYes').onclick = async () => {
   $('claimYes').disabled = true;
-  await cloudCall('confirm');
+  await cloudCall('confirm', { name: $('claimName').value });
   $('claimYes').disabled = false;
   $('pairCode').value = '';
+  $('claimName').value = '';
 };
-$('claimNo').onclick = () => cloudCall('cancelClaim');
+$('claimNo').onclick = () => { $('claimName').value = ''; cloudCall('cancelClaim'); };
+$('deviceNameSave').onclick = async () => {
+  $('deviceNameSave').disabled = true;
+  await cloudCall('rename', { name: $('deviceName').value });
+  $('deviceNameSave').disabled = false;
+  $('deviceName').blur();
+};
+$('deviceName').onkeydown = (e) => { if (e.key === 'Enter') $('deviceNameSave').click(); };
 $('cloudAuto').onchange = (e) => cloudCall('setAuto', { auto: e.target.checked });
 $('cloudAutoConfirm').onchange = (e) => cloudCall('setAutoConfirm', { autoConfirm: e.target.checked });
 $('cloudPause').onchange = (e) => cloudCall('setPaused', { paused: e.target.checked });

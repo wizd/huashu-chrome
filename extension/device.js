@@ -28,6 +28,41 @@ const ID_RE = /^[\w.:-]{1,80}$/;
 
 const err = (code, message, details) => Object.assign(new Error(message), { code, ...(details ? { details } : {}) });
 
+// 一个账号下常有好几个浏览器实例（家里的 Chrome、公司的 Edge、Mac 上的 Brave）。
+// 用户给每个实例起名字来区分；服务器再按浏览器种类和系统画图标。
+// 种类和系统只认下面这几个词，别的一律归到 chromium / 空——它们只决定图标，不决定权限。
+export const BROWSERS = ['chrome', 'edge', 'brave', 'opera', 'chromium'];
+export const PLATFORMS = ['windows', 'macos', 'linux', 'chromeos'];
+const BROWSER_LABEL = { chrome: 'Chrome', edge: 'Edge', brave: 'Brave', opera: 'Opera', chromium: 'Chromium' };
+const PLATFORM_LABEL = { windows: 'Windows', macos: 'macOS', linux: 'Linux', chromeos: 'ChromeOS' };
+export const DEVICE_NAME_MAX = 40;
+
+// brands / platform 来自 navigator.userAgentData，ua 是 navigator.userAgent（老 Chrome 没有前者）
+export function browserIdentity({ brands = [], platform = '', ua = '' } = {}) {
+  const names = (Array.isArray(brands) ? brands : []).map((b) => String(b?.brand || ''));
+  const text = String(ua || '');
+  const seen = (brand, inUa) => names.some((n) => brand.test(n)) || (inUa ? inUa.test(text) : false);
+  const browser = seen(/Microsoft Edge/, /\bEdg(A|iOS)?\//) ? 'edge'
+    : seen(/Brave/) ? 'brave'
+      : seen(/Opera/, /\bOPR\//) ? 'opera'
+        : seen(/Google Chrome/) || (!names.length && /\bChrome\//.test(text)) ? 'chrome'
+          : 'chromium';
+  const p = `${platform || ''} ${text}`;
+  const os = /Windows/i.test(p) ? 'windows'
+    : /Mac/i.test(p) ? 'macos'
+      : /CrOS|Chrome OS/i.test(p) ? 'chromeos'
+        : /Linux|X11/i.test(p) ? 'linux'
+          : '';
+  return { browser, platform: os };
+}
+
+export const defaultDeviceName = ({ browser, platform } = {}) =>
+  [BROWSER_LABEL[browser] || 'Chromium', PLATFORM_LABEL[platform]].filter(Boolean).join(' · ');
+
+export function cleanDeviceName(raw) {
+  return String(raw ?? '').replace(/\s+/g, ' ').replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, DEVICE_NAME_MAX);
+}
+
 export function cleanDeviceId(raw) {
   const s = String(raw ?? '').trim();
   return ID_RE.test(s) ? s : '';

@@ -141,6 +141,10 @@
       <div class="confirm">
         <div>要把这个浏览器交给 <b id="claimOrigin"></b> 上的账号 <b id="claimAccount"></b> 吗？</div>
         <div class="muted" style="margin-top:4px">配对码如果是别人发给你的，点取消。</div>
+        <label class="field"><span>给这个浏览器起个名字</span>
+          <input type="text" id="claimName" maxlength="40" autocomplete="off" spellcheck="false" />
+          <span class="muted">同一个账号连了好几个浏览器时，网页上靠它区分，比如「家里 Mac」「公司 Edge」</span>
+        </label>
         <div class="row"><button class="btn" id="claimYes">确认连接</button><button class="btn ghost" id="claimNo">取消</button></div>
       </div>
     </div>
@@ -177,6 +181,12 @@
     <div id="cloudOn" hidden>
       <div class="light"><span class="dot" id="cloudDot"></span>
         <div><div class="name" id="cloudName"></div><div class="sub" id="cloudSub"></div></div></div>
+      <label class="field"><span class="lab">这个浏览器的名字</span>
+        <span class="row" style="margin-top:0">
+          <input type="text" id="deviceName" maxlength="40" autocomplete="off" spellcheck="false" style="flex:1" />
+          <button class="btn ghost" id="deviceNameSave" type="button">保存</button>
+        </span>
+      </label>
       <div id="cloudTasks"></div>
       <div class="lab" style="margin-top:10px">允许它使用的网站</div>
       <div class="sites" id="cloudSites"></div>

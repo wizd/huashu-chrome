@@ -280,6 +280,12 @@ export async function connect() {
           // 服务器的「验证」：一来一回量延迟，什么都不开。老版本这里还会探平台登录，已经去掉。
           if (m.type === 'probe') { send({ type: 'res', id: m.id, ok: true, data: {} }); return; }
           if (m.type === 'mount_request') { await openMount(); return; }
+          // 文档库的悬停提示：只回数字，不读文件内容，不开标签页
+          if (m.type === 'folder_stats') {
+            const data = await folders.countTop(m.folder).catch(() => ({ state: 'error' }));
+            send({ type: 'res', id: m.id, ok: true, data });
+            return;
+          }
           if (m.type === 'job_end') { await endTask(String(m.jobId || ''), 'server'); }
         } catch { /* 一条消息处理失败不能变成未捕获异常 */ }
       })();

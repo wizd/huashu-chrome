@@ -206,6 +206,36 @@ export async function listTree(handle, { path = '', depth = 3, glob = '', folder
   };
 }
 
+// 网页上文档库的悬停提示：现场数第一层有多少文件、多少子文件夹，只回数字，不回名字。
+// 不往下层走：一层一般不到一秒，整棵树可能要很久。隐藏项和 node_modules 跳过，和任务看到的一致。
+const COUNT_MAX = 20000;
+export async function countTop(id) {
+  const row = await get(String(id || ''));
+  if (!row?.handle) return { state: 'missing' };
+  let permission;
+  try { permission = await row.handle.queryPermission({ mode: 'read' }); } catch { permission = 'denied'; }
+  if (permission !== 'granted') return { state: 'locked' };
+  let files = 0;
+  let readable = 0;
+  let dirs = 0;
+  let more = false;
+  try {
+    for await (const [name, h] of row.handle.entries()) {
+      if (files + dirs >= COUNT_MAX) { more = true; break; }
+      if (skipEntry(name)) continue;
+      if (h.kind === 'directory') dirs++;
+      else {
+        files++;
+        if (fileAllowed(name)) readable++;
+      }
+    }
+  } catch (e) {
+    const mapped = mapFsError(e);
+    return { state: mapped.code === 'FOLDER_LOCKED' ? 'locked' : mapped.code === 'NOT_FOUND' ? 'gone' : 'error' };
+  }
+  return { state: 'ok', files, readable, dirs, more };
+}
+
 export async function readFile(handle, rel) {
   await assertGranted(handle);
   let file;

@@ -260,7 +260,7 @@ const CLOUD_STATE = {
 const LOG_TEXT = {
   paired: '配对', unpaired: '解除配对', renamed: '改名为', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
   sites_on: '允许了新网站', sites_off: '拒绝了新网站', sites_timeout: '新网站没回应',
-  folders_on: '允许了本地文件夹', folders_off: '拒绝了本地文件夹', folders_timeout: '本地文件夹没回应',
+  folders_on: '允许了本地文件夹', folders_auto: '自动放行本地文件夹', folders_off: '拒绝了本地文件夹', folders_timeout: '本地文件夹没回应',
   apps_on: '允许了桌面应用', apps_off: '拒绝了桌面应用', apps_timeout: '桌面应用没回应',
   desk_confirm: '同意了桌面动作', desk_declined: '没同意桌面动作', desktop_on: '启用桌面能力', desktop_off: '停用桌面能力',
   desktop_reload: '为启用桌面能力重载扩展', desktop_fail: '桌面能力没启用成功：',

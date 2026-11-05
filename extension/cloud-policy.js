@@ -191,19 +191,23 @@ export function cleanFolderNames(list) {
 }
 
 // 已经允许、已经拒绝的不再问。空名单就是「先告诉我挂了哪些」，什么都不问。
-export function foldersToAsk(use, { granted = [], refused = [] } = {}) {
+// 挂载文件夹就是用户把它分享出来；打开「自动允许新任务」时，挂着的文件夹直接放行（grant），
+// 和任务一开始的网站一样不再逐个问。没打开时照旧进 ask。
+export function foldersToAsk(use, { granted = [], refused = [], auto = false } = {}) {
   const have = new Set(granted);
   const no = new Set(refused);
   const ask = [];
+  const grant = [];
   const already = [];
   const denied = [];
   for (const name of Array.isArray(use) ? use : []) {
     if (typeof name !== 'string') continue;
     if (have.has(name)) { if (!already.includes(name)) already.push(name); continue; }
     if (no.has(name)) { if (!denied.includes(name)) denied.push(name); continue; }
-    if (!ask.includes(name)) ask.push(name);
+    const to = auto ? grant : ask;
+    if (!to.includes(name)) to.push(name);
   }
-  return { ask, already, refused: denied };
+  return { ask, grant, already, refused: denied };
 }
 
 // 相对路径。'' 是文件夹根；不合法返回 null（和根区分开）。

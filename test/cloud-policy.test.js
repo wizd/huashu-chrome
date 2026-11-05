@@ -235,7 +235,10 @@ test('本地文件夹：命令只留安全字段，上传地址必须指回配�
   assert.equal(cleanFolderNames(Array.from({ length: 20 }, (_, i) => `夹${i}`)).names.length, FS_FOLDERS_MAX);
 
   const asked = foldersToAsk(['知识库', '素材', '知识库'], { granted: ['知识库'], refused: ['素材'] });
-  assert.deepEqual(asked, { ask: [], already: ['知识库'], refused: ['素材'] });
+  assert.deepEqual(asked, { ask: [], grant: [], already: ['知识库'], refused: ['素材'] });
+  // 自动允许：挂着的文件夹直接放行；用户拒绝过的仍然不给
+  assert.deepEqual(foldersToAsk(['知识库', '素材', '简历'], { granted: ['知识库'], refused: ['素材'], auto: true }),
+    { ask: [], grant: ['简历'], already: ['知识库'], refused: ['素材'] });
 
   const list = checkCommand('fs_list', { folder: '知识库', path: './docs//a', depth: 99, glob: '**/*.md', tabId: 3 }, ctx);
   assert.equal(list.path, 'docs/a');

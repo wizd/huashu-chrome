@@ -5,7 +5,7 @@
 // 所以这里的每一条命令都按「对面可能已经被攻破」来处理，规矩全在 cloud-policy.js：
 // 只有页面操作那一小组命令、只能停在允许名单（以及本任务里批准的网站）上、只能碰自己开的标签页、
 // 上传只能用服务器上的素材。新任务要用户点头；开了自动允许则新任务和它一开始的网站直接放行。
-// 任务开始之后追加的网站、本地文件夹，仍要逐个点头。带 kind=confirm 的 ask 是对外动作的确认：
+// 任务开始之后追加的网站仍要逐个点头；本地文件夹在自动允许下直接放行。带 kind=confirm 的 ask 是对外动作的确认：
 // 用户开了免确认，或在这个任务里点过「本任务内都同意」，就直接放行。扫码和验证码不带 kind，照旧等人。
 // 没有预设的平台表：要去哪个网站，任务自己申请。
 //
@@ -361,7 +361,7 @@ const hostsOf = (t, cfg) => policy.taskHosts(t, allowOf(cfg));
 const TASK_V = 2;
 
 // 新任务由用户点头，或由用户打开的自动允许直接放行（含信封上一开始的网站）。
-// 任务开始之后再申请的网站、本地文件夹，自动允许管不到。服务器只能申请。
+// 任务开始之后再申请的网站，自动允许管不到；本地文件夹见 requestFolders。服务器只能申请。
 // reason：第一次申请站点时 agent 写的用途，放进批准框里给用户看。
 async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
   const jobId = String(job?.id || '');
@@ -375,7 +375,7 @@ async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
     if (task?.state === 'approved' && Date.now() - task.lastAt > policy.TASK_IDLE_MS) task = null;   // 闲置太久，重新问
     if (task && task.v === TASK_V) return task;
     const { sites } = policy.cleanSites(job?.sites);
-    // 只读本地文件夹的任务可以还没有网站。文件夹本身仍要单独点头，这里不替用户答应。
+    // 只读本地文件夹的任务可以还没有网站。文件夹在 requestFolders 里另算。
     if (!sites.length && !allowEmpty) return { state: 'nosites' };
     const opening = policy.initialTask({ sites, covered: allowOf(cfg), auto: !!cfg.auto });
     freshAuto = !!cfg.auto && opening.state === 'approved' && sites.length > 0;
@@ -503,13 +503,22 @@ function notifyFolders(t, cfg) {
   }, () => void chrome.runtime.lastError);
 }
 
-// 和额外网站一样：「自动允许」管不到文件夹。没挂载的名字不弹窗，直接告诉 agent。
+// 挂上的文件夹是用户分享出来的资料：「自动允许新任务」打开时直接放行，没打开才弹窗问。
+// 没挂载的名字不弹窗，直接告诉 agent。
 async function requestFolders(task, p, cfg) {
   const mounted = await folders.names().catch(() => []);
   const have = new Set(mounted.map((f) => f.name));
   const known = p.use.filter((name) => have.has(name));
   const unknown = p.use.filter((name) => !have.has(name));
-  const split = policy.foldersToAsk(known, { granted: task.folders || [], refused: task.folderRefused || [] });
+  const split = policy.foldersToAsk(known, { granted: task.folders || [], refused: task.folderRefused || [], auto: !!cfg.auto });
+  if (split.grant.length) {
+    const t = await updateTask(task.jobId, (x) => {
+      if (!Array.isArray(x.folders)) x.folders = [];
+      for (const name of split.grant) if (!x.folders.includes(name) && x.folders.length < policy.FS_FOLDERS_MAX) x.folders.push(name);
+    });
+    if (!t) throw err('CLOUD_DENIED', '这个任务已经结束');
+    await log({ ev: 'folders_auto', job: task.jobId, msg: split.grant.join(',') });
+  }
   if (split.ask.length) {
     const t = await updateTask(task.jobId, (x) => {
       if (!Array.isArray(x.folders)) x.folders = [];

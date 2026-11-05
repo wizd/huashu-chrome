@@ -103,7 +103,10 @@ export const FS_TASK_MAX = 256 * 1024 * 1024;    // 一个任务累计读走的�
 export const FS_LIST_MAX = 2000;                 // 一次列出的条目
 export const FS_DEPTH_MAX = 8;
 export const FS_FOLDERS_MAX = 8;                 // 一个浏览器最多挂这么多个；一个任务也最多批准这么多个
-export const FS_EXTS = new Set(['.md', '.markdown', '.txt', '.pdf', '.docx', '.csv', '.json', '.html', '.htm']);
+export const FS_EXTS = new Set([
+  '.md', '.markdown', '.txt', '.pdf', '.docx', '.xlsx', '.pptx', '.csv', '.json', '.html', '.htm',
+  '.png', '.jpg', '.jpeg', '.gif', '.webp',
+]);
 const FS_SKIP = new Set(['node_modules', '__pycache__', '.git', '.venv']);
 
 const err = (code, message) => Object.assign(new Error(message), { code });

@@ -213,8 +213,9 @@ test('本地文件夹：路径出不了根，隐藏文件和私钥这类扩展�
   assert.equal(cleanFolderName('x'.repeat(41)), null);
   assert.ok(fileAllowed('笔记.md'));
   assert.ok(fileAllowed('a.DOCX'));
+  for (const ok of ['报价.xlsx', '汇报.PPTX', '照片.JPG', 'a.jpeg', 'a.png', 'a.webp', 'a.gif']) assert.ok(fileAllowed(ok), ok);
   for (const ext of FS_EXTS) assert.ok(fileAllowed(`a${ext}`), ext);
-  for (const bad of ['.ssh/id_rsa', 'id_rsa', '.env', 'secret.pem', 'note.exe', 'a.md/../../x', '.bashrc']) {
+  for (const bad of ['.ssh/id_rsa', 'id_rsa', '.env', 'secret.pem', 'note.exe', 'old.xls', 'old.ppt', 'a.svg', 'a.xlsm', 'a.md/../../x', '.bashrc']) {
     assert.equal(fileAllowed(bad), false, bad);
   }
   assert.ok(skipEntry('.git'));

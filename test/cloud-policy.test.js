@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  checkCommand, urlAllowed, initialTask, normalizeOrigin, mediaAllowed, CLOUD_CMDS,
+  checkCommand, urlAllowed, initialTask, normalizeOrigin, mediaAllowed, mediaFetchMs, MEDIA_MAX, CLOUD_CMDS,
   normalizeSite, cleanSites, cleanAllowList, SITES_MAX, taskHosts, sitesToAsk,
   cleanFolderName, cleanFolderNames, foldersToAsk, normalizeRelPath, fileAllowed, skipEntry, matchGlob, pullUrlAllowed,
   FS_EXTS, FS_DEPTH_MAX, FS_FOLDERS_MAX,
@@ -294,4 +294,11 @@ test('load/call：只认注册表里的包和白名单里的 action', () => {
   assert.deepEqual(f.payload, { q: 'a' });
   // 超时：夹在 limits 里
   assert.equal(checkCommand('call', { name: 'eda', action: 'pcb.route.auto', timeout: 9e9 }, ctx).timeout, 600000);
+});
+
+test('取素材的时限随大小增长，且留在服务器 8 分钟的命令超时之内', () => {
+  assert.equal(mediaFetchMs(1), 31000);
+  assert.equal(mediaFetchMs(100 * 1048576), 130000);
+  assert.equal(mediaFetchMs(MEDIA_MAX), 420000);
+  assert.ok(mediaFetchMs(MEDIA_MAX) + 15000 < 8 * 60 * 1000);
 });

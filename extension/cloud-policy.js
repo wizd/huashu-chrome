@@ -95,6 +95,8 @@ const ACT_STEPS = new Set(['click', 'type', 'fill', 'select', 'key', 'scroll', '
 export const TASK_CMD_CAP = 1500;        // 一个任务最多这么多条命令，防失控循环把账号刷进风控
 export const TASK_IDLE_MS = 3 * 3600e3;  // 批准过的任务闲置 3 小时作废，下次要重新点头
 export const MEDIA_MAX = 2 * 1024 ** 3;  // 素材上限，与 maker 那侧的上传上限一致
+// 页面取一份素材最多等多久：按 1MB/s 估，封顶 7 分钟，留在服务器 8 分钟的命令超时之内。
+export const mediaFetchMs = (size) => Math.min(30000 + Math.ceil(size / 1048576) * 1000, 7 * 60 * 1000);
 
 // 本地文件夹。数字和 opus-video-maker/extlink.js 的 PULL_MAX 必须一致：
 // 扩展拒绝超限的文件，服务器拒绝超限的上传，两边对不齐就会一截一放。

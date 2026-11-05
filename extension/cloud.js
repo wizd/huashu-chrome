@@ -1194,7 +1194,7 @@ async function uploadMedia(p, tid, sid, label) {
   const base = { name: media.name, type: media.type, bytes: media.size, selector: p.selector, dropSelector: p.dropSelector };
   let why = '';
   try {
-    return await deps.run('upload', { ...base, url: media.url }, tid, sid, label);
+    return await deps.run('upload', { ...base, url: media.url, fetchMs: policy.mediaFetchMs(media.size) }, tid, sid, label);
   } catch (e) {
     if (e.code !== 'FETCH_FAILED') throw e;
     why = e.message;

@@ -1806,10 +1806,15 @@
   async function doUploadUrl(p) {
     let blob;
     try {
-      const res = await fetch(p.url, { credentials: 'omit', cache: 'no-store' });
+      // 到点取消，文件就不会在报错之后才进页面，重试不会传出第二份
+      const signal = p.fetchMs ? AbortSignal.timeout(p.fetchMs) : undefined;
+      const res = await fetch(p.url, { credentials: 'omit', cache: 'no-store', signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       blob = await res.blob();
     } catch (e) {
+      if (e?.name === 'TimeoutError') {
+        throw fail('UPLOAD_SLOW', `素材 ${Math.round((p.bytes || 0) / 1048576)}MB 在 ${Math.round(p.fetchMs / 1000)} 秒内没有下载完，已取消，文件没有进页面。压缩后再传，或请用户手动上传。`);
+      }
       throw fail('FETCH_FAILED', `页面里取素材失败：${e.message}`);
     }
     if (p.bytes && blob.size !== p.bytes) throw fail('INTERNAL', `素材大小不对：应为 ${p.bytes}，实际 ${blob.size}`);

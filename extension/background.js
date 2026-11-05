@@ -995,6 +995,8 @@ function routeOf(p) {
 const contentBudget = (p) => {
   if (p?.__hc === 'wait') return (Number(p.timeout) || 10000) + 5000;
   if (p?.__hc === 'scroll') return Math.min(Number(p.times) || 1, 50) * (Number(p.wait) || 700) + 10000;
+  // 云端上传要先在页面里取完整个视频。fetchMs 是扩展按素材大小算的，内容脚本到点自己取消
+  if (p?.__hc === 'upload' && p.fetchMs) return p.fetchMs + 15000;
   return 15000;
 };
 
@@ -1007,7 +1009,7 @@ const contentBudget = (p) => {
 //   忙   —— 页面在跑重脚本，改走 network / fetch 读数据比干等有用
 const STALL = Symbol('stall');
 
-async function diagnoseStall(tabId, budget) {
+async function diagnoseStall(tabId, budget, cmd) {
   const secs = Math.round(budget / 1000);
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab) return err('NO_TAB', '标签页已经关了');
@@ -1023,6 +1025,9 @@ async function diagnoseStall(tabId, budget) {
   if (dialog) {
     return err('DIALOG_BLOCKING', `页面上开着一个 ${dialog.type} 对话框：「${String(dialog.message || '').slice(0, 120)}」。`
       + `它挡住了页面的全部脚本。这个框要由用户决定点哪个按钮——用 ask 把框里的原文告诉他，请他处理。`);
+  }
+  if (cmd === 'upload') {
+    return err('PAGE_BUSY', `上传 ${secs} 秒没有回音，结果不明：文件可能稍后才进页面。先 wait 再 snapshot 看上传框，确认没进去才重试，不要连续重试。`);
   }
   return err('PAGE_BUSY', `页面脚本 ${secs} 秒没有响应，但没有发现对话框——页面多半在跑重脚本，或者后台页被浏览器限流。`
     + `别让用户去关什么框。要数据就改走 network / fetch；要操作就稍后重试一次，仍不行再 tabs(action:"select", focus:true) 拉到前台。`);
@@ -1051,10 +1056,10 @@ async function toContent(tabId, payload, frameId = 0) {
           r = await send();
         } catch (e2) {
           if (e2 !== STALL) throw e2?.code ? e2 : err('TIMEOUT', `页面无响应（${e2?.message}）`);
-          throw await diagnoseStall(tabId, budget);
+          throw await diagnoseStall(tabId, budget, payload.__hc);
         }
       } else {
-        throw await diagnoseStall(tabId, budget);
+        throw await diagnoseStall(tabId, budget, payload.__hc);
       }
     } else {
       if (e?.code) throw e;

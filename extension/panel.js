@@ -9,6 +9,7 @@
 // 网页标题、client 名）一律 textContent——它们都可能源自被注入的页面。
 
 import { compat, compatNote, cmpVersion } from './compat.js';
+import { setWrite } from './folders.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -283,12 +284,27 @@ function renderFolders(s) {
   for (const f of rows) {
     const row = el('div', 'sw-row');
     const text = el('span', 'txt');
-    text.append(el('div', null, f.name), el('div', 'sub', PERM_WORD[f.permission] || PERM_WORD.unknown));
+    const word = f.permission === 'granted' && f.write ? '可读写' : PERM_WORD[f.permission] || PERM_WORD.unknown;
+    text.append(el('div', null, f.name), el('div', 'sub', word));
     row.appendChild(text);
     if (f.permission !== 'granted') {
       const restore = el('button', 'btn', '恢复访问');
       restore.onclick = () => cloudCall('openMount', { folderId: f.id });
       row.appendChild(restore);
+    } else {
+      // requestPermission 要用户手势，侧栏是扩展页面，这一下点击就够
+      const flip = el('button', 'btn ghost', f.write ? '改为只读' : '允许写入');
+      flip.title = f.write ? '任务不能再往里存文件' : '让任务可以把做好的文件（下载的视频、报告）存进来';
+      flip.onclick = async () => {
+        flip.disabled = true;
+        try {
+          const state = await setWrite(f.id, !f.write);
+          if (state !== 'granted') alert('没有允许写入，这个文件夹仍是只读。');
+        } catch (e) { alert(e.message || String(e)); }
+        await cloudCall('foldersChanged');
+        flip.disabled = false;
+      };
+      row.appendChild(flip);
     }
     const del = el('button', 'btn ghost', '移除');
     del.onclick = () => {

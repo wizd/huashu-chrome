@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import {
   checkCommand, urlAllowed, initialTask, normalizeOrigin, mediaAllowed, mediaFetchMs, MEDIA_MAX, CLOUD_CMDS,
   normalizeSite, cleanSites, cleanAllowList, SITES_MAX, taskHosts, sitesToAsk,
-  cleanFolderName, cleanFolderNames, foldersToAsk, normalizeRelPath, fileAllowed, skipEntry, matchGlob, pullUrlAllowed,
+  cleanFolderName, cleanFolderNames, foldersToAsk, normalizeRelPath, fileAllowed, writeAllowed, skipEntry, matchGlob, pullUrlAllowed,
   FS_EXTS, FS_DEPTH_MAX, FS_FOLDERS_MAX,
 } from '../extension/cloud-policy.js';
 
@@ -261,6 +261,32 @@ test('本地文件夹：命令只留安全字段，上传地址必须指回配�
   assert.ok(pullUrlAllowed(PULL, ORIGIN));
   assert.ok(!pullUrlAllowed(`${PULL}?x=1`, ORIGIN));
   assert.ok(!pullUrlAllowed(`${ORIGIN}/api/ext/pull/short`, ORIGIN));
+});
+
+// 写进用户文件夹：字节只能来自配对服务器的素材，文件只能是文档、图片、音视频、字幕
+test('fs_write：只写素材接口的字节，不写可执行文件和隐藏目录', () => {
+  assert.ok(CLOUD_CMDS.has('fs_write'));
+  const MEDIA = `${ORIGIN}/api/ext/media/abc`;
+  const w = checkCommand('fs_write', { folder: 'share', path: './videos//a.mp4', media: { url: MEDIA, size: 1024, name: 'x' }, overwrite: 'yes', tabId: 1 }, ctx);
+  assert.deepEqual(w, { folder: 'share', path: 'videos/a.mp4', media: { url: MEDIA, size: 1024 }, overwrite: false });
+  assert.equal(checkCommand('fs_write', { folder: 'share', path: 'a.srt', media: { url: MEDIA, size: 1 }, overwrite: true }, ctx).overwrite, true);
+  for (const ok of ['a.mp4', 'a.MKV', 'a.webm', 'a.m4a', 'a.mp3', 'a.vtt', 'a.md', 'a.png', '报告.docx']) assert.ok(writeAllowed(ok), ok);
+  for (const bad of ['a.exe', 'a.bat', 'a.ps1', 'a.lnk', 'a.js', 'a.svg', 'a.zip', 'a.html.', 'a.mp4 ', '.a.mp4', 'mp4', 'a:b.mp4', 'a?.mp4', 'a.mp4\u0000']) {
+    assert.equal(writeAllowed(bad), false, bad);
+  }
+  const base = { folder: 'share', media: { url: MEDIA, size: 10 } };
+  denied(() => checkCommand('fs_write', { ...base, path: '' }, ctx));
+  denied(() => checkCommand('fs_write', { ...base, path: '../a.mp4' }, ctx));
+  denied(() => checkCommand('fs_write', { ...base, path: 'C:/a.mp4' }, ctx));
+  denied(() => checkCommand('fs_write', { ...base, path: '.config/a.mp4' }, ctx));
+  denied(() => checkCommand('fs_write', { ...base, path: 'node_modules/a.mp4' }, ctx));
+  denied(() => checkCommand('fs_write', { ...base, path: 'run.exe' }, ctx));
+  denied(() => checkCommand('fs_write', { ...base, path: 'a.mp4', media: { url: 'https://evil.example/api/ext/media/abc', size: 10 } }, ctx));
+  denied(() => checkCommand('fs_write', { ...base, path: 'a.mp4', media: { url: PULL, size: 10 } }, ctx));
+  denied(() => checkCommand('fs_write', { ...base, path: 'a.mp4', media: { url: MEDIA, size: 0 } }, ctx));
+  denied(() => checkCommand('fs_write', { ...base, path: 'a.mp4', media: { url: MEDIA, size: 1.5 } }, ctx));
+  denied(() => checkCommand('fs_write', { ...base, path: 'a.mp4', media: { url: MEDIA, size: MEDIA_MAX + 1 } }, ctx));
+  denied(() => checkCommand('fs_write', { ...base, folder: 'a/b', path: 'a.mp4' }, ctx));
 });
 
 // 能力包：云端能点名装扩展自带的包、按白名单调 action，但不能借它塞进任何代码

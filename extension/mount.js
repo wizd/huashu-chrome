@@ -2,11 +2,12 @@
 // 句柄写进 IndexedDB 之后，service worker 才能在没有这个窗口的情况下读文件。
 // 浏览器重启后权限可能回到 prompt，那时「恢复访问」再调一次 requestPermission。
 
-import { listFolders, addFolder, removeFolder, requestAccess } from './folders.js';
+import { listFolders, addFolder, removeFolder, requestAccess, setWrite } from './folders.js';
 
 const $ = (id) => document.getElementById(id);
 const focusId = new URLSearchParams(location.search).get('id');
 let pending = null;
+let pendingWrite = false;
 
 const showErr = (text) => {
   $('err').hidden = !text;
@@ -47,7 +48,7 @@ async function render() {
     name.textContent = row.name;
     const sub = document.createElement('div');
     sub.className = 'sub';
-    sub.textContent = word;
+    sub.textContent = row.permission === 'granted' && row.write ? '可读写' : word;
     const text = document.createElement('div');
     text.append(name, sub);
     text.style.flex = '1';
@@ -70,6 +71,26 @@ async function render() {
         await render();
       };
       item.appendChild(restore);
+    } else {
+      const flip = document.createElement('button');
+      flip.className = 'btn ghost';
+      flip.type = 'button';
+      flip.textContent = row.write ? '改为只读' : '允许写入';
+      flip.title = row.write ? '任务不能再往里存文件' : '让任务可以把做好的文件存进这个文件夹';
+      flip.onclick = async () => {
+        flip.disabled = true;
+        showErr('');
+        try {
+          const state = await setWrite(row.id, !row.write);
+          if (state !== 'granted') showErr('没有允许写入，这个文件夹仍是只读。');
+          await tell();
+        } catch (e) {
+          showErr(e.message || String(e));
+        }
+        flip.disabled = false;
+        await render();
+      };
+      item.appendChild(flip);
     }
     const del = document.createElement('button');
     del.className = 'btn ghost';
@@ -95,7 +116,8 @@ function showNaming(on) {
 $('pick').onclick = async () => {
   showErr('');
   try {
-    pending = await showDirectoryPicker({ mode: 'read', id: 'vcorp-local-folder' });
+    pendingWrite = $('write').checked;
+    pending = await showDirectoryPicker({ mode: pendingWrite ? 'readwrite' : 'read', id: 'vcorp-local-folder' });
   } catch (e) {
     if (e?.name === 'AbortError') return;
     // 系统目录（桌面、文档、下载）在有的系统上会直接拒绝，换一个普通文件夹。
@@ -117,7 +139,7 @@ $('save').onclick = async () => {
   $('save').disabled = true;
   showErr('');
   try {
-    await addFolder(pending, $('name').value);
+    await addFolder(pending, $('name').value, { write: pendingWrite });
     showNaming(false);
     await tell();
     await render();

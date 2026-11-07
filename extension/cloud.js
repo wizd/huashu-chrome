@@ -551,6 +551,8 @@ async function requestFolders(task, p, cfg) {
   const refused = now.folderRefused || [];
   const lines = [`已挂载：${mounted.map((f) => f.name).join('、') || '（无）'}`];
   lines.push(`本任务可以读：${granted.join('、') || '（无）'}`);
+  const writable = mounted.filter((f) => f.write && granted.includes(f.name)).map((f) => f.name);
+  if (granted.length) lines.push(`其中可以写入（fs_write）：${writable.join('、') || '（无，都是只读挂载）'}`);
   const no = known.filter((name) => refused.includes(name));
   const later = split.ask.filter((name) => !granted.includes(name) && !refused.includes(name));
   if (no.length) lines.push(`用户不同意：${no.join('、')}。不要再申请。`);
@@ -565,11 +567,11 @@ function decideFolders(jobId, allow) {
   for (const fn of waiters.get(`folders:${jobId}`) || []) fn(!!allow);
 }
 
-async function notifyLocked(entry) {
+async function notifyLocked(entry, message = `「${entry.name}」的读取权限失效了。点这里打开窗口，再点「恢复访问」。`) {
   chrome.notifications?.create(`hc-folder:${entry.id}`, {
     type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
     title: '本地文件夹需要重新允许',
-    message: `「${entry.name}」的读取权限失效了。点这里打开窗口，再点「恢复访问」。`,
+    message,
   }, () => void chrome.runtime.lastError);
   await openMount(entry.id).catch(() => {});
 }
@@ -583,6 +585,7 @@ async function fsCmd(cmd, p, task) {
   if (!entry?.handle) throw err('CLOUD_DENIED', `这个浏览器上没有「${p.folder}」。请用户在网页上重新挂载。`);
   try {
     if (cmd === 'fs_list') return await folders.listTree(entry.handle, { path: p.path, depth: p.depth, glob: p.glob, folder: p.folder });
+    if (cmd === 'fs_write') return await fsWrite(entry, p);
     const file = await folders.readFile(entry.handle, p.path);
     let reserved = false;
     const held = await updateTask(task.jobId, (x) => {
@@ -605,8 +608,56 @@ async function fsCmd(cmd, p, task) {
       await notifyLocked(entry);
       throw err('FOLDER_LOCKED', `文件夹「${entry.name}」需要你重新允许一次。已打开窗口，点「恢复访问」后再试。`);
     }
+    if (e.code === 'FOLDER_READONLY') {
+      await notifyLocked(entry, `有任务想把文件存进「${entry.name}」，它是只读挂载的。点这里打开窗口，点「允许写入」。`);
+      throw err('FOLDER_READONLY', `「${entry.name}」是只读挂载的。已请用户在扩展里点「允许写入」；用户点了之后再试一次，没点就把文件留在 output/ 并在交付里说明。`);
+    }
     throw e;
   }
+}
+
+// 从配对服务器的素材地址取字节，流式写进文件夹。不经内存整份缓冲，2GB 的视频也一样。
+async function fsWrite(entry, p) {
+  const { url, size } = p.media;
+  const ctl = new AbortController();
+  const t0 = Date.now();
+  let got = 0, why = '';
+  const stop = (reason) => { why = reason; ctl.abort(); };
+  // 慢不要紧，停住才放弃：每来一块数据就重新计时
+  let stall = setTimeout(() => stop('stall'), policy.MEDIA_STALL_MS);
+  const cap = setTimeout(() => stop('cap'), policy.MEDIA_WRITE_MAX_MS);
+  const tick = new TransformStream({
+    transform(chunk, c) {
+      got += chunk.byteLength;
+      clearTimeout(stall);
+      if (got < size) stall = setTimeout(() => stop('stall'), policy.MEDIA_STALL_MS);
+      c.enqueue(chunk);
+    },
+  });
+  const slow = () => {
+    const secs = Math.round((Date.now() - t0) / 1000);
+    const kbs = Math.round(got / 1024 / Math.max(1, secs));
+    const head = why === 'cap' ? `${secs} 秒只取到` : `素材连续 ${policy.MEDIA_STALL_MS / 1000} 秒没有数据，已取到`;
+    return err('UPLOAD_SLOW', `${head} ${got} / ${size} 字节（约 ${kbs}KB/s），文件没写进去。用户到服务器的线路太慢；不要反复重试，把文件留在 output/ 并在交付里说明。`);
+  };
+  try {
+    let res;
+    try {
+      res = await fetch(url, { credentials: 'omit', cache: 'no-store', signal: ctl.signal });
+    } catch (e) {
+      if (ctl.signal.aborted) throw slow();
+      throw err('MEDIA_FAILED', `取素材失败：${e.message || e}`);
+    }
+    if (!res.ok || !res.body) throw err('MEDIA_FAILED', `取素材失败：HTTP ${res.status}（素材 2 小时后过期，重新上传一次）`);
+    const len = Number(res.headers.get('content-length'));
+    if (Number.isFinite(len) && len > 0 && len !== size) { ctl.abort(); throw err('MEDIA_FAILED', `素材大小 ${len} 和声明的 ${size} 不一致`); }
+    const out = await folders.writeFile(entry, p.path, res.body.pipeThrough(tick), { size, overwrite: p.overwrite });
+    const verb = out.replaced ? '替换了' : '写入了';
+    return { text: `已${verb} ${p.folder}/${p.path}（${out.bytes} 字节）。`, bytes: out.bytes, replaced: out.replaced, audit: `write ${p.folder}/${p.path} ${out.bytes}` };
+  } catch (e) {
+    if (why && e?.code !== 'MEDIA_FAILED') throw slow();
+    throw e;
+  } finally { clearTimeout(stall); clearTimeout(cap); }
 }
 
 async function openMount(folderId = '') {
@@ -1064,7 +1115,7 @@ async function exec(m) {
   if (m.cmd === 'apps') return requestApps(updated, p, cfg);
   if (m.cmd === 'desktop') return desktopCmd(p, updated, cfg);
   if (m.cmd === 'shell' || m.cmd === 'file') return fullCmd(m.cmd, p);
-  if (m.cmd === 'fs_list' || m.cmd === 'fs_read') return fsCmd(m.cmd, p, updated);
+  if (m.cmd === 'fs_list' || m.cmd === 'fs_read' || m.cmd === 'fs_write') return fsCmd(m.cmd, p, updated);
   const sid = sidOf(jobId);
   const label = labelOf(cfg.origin);
   const own = new Set(updated.tabs);

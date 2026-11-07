@@ -40,10 +40,15 @@
 <main>
   <div>
     <h1>挂载本地文件夹</h1>
-    <p>选一个文件夹之后，配对的网站可以申请读取里面的文档。挂上就是把它分享给你的任务：开了「自动允许新任务」时按需直接读，没开时每次都会问你。只读，不会改你的文件。</p>
+    <p>选一个文件夹之后，配对的网站可以申请读取里面的文档。挂上就是把它分享给你的任务：开了「自动允许新任务」时按需直接读，没开时每次都会问你。默认只读；勾上「允许任务往里存文件」，任务才能把做好的文件（下载的视频、报告）存进去，已有的同名文件不会被悄悄覆盖。</p>
   </div>
   <section>
-    <button class="btn" id="pick" type="button">选择文件夹</button>
+    <div class="row" style="margin-top:0">
+      <button class="btn" id="pick" type="button">选择文件夹</button>
+      <label class="sub" style="display:flex;align-items:center;gap:4px;cursor:pointer">
+        <input type="checkbox" id="write" /> 允许任务往里存文件
+      </label>
+    </div>
     <div id="naming" hidden>
       <p style="margin-top:8px">给它一个显示名。网站和任务看到的是这个名字，不是磁盘路径。</p>
       <div class="row">

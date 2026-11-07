@@ -12,9 +12,13 @@
 //     所以每次读之前都问一次；不是 granted 就返回 FOLDER_LOCKED，让用户在窗口里点「恢复访问」。
 //     不把「重启后仍然 granted」当成前提。
 //
-// 这里不认识云端命令。谁能读、读哪种文件、字节往哪送，由 cloud-policy.js 决定。
+// 写入：用户挂载时（或之后在侧栏里）点了「允许写入」的文件夹，row.write 为 true，
+// 并且拿到了 readwrite 权限。两样都要有：只有权限没有勾选（同一个目录被别处授过写）不算。
+// 写用 createWritable：浏览器先写到旁边的临时文件，close 时才换上去，半截的文件不会出现。
+//
+// 这里不认识云端命令。谁能读写、哪种文件、字节从哪来往哪送，由 cloud-policy.js 决定。
 
-import { cleanFolderName, fileAllowed, skipEntry, matchGlob, FS_FILE_MAX, FS_LIST_MAX, FS_FOLDERS_MAX } from './cloud-policy.js';
+import { cleanFolderName, fileAllowed, writeAllowed, skipEntry, matchGlob, FS_FILE_MAX, FS_LIST_MAX, FS_FOLDERS_MAX } from './cloud-policy.js';
 
 const DB = 'hc-folders';
 
@@ -51,7 +55,7 @@ function newId() {
 }
 
 function mapFsError(e, rel) {
-  if (e?.code) return e;
+  if (typeof e?.code === 'string') return e;   // DOMException 也有 code，是数字
   if (e?.name === 'NotAllowedError' || e?.name === 'SecurityError') {
     return fail('FOLDER_LOCKED', '读取权限失效了，需要你重新点一次允许');
   }
@@ -64,16 +68,18 @@ function mapFsError(e, rel) {
 // 给服务器的名单：只有显示名。权限状态是给侧栏的，不上报。
 export async function names() {
   const rows = await all();
-  return rows.map((r) => ({ id: r.id, name: r.name }));
+  return rows.map((r) => ({ id: r.id, name: r.name, ...(r.write ? { write: true } : {}) }));
 }
+
+const modeOf = (row) => (row?.write ? 'readwrite' : 'read');
 
 export async function listFolders() {
   const rows = await all();
   const out = [];
   for (const row of rows.sort((a, b) => a.addedAt - b.addedAt)) {
     let permission = 'unknown';
-    try { permission = await row.handle.queryPermission({ mode: 'read' }); } catch { /* 句柄坏了，下面照样列出来让用户移除 */ }
-    out.push({ id: row.id, name: row.name, addedAt: row.addedAt, permission });
+    try { permission = await row.handle.queryPermission({ mode: modeOf(row) }); } catch { /* 句柄坏了，下面照样列出来让用户移除 */ }
+    out.push({ id: row.id, name: row.name, addedAt: row.addedAt, permission, write: !!row.write });
   }
   return out;
 }
@@ -83,7 +89,7 @@ export async function getByName(name) {
   return rows.find((r) => r.name === name) || null;
 }
 
-export async function addFolder(handle, name) {
+export async function addFolder(handle, name, { write = false } = {}) {
   const clean = cleanFolderName(name) || cleanFolderName(handle?.name);
   if (!clean) throw fail('BAD_NAME', '文件夹名字不合法');
   const rows = await all();
@@ -96,7 +102,7 @@ export async function addFolder(handle, name) {
       if (e.code === 'DUP') throw e;
     }
   }
-  const row = { id: newId(), name: clean, handle, addedAt: Date.now() };
+  const row = { id: newId(), name: clean, handle, addedAt: Date.now(), write: !!write };
   await idbOp('readwrite', (s) => s.put(row));
   return { id: row.id, name: row.name };
 }
@@ -109,7 +115,21 @@ export async function removeFolder(id) {
 export async function requestAccess(id) {
   const row = await get(id);
   if (!row?.handle) throw fail('NOT_FOUND', '没有这个文件夹');
-  return row.handle.requestPermission({ mode: 'read' });
+  return row.handle.requestPermission({ mode: modeOf(row) });
+}
+
+// 打开或关掉写入。打开要 readwrite 权限，同样只能在扩展页面里由用户点击调用。
+// 关掉不收回浏览器的权限（收不回），只是这里不再写。
+export async function setWrite(id, on) {
+  const row = await get(id);
+  if (!row?.handle) throw fail('NOT_FOUND', '没有这个文件夹');
+  if (on) {
+    const state = await row.handle.requestPermission({ mode: 'readwrite' });
+    if (state !== 'granted') return state;
+  }
+  row.write = !!on;
+  await idbOp('readwrite', (s) => s.put(row));
+  return 'granted';
 }
 
 async function child(dir, name, kind) {
@@ -130,8 +150,8 @@ async function resolve(root, rel, kind) {
   return cur;
 }
 
-async function permissionOf(handle) {
-  try { return await handle.queryPermission({ mode: 'read' }); }
+async function permissionOf(handle, mode = 'read') {
+  try { return await handle.queryPermission({ mode }); }
   catch (e) { throw mapFsError(e); }
 }
 
@@ -274,4 +294,58 @@ export async function uploadFile(file, url) {
   }
   if (!res.ok) throw fail('INTERNAL', `文件没有传到服务器：${res.status}`);
   return { bytes: file.size, name: file.name };
+}
+
+// 把 body（fetch 的 ReadableStream）写成 rel。中间的子文件夹没有就建。
+// 已有同名文件且没说 overwrite：EXISTS，不碰它。字节数和 size 对不上就放弃，原文件不变。
+export async function writeFile(row, rel, body, { size, overwrite = false }) {
+  if (!row?.write) throw fail('FOLDER_READONLY', `「${row?.name || ''}」是只读挂载的`);
+  if (await permissionOf(row.handle, 'readwrite') !== 'granted') {
+    throw fail('FOLDER_LOCKED', '写入权限失效了，需要你重新点一次允许');
+  }
+  const parts = rel.split('/');
+  const base = parts.pop();
+  if (skipEntry(base) || !writeAllowed(base)) throw fail('CLOUD_DENIED', `不写这种文件：${base}`);
+  let dir = row.handle;
+  try {
+    for (const name of parts) {
+      if (skipEntry(name)) throw fail('CLOUD_DENIED', `不写进 ${name}`);
+      dir = await dir.getDirectoryHandle(name, { create: true });
+    }
+  } catch (e) { throw mapFsError(e, parts.join('/')); }
+  let exists = true;
+  try { await dir.getFileHandle(base); } catch (e) {
+    if (e?.name === 'NotFoundError') exists = false;
+    else if (e?.name === 'TypeMismatchError') throw fail('EXISTS', `${rel} 是一个文件夹`);
+    else throw mapFsError(e, rel);
+  }
+  if (exists && !overwrite) throw fail('EXISTS', `${rel} 已经存在。要替换就带 overwrite:true，或换个文件名`);
+  let writable;
+  try {
+    const fh = await dir.getFileHandle(base, { create: true });
+    if (typeof fh.createWritable !== 'function') throw fail('UNSUPPORTED', '这个 Chrome 不能在后台写文件，请更新 Chrome');
+    writable = await fh.createWritable();
+  } catch (e) {
+    if (!exists) await dir.removeEntry(base).catch(() => {});
+    throw mapFsError(e, rel);
+  }
+  let got = 0;
+  const count = new TransformStream({
+    transform(chunk, ctl) {
+      got += chunk.byteLength;
+      if (got > size) throw new Error('字节比声明的多');
+      ctl.enqueue(chunk);
+    },
+  });
+  try {
+    await body.pipeThrough(count).pipeTo(writable, { preventClose: true });
+    if (got !== size) throw new Error(`只收到 ${got} / ${size} 字节`);
+    await writable.close();
+  } catch (e) {
+    await writable.abort().catch(() => {});
+    // 新建的空文件留着没有意义；替换时原文件没动
+    if (!exists) await dir.removeEntry(base).catch(() => {});
+    throw typeof e?.code === 'string' ? e : fail('INTERNAL', `没写成：${e.message || e}`);
+  }
+  return { bytes: got, replaced: exists };
 }

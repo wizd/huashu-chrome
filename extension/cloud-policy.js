@@ -34,7 +34,7 @@ export const CLOUD_CMDS = new Set([
   'wait', 'read_text', 'query', 'read', 'screenshot', 'upload', 'act', 'ask', 'status', 'sites',
   // 本地文件夹：只读、按任务批准、扩展名白名单。读文件在 service worker 里做，
   // 选文件夹和重新授权只能发生在扩展自己的页面（见 folders.js 顶部的结论）。
-  'folders', 'fs_list', 'fs_read',
+  'folders', 'fs_list', 'fs_read', 'fs_write',
   // 能力包：只能按名字装扩展包里自带的包、按白名单调 action，payload 是纯数据（见 load.js）。
   // 这是云端拿到「有类型的站点能力」的唯一途径，eval 依旧没有。
   'load', 'call',
@@ -97,6 +97,10 @@ export const TASK_IDLE_MS = 3 * 3600e3;  // 批准过的任务闲置 3 小时作
 export const MEDIA_MAX = 2 * 1024 ** 3;  // 素材上限，与 maker 那侧的上传上限一致
 // 页面取一份素材最多等多久：按 1MB/s 估，封顶 7 分钟，留在服务器 8 分钟的命令超时之内。
 export const mediaFetchMs = (size) => Math.min(30000 + Math.ceil(size / 1048576) * 1000, 7 * 60 * 1000);
+// 往文件夹写素材：用户的线路可能只有 100KB/s，按速度估会误杀。只在这么久一个字节都没来时放弃，
+// 总时长仍封顶 7 分钟（服务器的命令超时是 8 分钟）。
+export const MEDIA_STALL_MS = 30000;
+export const MEDIA_WRITE_MAX_MS = 7 * 60 * 1000;
 
 // 本地文件夹。数字和 opus-video-maker/extlink.js 的 PULL_MAX 必须一致：
 // 扩展拒绝超限的文件，服务器拒绝超限的上传，两边对不齐就会一截一放。
@@ -108,6 +112,13 @@ export const FS_FOLDERS_MAX = 8;                 // 一个浏览器最多挂这�
 export const FS_EXTS = new Set([
   '.md', '.markdown', '.txt', '.pdf', '.docx', '.xlsx', '.pptx', '.csv', '.json', '.html', '.htm',
   '.png', '.jpg', '.jpeg', '.gif', '.webp',
+]);
+// 写进用户文件夹的文件：能读的那些，加上音视频和字幕。可执行文件、脚本、快捷方式、
+// SVG、压缩包一律不写——它们放进用户的文件夹后，双击就能跑。
+export const FS_WRITE_EXTS = new Set([
+  ...FS_EXTS,
+  '.mp4', '.mov', '.webm', '.mkv', '.m4v', '.m4a', '.mp3', '.wav', '.aac', '.flac', '.ogg', '.opus',
+  '.srt', '.vtt', '.ass',
 ]);
 const FS_SKIP = new Set(['node_modules', '__pycache__', '.git', '.venv']);
 
@@ -234,6 +245,15 @@ export function fileAllowed(name) {
   const dot = base.lastIndexOf('.');
   if (dot <= 0) return false;
   return FS_EXTS.has(base.slice(dot).toLowerCase());
+}
+
+export function writeAllowed(name) {
+  const base = String(name || '').split('/').pop();
+  if (!base || base.startsWith('.') || base.length > 160) return false;
+  if (/[<>:"|?*\x00-\x1f]/.test(base) || /[. ]$/.test(base)) return false;
+  const dot = base.lastIndexOf('.');
+  if (dot <= 0) return false;
+  return FS_WRITE_EXTS.has(base.slice(dot).toLowerCase());
 }
 
 // 只支持 *（一段里）和 **（跨目录）。不解释 shell，不接收 ..。
@@ -407,6 +427,20 @@ export function checkCommand(cmd, params, { hosts, origin }) {
       if (skipEntry(base) || !fileAllowed(base)) throw err('CLOUD_DENIED', `不读取这种文件：${base}`);
       if (!pullUrlAllowed(p.upload?.url, origin)) throw err('CLOUD_DENIED', 'fs_read 只能把文件传到配对服务器的 /api/ext/pull/');
       return { folder, path: rel, upload: { url: p.upload.url } };
+    }
+    case 'fs_write': {
+      // 字节从配对服务器的素材接口取，写进用户允许写入的文件夹。能不能写由 folders.js 按挂载时的勾选再查。
+      const folder = cleanFolderName(p.folder);
+      if (!folder) throw err('CLOUD_DENIED', 'fs_write 要给 folder：文件夹的显示名');
+      const rel = normalizeRelPath(p.path ?? '');
+      if (!rel) throw err('CLOUD_DENIED', 'fs_write 要给文件的 path');
+      if (rel.split('/').some(skipEntry)) throw err('CLOUD_DENIED', `不写进隐藏目录：${rel}`);
+      const base = rel.split('/').pop();
+      if (!writeAllowed(base)) throw err('CLOUD_DENIED', `不写这种文件：${base}`);
+      if (!mediaAllowed(p.media?.url, origin)) throw err('CLOUD_DENIED', 'fs_write 只能写配对服务器上的素材（media.url）');
+      const size = Number(p.media.size);
+      if (!Number.isInteger(size) || size <= 0 || size > MEDIA_MAX) throw err('CLOUD_DENIED', '素材大小不对');
+      return { folder, path: rel, media: { url: p.media.url, size }, overwrite: p.overwrite === true };
     }
     case 'load':
     case 'call': {

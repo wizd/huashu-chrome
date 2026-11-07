@@ -738,6 +738,29 @@ async function mediaPull(p, task, hosts) {
   } finally { clearTimeout(timer); }
 }
 
+async function binaryOut(bytes, type, p, task, data) {
+  if (!p.upload?.url) throw err('CLOUD_DENIED', `${p.name}.${p.action} 交出了字节，但命令没带 pull 槽：发 call 时带 "pull":true`);
+  const checked = policy.mediaBody(type, bytes.subarray(0, 1024));
+  if (!checked.ok) throw err('NOT_MEDIA', `${checked.why}，已丢弃。小脑只能交出音视频字节`);
+  const got = bytes.byteLength;
+  let reserved = false;
+  const held = await updateTask(task.jobId, (x) => {
+    const used = x.pullBytes || 0;
+    if (used + got > policy.PULL_TASK_MAX) return;
+    x.pullBytes = used + got;
+    reserved = true;
+  });
+  if (!held) throw err('CLOUD_DENIED', '这个任务已经结束');
+  if (!reserved) throw err('CLOUD_DENIED', `这个任务取媒体已到 ${policy.PULL_TASK_MAX / 1024 ** 3}GB 上限`);
+  try {
+    await folders.uploadFile(new File([bytes], 'media.bin'), p.upload.url);
+  } catch (e) {
+    await updateTask(task.jobId, (x) => { x.pullBytes = Math.max(0, (x.pullBytes || 0) - got); });
+    throw e;
+  }
+  return { pulled: got, audit: `${p.name}.${p.action} ${got}` };
+}
+
 function concatHead(chunks) {
   const out = new Uint8Array(1024);
   let n = 0;
@@ -1307,6 +1330,13 @@ async function exec(m) {
       await bounce(id, hosts);
       return policy.redactOffList(t.pendingUrl || t.url);
     }
+  }
+  // 小脑交出的字节（binaryOut）：和 media_pull 同一道关——必须像媒体、算进同一份额度、只传到服务器给的 pull 槽
+  if (data?.binary) {
+    const { bytes, type } = data.binary;
+    delete data.binary;
+    const up = await binaryOut(bytes, type, p, updated, data);
+    Object.assign(data, up);
   }
   // 点击开出了新标签页，后台已经跟过去了：下一条缺省命令落在新页上
   const next = Number(data?.tabId) && after.includes(Number(data.tabId)) ? Number(data.tabId) : tid;

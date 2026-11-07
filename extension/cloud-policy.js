@@ -516,7 +516,9 @@ export function checkCommand(cmd, params, { hosts, origin }) {
         if (cmd === 'load') return { ...checkLoadParams(p), ...(p.reload === true ? { reload: true } : {}) };
         // confirm 由注册表算出来，服务器传的同名字段在这里就被丢掉了
         const { name, action, payload, timeout, confirm } = checkCallParams(p);
-        return { name, action, payload, timeout, confirm };
+        // 声明了 binaryOut 的小脑交出的字节，只能传到配对服务器给的一次性 pull 槽
+        if (p.upload !== undefined && !pullUrlAllowed(p.upload?.url, origin)) throw err('CLOUD_DENIED', 'call 只能把字节传到配对服务器的 /api/ext/pull/');
+        return { name, action, payload, timeout, confirm, ...(p.upload ? { upload: { url: p.upload.url } } : {}) };
       } catch (e) {
         throw err('CLOUD_DENIED', e.message);
       }

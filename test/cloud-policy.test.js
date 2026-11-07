@@ -370,3 +370,12 @@ test('media_pull：只 GET 允许网站上的媒体，字节只去一次性上�
     assert.equal(mediaBody(ct, b(body)).ok, false, `${ct} ${body}`);
   }
 });
+
+test('call 的 pull 槽：只能是配对服务器的 /api/ext/pull/，不带就没有', () => {
+  const slot = `${ORIGIN}/api/ext/pull/${'a'.repeat(32)}`;
+  const r = checkCommand('call', { name: 'capture', action: 'capture.pull', payload: { track: 0 }, upload: { url: slot } }, ctx);
+  assert.deepEqual(r.upload, { url: slot });
+  assert.equal(checkCommand('call', { name: 'capture', action: 'capture.status' }, ctx).upload, undefined);
+  denied(() => checkCommand('call', { name: 'capture', action: 'capture.pull', upload: { url: `https://evil.example/api/ext/pull/${'a'.repeat(32)}` } }, ctx));
+  denied(() => checkCommand('call', { name: 'capture', action: 'capture.pull', upload: { url: `${ORIGIN}/api/jobs/1` } }, ctx));
+});

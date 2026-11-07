@@ -1,6 +1,49 @@
 // 由 scripts/build-loads.mjs 生成，不要手改。数据源是 loads/<name>/load.json。
 // 纯数据：cloud-policy.js 在 Node 里也要能 import 它。
 export const LOADS = {
+  "capture": {
+    "name": "capture",
+    "title": "播放录制",
+    "description": "把页面播放器交给 <video> 的音视频字节（MSE）分段交给沙箱合成文件：浏览器能播的就能拿到。不碰站点接口和签名，不读 Cookie；有 DRM 的不录。",
+    "version": "1.0.0+8bc837",
+    "hosts": "task",
+    "waitFor": "",
+    "files": [
+      "loads/capture/agent.js"
+    ],
+    "limits": {
+      "payloadMax": 4096,
+      "timeoutMs": 60000,
+      "timeoutMaxMs": 120000
+    },
+    "actions": {
+      "read": [
+        "capture.status",
+        "capture.start",
+        "capture.seek",
+        "capture.pull",
+        "capture.stop"
+      ],
+      "write": []
+    },
+    "confirm": {},
+    "api": 1,
+    "needs": [
+      "binaryOut",
+      "early"
+    ],
+    "early": [
+      "loads/capture/early.js"
+    ],
+    "outputs": {
+      "media": {
+        "sniff": "media",
+        "quota": "media"
+      }
+    },
+    "sha256": "1977dca8e8968bb8d204c38e21944617f847a421bc1defec2e07f62baa96e7ac",
+    "bytes": 13365
+  },
   "eda": {
     "name": "eda",
     "title": "嘉立创EDA 专业版",
@@ -194,6 +237,8 @@ export const LOADS = {
       "pcb.region.delete": "删除禁止区域",
       "pcb.fill.delete": "删除填充"
     },
+    "api": 1,
+    "needs": [],
     "sha256": "2702ea1be226305aaaeda5e188139d4acc8d596f86d5d7165e26de95cb5914f8",
     "bytes": 942689
   },
@@ -228,6 +273,10 @@ export const LOADS = {
     },
     "confirm": {},
     "netHook": true,
+    "api": 1,
+    "needs": [
+      "netHook"
+    ],
     "sha256": "dfa6b559cba332efd64fee874501dcdc326e2c3bc616daf28df9d6ca5dbfb23c",
     "bytes": 73799
   }

@@ -15,7 +15,7 @@ import { CRED_URL, redactCreds } from './redact.js';
 import { identityOf, stripMarkPrefix } from './identity.js';
 import { validateScript, condText, repeatMax, EXEC_BUDGET, collectRefs, toRecipe } from './script.js';
 import { initCloud, ensureCloud } from './cloud.js';
-import { loadDef, loadHostAllowed, checkLoadParams, checkCallParams, netHookMatches } from './load.js';
+import { loadDef, loadHostAllowed, checkLoadParams, checkCallParams, netHookMatches, needs, hostsText, takeBinary } from './load.js';
 
 // ---------- 连接层 ----------
 //
@@ -312,6 +312,19 @@ async function onMessage(msg) {
     // 户口簿反推归属，登记必须先落盘，否则第一条命令刷不出标记（又一个落盘竞态）
     if (tabId && msg.sid && !NO_SLOT_CMDS.has(msg.cmd)) await registerTab(msg.sid, tabId);
     let data = await handler(msg.params || {}, tabId, ctx);
+    // 小脑交出的字节（本机通道）：调用方带 binary:"base64" 时整段放进 base64 字段
+    // （CLI 的 savePath 会把它落盘，不进终端）；不带时只说字节数，免得把几 MB 倒进 agent 的上下文
+    if (data?.binary) {
+      const { bytes, type } = data.binary;
+      delete data.binary;
+      if (msg.params?.binary === 'base64') {
+        let bin = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        data = { ...data, base64: btoa(bin), bytes: bytes.byteLength, ct: type };
+      } else {
+        data = { ...data, text: `${data.text}\n（交出 ${bytes.byteLength} 字节；要拿到字节，调用时带 "binary":"base64"）` };
+      }
+    }
     // 命令跑完才刷标记，不是跑之前：导航会把页面里的 mark.js 冲掉，
     // 提前贴的那一次多半活不到用户看见。act 顺路带上，一次消息两件事。
     // 这里**不带 msg.live**：它是命令出发时的快照。命令在途时用户关掉终端，
@@ -1961,10 +1974,42 @@ function withTimeout(promise, ms, what) {
 
 const LOAD_WAIT_MS = 30000;
 
+// 小脑的 early 钩子（load.json 的 early）：要在页面自己的脚本之前装好，只能 document_start 注入。
+// 只为这一个标签页的这一次重载注册：注册 → 重载 → 等到钩子出现或页面加载完 → 注销。
+// 注册是按网站生效的，同站别的标签页恰好在这几秒里加载也会装上；钩子自己保证没人用时只透传、少量留存。
+async function installEarly(tabId, def, tab) {
+  const host = hostOf(tab.url);
+  if (!host) throw err('LOAD_DENIED', `能力包 ${def.name} 要装早期钩子，这个标签页不是网页`);
+  const id = `hc-early-${def.name}-${tabId}`;
+  await chrome.scripting.unregisterContentScripts({ ids: [id] }).catch(() => {});
+  await chrome.scripting.registerContentScripts([{
+    id, matches: [`*://${host}/*`], js: def.early, runAt: 'document_start', world: 'MAIN', allFrames: false, persistAcrossSessions: false,
+  }]);
+  try {
+    await chrome.tabs.reload(tabId, { bypassCache: false });
+    const until = Date.now() + LOAD_WAIT_MS;
+    for (;;) {
+      await sleep(400);
+      const t = await chrome.tabs.get(tabId).catch(() => null);
+      if (!t) throw err('LOAD_GONE', '标签页在重载时关掉了');
+      const [{ result } = {}] = await chrome.scripting.executeScript({
+        target: { tabId }, world: 'MAIN', func: (name) => !!(window.__vcorpEarly && window.__vcorpEarly[name]), args: [def.name],
+      }).catch(() => [{}]);
+      if (result) return;
+      if (t.status === 'complete' && Date.now() > until - LOAD_WAIT_MS + 3000) {
+        throw err('LOAD_NOT_READY', `能力包 ${def.name} 的早期钩子没装上（页面重载完了也没有）`);
+      }
+      if (Date.now() > until) throw err('LOAD_NOT_READY', `页面 ${LOAD_WAIT_MS / 1000} 秒内没重载完`);
+    }
+  } finally {
+    await chrome.scripting.unregisterContentScripts({ ids: [id] }).catch(() => {});
+  }
+}
+
 async function ensureLoad(id, def, { force = false } = {}) {
   const tab = await chrome.tabs.get(id);
   if (!loadHostAllowed(def, tab.url)) {
-    throw err('LOAD_DENIED', `能力包 ${def.name} 只能用在 ${def.hosts.join('、')}，这个标签页在 ${hostOf(tab.url) || '非网页地址'}`);
+    throw err('LOAD_DENIED', `能力包 ${def.name} 只能用在 ${hostsText(def)}，这个标签页在 ${hostOf(tab.url) || '非网页地址'}`);
   }
   const probe = async () => (await chrome.scripting.executeScript({
     target: { tabId: id },
@@ -1972,10 +2017,16 @@ async function ensureLoad(id, def, { force = false } = {}) {
     func: (name, waitFor) => ({
       page: !waitFor || typeof window[waitFor] !== 'undefined',
       version: (window.__vcorpLoads && window.__vcorpLoads[name] && window.__vcorpLoads[name].version) || '',
+      early: !!(window.__vcorpEarly && window.__vcorpEarly[name]),
     }),
     args: [def.name, def.waitFor],
   }))[0]?.result;
 
+  let reloaded = false;
+  if (def.early?.length && (force || !(await probe())?.early)) {
+    await installEarly(id, def, tab);
+    reloaded = true;
+  }
   const until = Date.now() + LOAD_WAIT_MS;
   let st = await probe();
   while (!st?.page) {
@@ -1983,8 +2034,8 @@ async function ensureLoad(id, def, { force = false } = {}) {
     await sleep(500);
     st = await probe();
   }
-  if (def.netHook) await ensureLoadNetHook(id);
-  if (force || st.version !== def.version) {
+  if (needs(def, 'netHook')) await ensureLoadNetHook(id);
+  if (force || reloaded || st.version !== def.version) {
     await chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: def.files });
   }
   // ready() 说没准备好（比如编辑器还在打开工程）就接着等，和上面等 waitFor 共用一个期限
@@ -2004,7 +2055,7 @@ async function ensureLoad(id, def, { force = false } = {}) {
     ready = await readyOnce();
   }
   if (!ready?.ok) throw err('LOAD_NOT_READY', `能力包 ${def.name} 没准备好：${ready?.reason || '未知原因'}`);
-  return { version: def.version, ready };
+  return { version: def.version, ready, ...(reloaded ? { reloaded: true } : {}) };
 }
 
 const HANDLERS = {
@@ -2525,7 +2576,15 @@ const HANDLERS = {
     }
     if (!result || result.gone) throw err('LOAD_GONE', `页面里找不到能力包 ${name}`);
     if (!result.ok) {
-      throw err(result.code === 'LOAD_DENIED' ? 'LOAD_DENIED' : 'LOAD_ERROR', `${name}.${action} 失败：${result.message}`);
+      const pass = ['LOAD_DENIED', 'DRM', 'EARLY_MISSING', 'OVERFLOW', 'NEED_RELOAD', 'BAD_PARAMS'];
+      throw err(pass.includes(result.code) ? result.code : 'LOAD_ERROR', `${name}.${action} 失败：${result.message}`);
+    }
+    // 小脑交出的字节（binaryOut）：拆出来交给调用方（cloud.js 传到服务器的 pull 槽），不进 text
+    let value = JSON.parse(result.text);
+    const bin = takeBinary(def, value);
+    if (bin.bytes) {
+      value = bin.value;
+      return { untrusted: true, text: JSON.stringify(value), binary: { bytes: bin.bytes, type: bin.type } };
     }
     return { untrusted: true, text: result.text, ...(kind === 'write' ? { audit: `${name}.${action}` } : {}) };
   },

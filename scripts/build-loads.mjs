@@ -28,6 +28,9 @@ const SRC = path.join(ROOT, 'loads');
 const OUT = path.join(ROOT, 'extension', 'loads');
 const CACHE = path.join(ROOT, '.cache', 'loads');
 const NAME_RE = /^[a-z][a-z0-9-]{0,31}$/;
+// 宿主接口版本和能认的 needs：和 extension/load.js 的 HOST_API、NEEDS 保持一致（test/loads.test.js 核对）
+const HOST_API = 1;
+const NEEDS = new Set(['netHook', 'early', 'binaryOut']);
 
 function upstream(name, vendor) {
   if (!/^[0-9a-f]{40}$/.test(vendor.commit || '')) throw new Error(`${name}: vendor.commit 要写完整的 40 位 commit`);
@@ -82,6 +85,23 @@ async function build(name) {
     const from = [path.join(up, 'extension', f), path.join(up, f)].find((p) => fs.existsSync(p));
     if (from) fs.copyFileSync(from, path.join(outDir, f));
   }
+  // early：document_start 注入的钩子，原样拷过去（不打包：它要在页面任何脚本之前、自己独立跑）
+  const early = [];
+  for (const f of manifest.early || []) {
+    if (!/^[a-z0-9-]+\.js$/.test(f)) throw new Error(`${name}: early 文件名不对：${f}`);
+    const src = fs.readFileSync(path.join(dir, f), 'utf8').replace(/\r\n/g, '\n');
+    fs.writeFileSync(path.join(outDir, f), `// 由 scripts/build-loads.mjs 生成，不要手改。源码：loads/${name}/${f}\n${src}`);
+    early.push(`loads/${name}/${f}`);
+  }
+  const needs = [...new Set([...(manifest.needs || []), ...(manifest.netHook ? ['netHook'] : []), ...(early.length ? ['early'] : [])])].sort();
+  for (const n of needs) if (!NEEDS.has(n)) throw new Error(`${name}: 不认识的 needs：${n}`);
+  if (needs.includes('early') && !early.length) throw new Error(`${name}: needs 有 early，却没有 early 文件`);
+  if (needs.includes('binaryOut') !== !!Object.keys(manifest.outputs || {}).length) throw new Error(`${name}: needs 的 binaryOut 和 outputs 要一起写`);
+  for (const [ch, o] of Object.entries(manifest.outputs || {})) {
+    if (o.sniff !== 'media' || o.quota !== 'media') throw new Error(`${name}: outputs.${ch} 目前只支持 sniff/quota 为 media`);
+  }
+  if ((manifest.api || 1) > HOST_API) throw new Error(`${name}: 要宿主接口 ${manifest.api}，扩展只有 ${HOST_API}`);
+  if (manifest.hosts !== 'task' && !(Array.isArray(manifest.hosts) && manifest.hosts.length)) throw new Error(`${name}: hosts 要是非空列表或 "task"`);
   const bytes = fs.readFileSync(outfile);
   const { read, write } = manifest.actions;
   return {
@@ -96,6 +116,10 @@ async function build(name) {
     actions: { read, write },
     confirm: manifest.confirm || {},
     ...(manifest.netHook ? { netHook: true } : {}),
+    api: manifest.api || 1,
+    needs,
+    ...(early.length ? { early } : {}),
+    ...(manifest.outputs ? { outputs: manifest.outputs } : {}),
     sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
     bytes: bytes.length,
   };

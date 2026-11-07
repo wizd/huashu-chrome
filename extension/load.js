@@ -23,10 +23,36 @@ export function actionKind(def, action) {
   return null;
 }
 
+// 宿主接口版本和能认的 needs（build-loads.mjs 里有同样的两份，test/loads.test.js 核对）。
+// 小脑要的宿主能力都在 load.json 里声明，这里和 background.js 只认声明，不认小脑的名字。
+export const HOST_API = 1;
+export const NEEDS = new Set(['netHook', 'early', 'binaryOut']);
+export const needs = (def, what) => Array.isArray(def.needs) ? def.needs.includes(what) : (what === 'netHook' && !!def.netHook);
+
+// hosts: "task" 的通用小脑不限死网站：任何网页都能装，云端由 cloud.js 按任务批准的网站把关
 export function loadHostAllowed(def, url) {
-  let host = '';
-  try { host = new URL(url).hostname; } catch { /* 非网页地址 */ }
+  let host = '', web = false;
+  try { const u = new URL(url); host = u.hostname; web = /^https?:$/.test(u.protocol); } catch { /* 非网页地址 */ }
+  if (def.hosts === 'task') return web && !!host;
   return hostMatches(host, def.hosts);
+}
+
+export const hostsText = (def) => (def.hosts === 'task' ? '本任务允许的网站' : def.hosts.join('、'));
+
+// 声明了 binaryOut 的小脑，action 的返回值里可以带一段字节：{ ..., __binary: { data: <base64>, type } }。
+// 拆成 { value（不含字节）, bytes（Uint8Array）}。没声明的小脑带了也不认。字节出门前还要过 mediaBody 和额度（cloud.js）。
+export const BINARY_MAX = 16 * 1024 * 1024;
+export function takeBinary(def, value) {
+  if (!value || typeof value !== 'object' || !Object.hasOwn(value, '__binary')) return { value, bytes: null };
+  const { __binary: b, ...rest } = value;
+  if (!needs(def, 'binaryOut')) throw err('LOAD_ERROR', `能力包 ${def.name} 没有声明 binaryOut，不能交出字节`);
+  if (!b || typeof b.data !== 'string') throw err('LOAD_ERROR', `${def.name} 交出的字节格式不对`);
+  if (b.data.length > Math.ceil(BINARY_MAX / 3) * 4 + 4) throw err('LOAD_ERROR', `${def.name} 一次交出的字节超过 ${BINARY_MAX}`);
+  let bin;
+  try { bin = atob(b.data); } catch { throw err('LOAD_ERROR', `${def.name} 交出的字节不是 base64`); }
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return { value: rest, bytes, type: String(b.type || '').slice(0, 100) };
 }
 
 // load {name} → { name }
@@ -61,6 +87,6 @@ export function checkCallParams(p = {}) {
 // 云端拿不到 network 命令，所以由扩展在这些包的 hosts 上开记录：只记在页面里，读取只经包的白名单 action。
 // 返回 registerContentScripts 的 matches，没有这种包时是 []。
 export function netHookMatches(loads = LOADS) {
-  const hosts = [...new Set(Object.values(loads).filter((d) => d.netHook).flatMap((d) => d.hosts))].sort();
+  const hosts = [...new Set(Object.values(loads).filter((d) => needs(d, 'netHook') && Array.isArray(d.hosts)).flatMap((d) => d.hosts))].sort();
   return hosts.flatMap((h) => [`*://${h}/*`, `*://*.${h}/*`]);
 }

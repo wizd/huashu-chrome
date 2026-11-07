@@ -9,7 +9,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { LOADS } from '../extension/loads/index.js';
-import { loadHostAllowed, actionKind } from '../extension/load.js';
+import { loadHostAllowed, actionKind, HOST_API, NEEDS, takeBinary } from '../extension/load.js';
 import { loadVersion } from '../scripts/load-version.mjs';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -21,7 +21,7 @@ test('每个 loads/<name>/load.json 都构建进了注册表，而且没过期',
     const m = JSON.parse(fs.readFileSync(path.join(ROOT, 'loads', n, 'load.json'), 'utf8'));
     const def = LOADS[n];
     assert.equal(m.name, n);
-    assert.ok(Array.isArray(m.hosts) && m.hosts.length, `${n}: hosts 不能空`);
+    assert.ok(m.hosts === 'task' || (Array.isArray(m.hosts) && m.hosts.length), `${n}: hosts 要是非空列表或 "task"`);
     assert.ok(m.limits.payloadMax > 0 && m.limits.timeoutMs > 0 && m.limits.timeoutMaxMs >= m.limits.timeoutMs);
     // 没有 vendor 的是自研包（源码全在 loads/<name>/），有 vendor 的要钉死上游 commit
     if (m.vendor) assert.match(m.vendor.commit, /^[0-9a-f]{40}$/);
@@ -30,6 +30,12 @@ test('每个 loads/<name>/load.json 都构建进了注册表，而且没过期',
     assert.equal(!!def.netHook, !!m.netHook, `${n}: 注册表过期，重新跑 npm run build:loads`);
     assert.deepEqual(def.actions, m.actions, `${n}: 注册表过期，重新跑 npm run build:loads`);
     assert.deepEqual(def.hosts, m.hosts);
+    // 小脑的声明：needs 只能是宿主认的；early 文件构建进了产物；binaryOut 和 outputs 成对
+    assert.ok(def.api <= HOST_API, `${n}: 要的宿主接口比扩展新`);
+    for (const x of def.needs) assert.ok(NEEDS.has(x), `${n}: 不认识的 needs ${x}`);
+    assert.equal(def.needs.includes('early'), !!(m.early || []).length, `${n}: needs 的 early 和 early 文件不一致`);
+    for (const f of def.early || []) assert.ok(fs.existsSync(path.join(ROOT, 'extension', f)), `${n}: 缺产物 ${f}`);
+    assert.equal(def.needs.includes('binaryOut'), !!Object.keys(m.outputs || {}).length, `${n}: binaryOut 和 outputs 要一起写`);
 
     const read = new Set(m.actions.read);
     assert.equal(read.size, m.actions.read.length, `${n}: read 有重复`);
@@ -81,4 +87,33 @@ test('media 能力包：只读、开网络记录、只在四个站上', () => {
   }
   assert.ok(!loadHostAllowed(def, 'https://douyin.com.evil.com/'));
   assert.ok(!loadHostAllowed(def, 'https://www.tiktok.com/'));
+});
+
+test('hosts:"task" 的小脑能装在任何网页上，不能装在非网页地址上', () => {
+  const def = { name: 't', hosts: 'task' };
+  assert.equal(loadHostAllowed(def, 'https://www.youtube.com/watch?v=x'), true);
+  assert.equal(loadHostAllowed(def, 'http://example.org/'), true);
+  assert.equal(loadHostAllowed(def, 'chrome://settings'), false);
+  assert.equal(loadHostAllowed(def, 'about:blank'), false);
+  assert.equal(loadHostAllowed(def, 'not a url'), false);
+});
+
+test('小脑交出的字节：只有声明了 binaryOut 的才收，拆出字节、其余照旧', () => {
+  const yes = { name: 'a', needs: ['binaryOut'] };
+  const no = { name: 'b', needs: [] };
+  const v = { track: 1, __binary: { data: Buffer.from([0, 0, 0, 24, 102, 116, 121, 112]).toString('base64'), type: 'video/mp4' } };
+  const r = takeBinary(yes, v);
+  assert.deepEqual(r.value, { track: 1 });
+  assert.deepEqual([...r.bytes], [0, 0, 0, 24, 102, 116, 121, 112]);
+  assert.equal(r.type, 'video/mp4');
+  assert.throws(() => takeBinary(no, v), /binaryOut/);
+  assert.deepEqual(takeBinary(no, { a: 1 }), { value: { a: 1 }, bytes: null });
+  assert.throws(() => takeBinary(yes, { __binary: { data: 5 } }), /格式不对/);
+});
+
+test('build-loads.mjs 和 load.js 的宿主接口版本、needs 是同一份', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'scripts', 'build-loads.mjs'), 'utf8');
+  assert.match(src, new RegExp(`const HOST_API = ${HOST_API};`));
+  const m = /const NEEDS = new Set\((\[[^\]]*\])\)/.exec(src);
+  assert.deepEqual(JSON.parse(m[1].replace(/'/g, '"')).sort(), [...NEEDS].sort());
 });

@@ -43,6 +43,10 @@ export const CLOUD_CMDS = new Set([
   'desktop', 'apps', 'devices',
   // 桌面完全模式：跑命令、读写文件。开关在用户本机，宿主每条现查；没开时这两条只会报 FULL_OFF
   'shell', 'file',
+  // 取媒体字节：用户浏览器带着自己的登录取一段视频/音频/切片，原样传到配对服务器的一次性地址。
+  // 不是 fetch：只 GET、只认本任务允许的网站、响应必须是媒体（mediaBody），JSON/HTML 一律不出门。
+  // Cookie 由 Chrome 自己附在请求上，扩展不读它，也不会把它放进任何结果。
+  'media_pull',
 ]);
 
 // ---------- 站点申请 ----------
@@ -282,6 +286,47 @@ export function pullUrlAllowed(url, origin) {
     && !u.username && !u.password && !u.search && !u.hash;
 }
 
+// ---------- 取媒体字节（media_pull） ----------
+
+// 一次最多取这么多：和服务器的 PULL_MAX 一致。更大的文件由沙箱按 Range 分段取。
+export const PULL_CHUNK_MAX = 32 * 1024 * 1024;
+// 一个任务累计取走的媒体字节。2 小时的 1080p 也就几 GB，再多就是失控循环。
+export const PULL_TASK_MAX = 8 * 1024 ** 3;
+export const PULL_FETCH_MS = 5 * 60 * 1000;
+
+// 只收 http(s)、不带账号密码、在本任务允许的网站上的地址。about:blank 在这里没有意义。
+export function pullSourceAllowed(url, hosts) {
+  if (!/^https?:\/\//i.test(String(url || ''))) return false;
+  return urlAllowed(url, hosts);
+}
+
+// 响应是不是媒体。这是 media_pull 和 fetch 的分界线：服务器被攻破时，
+// 它会想借用户的登录读私信、订单、个人资料接口——那些都是 JSON/HTML/protobuf。
+// head 是响应体开头的字节（最多 1KB）。清单（m3u8/mpd/ism）是文本，按内容认；
+// 其余必须是二进制：类型不是文本/接口类，开头也不像 JSON、HTML。
+const TEXTY_TYPE = /json|html|javascript|ecmascript|protobuf|grpc|x-www-form|graphql|text\/(?!plain)|\+xml|\/xml/i;
+export function mediaBody(contentType, head) {
+  const bytes = head instanceof Uint8Array ? head : new Uint8Array(head || []);
+  let text = '';
+  for (let i = 0; i < Math.min(bytes.length, 1024); i++) text += String.fromCharCode(bytes[i]);
+  const lead = text.replace(/^(?:\uFEFF|\xEF\xBB\xBF)/, '').trimStart();
+  if (lead.startsWith('#EXTM3U')) return { ok: true, kind: 'hls' };
+  if (/^<\?xml[^>]*>\s*(?:<!--[\s\S]*?-->\s*)*<MPD[\s>]/.test(lead) || lead.startsWith('<MPD')) return { ok: true, kind: 'dash' };
+  if (/^<\?xml[^>]*>\s*<SmoothStreamingMedia[\s>]/.test(lead) || lead.startsWith('<SmoothStreamingMedia')) return { ok: true, kind: 'ism' };
+  // 接口和网页是可打印文本；密钥、切片是随机字节，开头碰巧是 { 也不算
+  const sample = bytes.subarray(0, Math.min(bytes.length, 256));
+  let printable = 0;
+  for (const c of sample) if (c === 9 || c === 10 || c === 13 || (c >= 32 && c < 127) || c >= 0xC2) printable++;
+  const texty = sample.length > 0 && printable / sample.length > 0.9;
+  if (texty && (/^[\[{<]/.test(lead) || /^\)\]\}'/.test(lead))) return { ok: false, why: '响应像接口数据或网页，不是媒体' };
+  const ct = String(contentType || '').toLowerCase();
+  if (TEXTY_TYPE.test(ct)) return { ok: false, why: `响应类型是 ${ct.slice(0, 60)}，不是媒体` };
+  if (/^text\/plain/.test(ct) && /^[\x09\x0a\x0d\x20-\x7e]*$/.test(text.slice(0, 256))) {
+    return { ok: false, why: '响应是纯文本，不是媒体' };
+  }
+  return { ok: true, kind: 'binary' };
+}
+
 // 素材地址必须指回配对的那台服务器的素材接口——扩展只从那里取文件
 export function mediaAllowed(url, origin) {
   let u;
@@ -441,6 +486,28 @@ export function checkCommand(cmd, params, { hosts, origin }) {
       const size = Number(p.media.size);
       if (!Number.isInteger(size) || size <= 0 || size > MEDIA_MAX) throw err('CLOUD_DENIED', '素材大小不对');
       return { folder, path: rel, media: { url: p.media.url, size }, overwrite: p.overwrite === true };
+    }
+    case 'media_pull': {
+      // 只 GET 一个地址，最多带 Range 和 Referer。别的头、方法、请求体一个都不收。
+      const url = String(p.url || '');
+      if (url.length > 8192 || !pullSourceAllowed(url, hosts)) {
+        throw err('CLOUD_DENIED', `media_pull 只能取本任务允许的网站上的地址：${hostOf(url) || url.slice(0, 80)}。CDN 域名也要先用 sites 申请`);
+      }
+      let referer;
+      if (p.referer !== undefined && p.referer !== '') {
+        referer = String(p.referer);
+        if (referer.length > 2048 || !pullSourceAllowed(referer, hosts)) throw err('CLOUD_DENIED', 'referer 必须是本任务允许的网站上的地址');
+      }
+      let range;
+      if (p.range !== undefined) {
+        const [a, b] = Array.isArray(p.range) ? p.range : [p.range?.start, p.range?.end];
+        if (!Number.isSafeInteger(a) || !Number.isSafeInteger(b) || a < 0 || b < a || b - a + 1 > PULL_CHUNK_MAX) {
+          throw err('CLOUD_DENIED', `range 要给 [起, 止]（含两端），一段最多 ${PULL_CHUNK_MAX} 字节`);
+        }
+        range = [a, b];
+      }
+      if (!pullUrlAllowed(p.upload?.url, origin)) throw err('CLOUD_DENIED', 'media_pull 只能把字节传到配对服务器的 /api/ext/pull/');
+      return { url, ...(referer ? { referer } : {}), ...(range ? { range } : {}), upload: { url: p.upload.url } };
     }
     case 'load':
     case 'call': {

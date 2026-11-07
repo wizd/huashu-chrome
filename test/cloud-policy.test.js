@@ -10,7 +10,7 @@ import {
   checkCommand, urlAllowed, initialTask, normalizeOrigin, mediaAllowed, mediaFetchMs, MEDIA_MAX, CLOUD_CMDS,
   normalizeSite, cleanSites, cleanAllowList, SITES_MAX, taskHosts, sitesToAsk,
   cleanFolderName, cleanFolderNames, foldersToAsk, normalizeRelPath, fileAllowed, writeAllowed, skipEntry, matchGlob, pullUrlAllowed,
-  FS_EXTS, FS_DEPTH_MAX, FS_FOLDERS_MAX,
+  FS_EXTS, FS_DEPTH_MAX, FS_FOLDERS_MAX, mediaBody, PULL_CHUNK_MAX,
 } from '../extension/cloud-policy.js';
 
 const ORIGIN = 'https://maker.vcorp.ai';
@@ -327,4 +327,46 @@ test('取素材的时限随大小增长，且留在服务器 8 分钟的命令�
   assert.equal(mediaFetchMs(100 * 1048576), 130000);
   assert.equal(mediaFetchMs(MEDIA_MAX), 420000);
   assert.ok(mediaFetchMs(MEDIA_MAX) + 15000 < 8 * 60 * 1000);
+});
+
+// 取媒体字节：用户的登录只用来取视频，取不了接口数据，字节只能去配对服务器
+test('media_pull：只 GET 允许网站上的媒体，字节只去一次性上传地址', () => {
+  assert.ok(CLOUD_CMDS.has('media_pull'));
+  const PULL = `${ORIGIN}/api/ext/pull/` + 'b'.repeat(24);
+  const ok = checkCommand('media_pull', {
+    url: 'https://v26.douyin.com/seg/1.ts?sign=x', referer: 'https://www.douyin.com/video/1', range: [0, 1023],
+    upload: { url: PULL }, method: 'POST', headers: { Cookie: 'x' }, body: 'x', credentials: 'omit', tabId: 3,
+  }, ctx);
+  assert.deepEqual(ok, { url: 'https://v26.douyin.com/seg/1.ts?sign=x', referer: 'https://www.douyin.com/video/1', range: [0, 1023], upload: { url: PULL } });
+  assert.deepEqual(checkCommand('media_pull', { url: 'https://douyin.com/a.m3u8', range: { start: 5, end: 5 }, upload: { url: PULL } }, ctx).range, [5, 5]);
+  const base = { url: 'https://douyin.com/a.mp4', upload: { url: PULL } };
+  denied(() => checkCommand('media_pull', { ...base, url: 'https://mail.google.com/mail/u/0' }, ctx));
+  denied(() => checkCommand('media_pull', { ...base, url: 'https://evildouyin.com/a.mp4' }, ctx));
+  denied(() => checkCommand('media_pull', { ...base, url: 'about:blank' }, ctx));
+  denied(() => checkCommand('media_pull', { ...base, url: 'file:///C:/a.mp4' }, ctx));
+  denied(() => checkCommand('media_pull', { ...base, url: 'https://u:p@douyin.com/a.mp4' }, ctx));
+  denied(() => checkCommand('media_pull', { ...base, referer: 'https://evil.example/' }, ctx));
+  denied(() => checkCommand('media_pull', { ...base, upload: { url: 'https://evil.example/api/ext/pull/' + 'b'.repeat(24) } }, ctx));
+  denied(() => checkCommand('media_pull', { ...base, upload: { url: `${ORIGIN}/api/ext/media/x` } }, ctx));
+  denied(() => checkCommand('media_pull', { url: base.url }, ctx));
+  denied(() => checkCommand('media_pull', { ...base, range: [10, 9] }, ctx));
+  denied(() => checkCommand('media_pull', { ...base, range: [-1, 9] }, ctx));
+  denied(() => checkCommand('media_pull', { ...base, range: [0, PULL_CHUNK_MAX] }, ctx));
+  denied(() => checkCommand('media_pull', { ...base, range: [0.5, 9] }, ctx));
+
+  const b = (s) => Uint8Array.from(s, (c) => c.charCodeAt(0));
+  assert.equal(mediaBody('video/mp4', b('\0\0\0 ftypisom')).ok, true);
+  assert.equal(mediaBody('image/png', b('\x89PNG\r\n')).ok, true, 'HLS 切片常伪装成图片');
+  assert.equal(mediaBody('text/plain', b('\x47\x40\x11\x10')).ok, true, 'TS 切片被标成 text/plain');
+  assert.equal(mediaBody('application/octet-stream', b('{\x9a\x01\xf3\x00\x88\x17\xe2\x05\x91\xbb\x02\x7f\x10\xc4\x03')).ok, true, 'AES 密钥碰巧以 { 开头');
+  assert.equal(mediaBody('application/vnd.apple.mpegurl', b('#EXTM3U\n#EXT-X-VERSION:3')).kind, 'hls');
+  assert.equal(mediaBody('text/plain', b('\xEF\xBB\xBF#EXTM3U\n')).kind, 'hls');
+  assert.equal(mediaBody('application/dash+xml', b('<?xml version="1.0"?>\n<MPD xmlns="urn:mpeg:dash">')).kind, 'dash');
+  // 服务器被攻破时想读的东西：接口、网页、protobuf、纯文本，换什么类型都出不去
+  for (const [ct, body] of [['application/json', '{"msg":"私信"}'], ['application/octet-stream', '{"a":1}'],
+    ['video/mp4', '[{"order":1}]'], ['text/html', '<!DOCTYPE html>'], ['video/mp2t', '<html>'], ['', ")]}'\n{}"],
+    ['application/x-protobuf', '\x08\x01'], ['application/grpc-web', '\0\0'], ['text/javascript', 'var a'],
+    ['text/plain', 'user=alice phone=123'], ['application/xml', '\x01\x02'], ['application/rss+xml', '\x01']]) {
+    assert.equal(mediaBody(ct, b(body)).ok, false, `${ct} ${body}`);
+  }
 });

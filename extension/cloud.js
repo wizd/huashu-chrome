@@ -616,6 +616,140 @@ async function fsCmd(cmd, p, task) {
   }
 }
 
+// ---------- 取媒体字节（media_pull） ----------
+//
+// 用户浏览器带着自己的身份取一段视频/音频/切片，原样 PUT 到配对服务器的一次性地址，
+// 沙箱从那里取走、拼接、转码。和 fetch 的区别都在 cloud-policy.js：只 GET、只在本任务
+// 允许的网站上、响应必须是媒体（mediaBody），不是就整段丢掉。
+//
+// Cookie：请求从这个 service worker 发出，credentials:'include' 让 Chrome 自己把那个网站的
+// Cookie 附上（扩展对它有 host 权限，Chrome 按第一方对待）。扩展不读 Cookie，结果里
+// 也不放任何响应头，只有状态码、类型、Content-Range 和字节数。
+//
+// Referer：service worker 的 fetch 设不了，很多 CDN 又靠它防盗链。用一条只匹配本扩展、
+// 只匹配非标签页请求、只匹配目标域名的临时会话规则补上，取完就删。
+let pullRuleSeq = 0;
+async function withReferer(url, referer, fn) {
+  const dnr = chrome.declarativeNetRequest;
+  if (!referer || !dnr?.updateSessionRules) return fn();
+  const id = 700000 + (pullRuleSeq++ % 100000);
+  await dnr.updateSessionRules({
+    removeRuleIds: [id],
+    addRules: [{
+      id, priority: 1,
+      action: { type: 'modifyHeaders', requestHeaders: [{ header: 'referer', operation: 'set', value: referer }] },
+      condition: {
+        requestDomains: [new URL(url).hostname],
+        initiatorDomains: [chrome.runtime.id],
+        tabIds: [chrome.tabs.TAB_ID_NONE],
+        resourceTypes: ['xmlhttprequest', 'other', 'media'],
+      },
+    }],
+  });
+  try { return await fn(); } finally { await dnr.updateSessionRules({ removeRuleIds: [id] }).catch(() => {}); }
+}
+
+async function mediaPull(p, task, hosts) {
+  if ((task.pullBytes || 0) >= policy.PULL_TASK_MAX) {
+    throw err('CLOUD_DENIED', `这个任务取媒体已到 ${policy.PULL_TASK_MAX / 1024 ** 3}GB 上限`);
+  }
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), policy.PULL_FETCH_MS);
+  const want = p.range ? p.range[1] - p.range[0] + 1 : policy.PULL_CHUNK_MAX;
+  try {
+    let res;
+    try {
+      res = await withReferer(p.url, p.referer, () => fetch(p.url, {
+        method: 'GET', credentials: 'include', cache: 'no-store', redirect: 'follow', signal: ctl.signal,
+        headers: p.range ? { range: `bytes=${p.range[0]}-${p.range[1]}` } : {},
+      }));
+    } catch (e) {
+      throw err('MEDIA_FAILED', ctl.signal.aborted ? `${policy.PULL_FETCH_MS / 60000} 分钟没取完，放弃` : `取不到：${e.message || e}`);
+    }
+    // 重定向到名单外的地址：Chrome 已经跟过去了，但那边的响应一个字节都不出门
+    if (!policy.pullSourceAllowed(res.url, hosts)) {
+      ctl.abort();
+      throw err('CLOUD_DENIED', `地址跳到了本任务允许范围以外（${policy.hostOf(res.url)}）。真要用那个域名，先 sites 申请`);
+    }
+    if (res.status !== 200 && res.status !== 206) {
+      ctl.abort();
+      throw err('MEDIA_HTTP', `HTTP ${res.status}（403 多半是 Referer 不对、地址过期或要登录；416 是 Range 超出文件长度）`);
+    }
+    const type = res.headers.get('content-type') || '';
+    const contentRange = res.headers.get('content-range') || '';
+    const length = Number(res.headers.get('content-length')) || null;
+    // 文件比一段大、又没要 Range：不取，告诉沙箱总长让它分段
+    if (!p.range && res.status === 200 && length && length > policy.PULL_CHUNK_MAX) {
+      ctl.abort();
+      throw err('MEDIA_TOO_BIG', `文件有 ${length} 字节，一次最多 ${policy.PULL_CHUNK_MAX}。用 range 分段取`);
+    }
+    const reader = res.body.getReader();
+    const chunks = [];
+    let got = 0, checked = null, rangeIgnored = false;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      got += value.byteLength;
+      if (!checked && got >= 1024) {
+        checked = policy.mediaBody(type, concatHead(chunks));
+        if (!checked.ok) { ctl.abort(); throw err('NOT_MEDIA', `${checked.why}，已丢弃。media_pull 只取视频、音频、切片和清单`); }
+      }
+      if (got >= want && (got > want || res.status === 200)) {
+        ctl.abort();
+        if (!p.range) throw err('MEDIA_TOO_BIG', `一次最多 ${policy.PULL_CHUNK_MAX} 字节，用 range 分段取`);
+        // 服务器没理 Range、从头整份给（200）：从 0 开始的段截到要的长度就是对的，别的段不行
+        if (res.status === 200 && p.range[0] !== 0) throw err('MEDIA_NO_RANGE', '这个地址不支持 Range，只能从头取');
+        rangeIgnored = res.status === 200;
+        chunks[chunks.length - 1] = value.subarray(0, value.byteLength - (got - want));
+        got = want;
+        break;
+      }
+    }
+    if (!checked) {
+      checked = policy.mediaBody(type, concatHead(chunks));
+      if (!checked.ok) throw err('NOT_MEDIA', `${checked.why}，已丢弃。media_pull 只取视频、音频、切片和清单`);
+    }
+    let reserved = false;
+    const held = await updateTask(task.jobId, (x) => {
+      const used = x.pullBytes || 0;
+      if (used + got > policy.PULL_TASK_MAX) return;
+      x.pullBytes = used + got;
+      reserved = true;
+    });
+    if (!held) throw err('CLOUD_DENIED', '这个任务已经结束');
+    if (!reserved) throw err('CLOUD_DENIED', `这个任务取媒体已到 ${policy.PULL_TASK_MAX / 1024 ** 3}GB 上限`);
+    try {
+      await folders.uploadFile(new File(chunks, 'media.bin'), p.upload.url);
+    } catch (e) {
+      await updateTask(task.jobId, (x) => { x.pullBytes = Math.max(0, (x.pullBytes || 0) - got); });
+      throw e;
+    }
+    const total = /\/(\d+)\s*$/.exec(contentRange)?.[1];
+    return {
+      text: `已取 ${got} 字节（${checked.kind}${contentRange ? `，${contentRange}` : ''}），可以拉取了。`,
+      status: res.status, bytes: got, type: type.slice(0, 100), kind: checked.kind,
+      ...(contentRange ? { contentRange } : {}),
+      ...(total ? { total: Number(total) } : res.status === 200 && length ? { total: length } : {}),
+      ...(rangeIgnored ? { rangeIgnored: true } : {}),
+      ...(res.url !== p.url ? { finalUrl: res.url } : {}),
+      audit: `pull ${policy.hostOf(p.url)} ${got}`,
+    };
+  } finally { clearTimeout(timer); }
+}
+
+function concatHead(chunks) {
+  const out = new Uint8Array(1024);
+  let n = 0;
+  for (const c of chunks) {
+    const take = Math.min(c.byteLength, 1024 - n);
+    out.set(c.subarray(0, take), n);
+    n += take;
+    if (n >= 1024) break;
+  }
+  return out.subarray(0, n);
+}
+
 // 从配对服务器的素材地址取字节，流式写进文件夹。不经内存整份缓冲，2GB 的视频也一样。
 async function fsWrite(entry, p) {
   const { url, size } = p.media;
@@ -1116,6 +1250,7 @@ async function exec(m) {
   if (m.cmd === 'desktop') return desktopCmd(p, updated, cfg);
   if (m.cmd === 'shell' || m.cmd === 'file') return fullCmd(m.cmd, p);
   if (m.cmd === 'fs_list' || m.cmd === 'fs_read' || m.cmd === 'fs_write') return fsCmd(m.cmd, p, updated);
+  if (m.cmd === 'media_pull') return mediaPull(p, updated, hosts);
   const sid = sidOf(jobId);
   const label = labelOf(cfg.origin);
   const own = new Set(updated.tabs);

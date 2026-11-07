@@ -10,6 +10,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { LOADS } from '../extension/loads/index.js';
 import { loadHostAllowed, actionKind } from '../extension/load.js';
+import { loadVersion } from '../scripts/load-version.mjs';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const names = fs.readdirSync(path.join(ROOT, 'loads')).filter((n) => fs.existsSync(path.join(ROOT, 'loads', n, 'load.json')));
@@ -22,11 +23,11 @@ test('每个 loads/<name>/load.json 都构建进了注册表，而且没过期',
     assert.equal(m.name, n);
     assert.ok(Array.isArray(m.hosts) && m.hosts.length, `${n}: hosts 不能空`);
     assert.ok(m.limits.payloadMax > 0 && m.limits.timeoutMs > 0 && m.limits.timeoutMaxMs >= m.limits.timeoutMs);
-    assert.match(m.vendor.commit, /^[0-9a-f]{40}$/);
-    const adapter = crypto.createHash('sha256');
-    for (const f of ['load.json', 'setup.js', 'entry.js']) adapter.update(fs.readFileSync(path.join(ROOT, 'loads', n, f), 'utf8').replace(/\r\n/g, '\n'));
-    assert.equal(def.version, `${m.vendor.version}+${m.vendor.commit.slice(0, 7)}.${adapter.digest('hex').slice(0, 6)}`,
-      `${n}: 注册表过期，重新跑 npm run build:loads`);
+    // 没有 vendor 的是自研包（源码全在 loads/<name>/），有 vendor 的要钉死上游 commit
+    if (m.vendor) assert.match(m.vendor.commit, /^[0-9a-f]{40}$/);
+    else for (const f of ['setup.js', 'entry.js']) assert.ok(fs.existsSync(path.join(ROOT, 'loads', n, f)), `${n}: 缺 ${f}`);
+    assert.equal(def.version, loadVersion(path.join(ROOT, 'loads', n), m), `${n}: 注册表过期，重新跑 npm run build:loads`);
+    assert.equal(!!def.netHook, !!m.netHook, `${n}: 注册表过期，重新跑 npm run build:loads`);
     assert.deepEqual(def.actions, m.actions, `${n}: 注册表过期，重新跑 npm run build:loads`);
     assert.deepEqual(def.hosts, m.hosts);
 
@@ -68,4 +69,16 @@ test('hosts 判定：含子域，不含相似域名', () => {
   assert.ok(!loadHostAllowed(def, 'https://pro.lceda.cn.evil.com/'));
   assert.ok(!loadHostAllowed(def, 'https://lceda.cn/'));
   assert.ok(!loadHostAllowed(def, 'chrome://extensions'));
+});
+
+test('media 能力包：只读、开网络记录、只在四个站上', () => {
+  const def = LOADS.media;
+  assert.ok(def, '注册表里没有 media');
+  assert.deepEqual(def.actions.write, [], 'media 不该有写操作');
+  assert.ok(def.netHook);
+  for (const u of ['https://www.douyin.com/video/1', 'https://www.xiaohongshu.com/explore/x', 'https://www.bilibili.com/video/BV1', 'https://www.youtube.com/watch?v=x', 'https://m.youtube.com/watch?v=x']) {
+    assert.ok(loadHostAllowed(def, u), u);
+  }
+  assert.ok(!loadHostAllowed(def, 'https://douyin.com.evil.com/'));
+  assert.ok(!loadHostAllowed(def, 'https://www.tiktok.com/'));
 });

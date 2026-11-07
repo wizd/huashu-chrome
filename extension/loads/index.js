@@ -196,5 +196,39 @@ export const LOADS = {
     },
     "sha256": "2702ea1be226305aaaeda5e188139d4acc8d596f86d5d7165e26de95cb5914f8",
     "bytes": 942689
+  },
+  "media": {
+    "name": "media",
+    "title": "视频情报探针",
+    "description": "在抖音、小红书、B站、YouTube 的视频页和列表页读出结构化元数据、互动数据、CDN 音视频直链、平台字幕与 AI 章节、雪碧图、评论，并能在页面的 <video> 上原位截帧。只读，不点赞不关注。",
+    "version": "1.0.0+a6380d",
+    "hosts": [
+      "douyin.com",
+      "xiaohongshu.com",
+      "bilibili.com",
+      "youtube.com"
+    ],
+    "waitFor": "",
+    "files": [
+      "loads/media/agent.js"
+    ],
+    "limits": {
+      "payloadMax": 65536,
+      "timeoutMs": 60000,
+      "timeoutMaxMs": 180000
+    },
+    "actions": {
+      "read": [
+        "media.inspect",
+        "media.comments",
+        "media.list",
+        "media.capture_frames"
+      ],
+      "write": []
+    },
+    "confirm": {},
+    "netHook": true,
+    "sha256": "dfa6b559cba332efd64fee874501dcdc326e2c3bc616daf28df9d6ca5dbfb23c",
+    "bytes": 73799
   }
 };

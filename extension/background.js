@@ -15,7 +15,7 @@ import { CRED_URL, redactCreds } from './redact.js';
 import { identityOf, stripMarkPrefix } from './identity.js';
 import { validateScript, condText, repeatMax, EXEC_BUDGET, collectRefs, toRecipe } from './script.js';
 import { initCloud, ensureCloud } from './cloud.js';
-import { loadDef, loadHostAllowed, checkLoadParams, checkCallParams } from './load.js';
+import { loadDef, loadHostAllowed, checkLoadParams, checkCallParams, netHookMatches } from './load.js';
 
 // ---------- 连接层 ----------
 //
@@ -1192,6 +1192,21 @@ async function ensureNetHook() {
   return true; // 刚注册，当前这个页面还没被 hook 到，得刷一次
 }
 
+// 能力包用的网络记录：只开在 netHook 包的 hosts 上（不是 <all_urls>），云端任务也能用上。
+// 记录只留在页面里；读取只经能力包的白名单 action，云端碰不到 network 本身。
+const LOAD_NET_SCRIPT_ID = 'hc-net-hook-loads';
+
+async function ensureLoadNetHook(tabId) {
+  const matches = netHookMatches();
+  if (!matches.length) return;
+  const [existing] = await chrome.scripting.getRegisteredContentScripts({ ids: [LOAD_NET_SCRIPT_ID] }).catch(() => []);
+  const script = { id: LOAD_NET_SCRIPT_ID, matches, js: ['net-hook.js'], runAt: 'document_start', world: 'MAIN', allFrames: false };
+  if (!existing) await chrome.scripting.registerContentScripts([script]).catch(() => {});
+  else if (JSON.stringify(existing.matches) !== JSON.stringify(matches)) await chrome.scripting.updateContentScripts([script]).catch(() => {});
+  // 页面在注册之前就加载了：补一针，记录从现在开始（net-hook.js 自己防重复）
+  await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['net-hook.js'] }).catch(() => {});
+}
+
 // 顶层框架的快照 + 各子框架的快照，拼成一份。子框架的 ref 打上 @fN。
 async function snapshotAll(tabId, p = {}) {
   const top = await toContent(tabId, { __hc: 'snapshot', ...p });
@@ -1968,6 +1983,7 @@ async function ensureLoad(id, def, { force = false } = {}) {
     await sleep(500);
     st = await probe();
   }
+  if (def.netHook) await ensureLoadNetHook(id);
   if (force || st.version !== def.version) {
     await chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: def.files });
   }
@@ -2470,7 +2486,7 @@ const HANDLERS = {
       `页面状态：${JSON.stringify(info.ready)}`,
       `用 call {name:"${def.name}", action, payload} 调用。`,
       `只读（${def.actions.read.length}）：${def.actions.read.join(' ')}`,
-      `改动设计（${def.actions.write.length}）：${def.actions.write.join(' ')}`,
+      `写操作（${def.actions.write.length}）：${def.actions.write.join(' ')}`,
     ];
     return { untrusted: true, text: lines.join('\n') };
   },
@@ -2578,7 +2594,8 @@ const HANDLERS = {
 
     if (!result) throw err('NOT_INTERACTABLE', '无法在此页面注入脚本');
     if (!result.ok) {
-      const csp = /Content Security Policy|unsafe-eval/i.test(result.message);
+      // YouTube 这类开了 Trusted Types（require-trusted-types-for 'script'）的站报的是 Trusted Type
+      const csp = /Content Security Policy|unsafe-eval|Trusted Type/i.test(result.message);
       // CSP 拦下时升级 L2：调试器的求值通道不受页面 CSP 管。
       // 顺序是「先页面世界、拦了再升级」而不是直接上 L2——小站和本地页面
       // 走页面世界就够，没必要为它们挂一下黄条。

@@ -13,12 +13,15 @@
 //   setup.js   跑在上游代码之前，补上页面缺的全局变量
 //   entry.js   页面侧入口，注册 window.__vcorpLoads[name] = { version, ready(), call(action, payload) }
 // 上游源码按 vendor.commit 拉到 .cache/loads/ 里，用 @upstream 引用。升级上游只改 commit 再跑一遍。
+// 没有 vendor 的是自研能力包（如 media）：源码全在 loads/<name>/ 里，load.json 自己写 version。
+// netHook: true：包要读页面的接口响应，background.js 装包前在它的 hosts 上开网络记录（net-hook.js）。
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
+import { loadVersion } from './load-version.mjs';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = path.join(ROOT, 'loads');
@@ -42,13 +45,9 @@ async function build(name) {
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'load.json'), 'utf8'));
   if (manifest.name !== name) throw new Error(`${name}: load.json 的 name 是 ${manifest.name}`);
   const { vendor } = manifest;
-  const up = upstream(name, vendor);
+  const up = vendor ? upstream(name, vendor) : null;
   const actions = [...manifest.actions.read, ...manifest.actions.write];
-  // 版本里带上适配层的指纹：只改了 entry.js / setup.js / 白名单时，页面上那份旧的也要被换掉
-  // （ensureLoad 按版本号判断要不要重新注入）
-  const adapter = crypto.createHash('sha256');
-  for (const f of ['load.json', 'setup.js', 'entry.js']) adapter.update(fs.readFileSync(path.join(dir, f), 'utf8').replace(/\r\n/g, '\n'));
-  const version = `${vendor.version}+${vendor.commit.slice(0, 7)}.${adapter.digest('hex').slice(0, 6)}`;
+  const version = loadVersion(dir, manifest);
 
   const outDir = path.join(OUT, name);
   fs.mkdirSync(outDir, { recursive: true });
@@ -63,21 +62,23 @@ async function build(name) {
     // 不压缩：商店审核要能读懂，出了问题也要能在页面里对着源码查
     minify: false,
     legalComments: 'inline',
-    alias: { '@upstream': up },
+    alias: up ? { '@upstream': up } : {},
     nodePaths: [path.join(ROOT, 'node_modules')],
     define: {
-      __CONNECTOR_VERSION__: JSON.stringify(vendor.version),
+      __CONNECTOR_VERSION__: JSON.stringify(vendor ? vendor.version : manifest.version),
       __LOAD_VERSION__: JSON.stringify(version),
       __LOAD_ACTIONS__: JSON.stringify(actions),
     },
     banner: {
-      js: `// 由 scripts/build-loads.mjs 生成，不要手改。上游：${vendor.repo} @ ${vendor.commit}（${vendor.license}）\n`
+      js: (vendor
+        ? `// 由 scripts/build-loads.mjs 生成，不要手改。上游：${vendor.repo} @ ${vendor.commit}（${vendor.license}）\n`
+        : `// 由 scripts/build-loads.mjs 生成，不要手改。源码：loads/${name}/\n`)
         + fs.readFileSync(path.join(dir, 'setup.js'), 'utf8'),
     },
     logLevel: 'warning',
   });
   // 上游的许可证跟着产物走
-  for (const f of ['LICENSE', 'NOTICE']) {
+  for (const f of up ? ['LICENSE', 'NOTICE'] : []) {
     const from = [path.join(up, 'extension', f), path.join(up, f)].find((p) => fs.existsSync(p));
     if (from) fs.copyFileSync(from, path.join(outDir, f));
   }
@@ -94,6 +95,7 @@ async function build(name) {
     limits: manifest.limits,
     actions: { read, write },
     confirm: manifest.confirm || {},
+    ...(manifest.netHook ? { netHook: true } : {}),
     sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
     bytes: bytes.length,
   };

@@ -56,3 +56,11 @@ export function checkCallParams(p = {}) {
   const timeout = Number.isFinite(t) && t > 0 ? Math.min(Math.max(t, 1000), def.limits.timeoutMaxMs) : def.limits.timeoutMs;
   return { name: def.name, action: p.action, payload: JSON.parse(json), timeout, kind, confirm: confirmText(def, p.action) };
 }
+
+// netHook: true 的能力包要读页面自己的接口响应（net-hook.js 记在 window.__hcNet 里）。
+// 云端拿不到 network 命令，所以由扩展在这些包的 hosts 上开记录：只记在页面里，读取只经包的白名单 action。
+// 返回 registerContentScripts 的 matches，没有这种包时是 []。
+export function netHookMatches(loads = LOADS) {
+  const hosts = [...new Set(Object.values(loads).filter((d) => d.netHook).flatMap((d) => d.hosts))].sort();
+  return hosts.flatMap((h) => [`*://${h}/*`, `*://*.${h}/*`]);
+}

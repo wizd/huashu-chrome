@@ -31,6 +31,17 @@ try { fs.unlinkSync(out); } catch { /* 没有旧包 */ }
 execFileSync('zip', ['-qr', out, '.'], { cwd: stage });
 fs.rmSync(stage, { recursive: true, force: true });
 
+// 手动安装包：给测试或装不了商店的人，在 chrome://extensions 用「加载已解压的扩展程序」。
+// 保留 key，这样扩展 ID 固定，换一个文件夹解压新版本时配对和设置都还在。
+// 包里有一层 vcorp-chrome/ 目录，解压出来选它就行。
+const manual = path.join(ROOT, 'dist', `${manifest.name}-${manifest.version}-manual.zip`);
+const mstage = fs.mkdtempSync(path.join(os.tmpdir(), 'hc-pack-'));
+fs.cpSync(SRC, path.join(mstage, manifest.name), { recursive: true, filter: (p) => !/\.DS_Store$|\/content\/?$/.test(p) });
+try { fs.unlinkSync(manual); } catch { /* 没有旧包 */ }
+execFileSync('zip', ['-qr', manual, manifest.name], { cwd: mstage });
+fs.rmSync(mstage, { recursive: true, force: true });
+
 console.log(`${out}  (${Math.round(fs.statSync(out).size / 1024)}KB)`);
+console.log(`${manual}  (${Math.round(fs.statSync(manual).size / 1024)}KB)  手动安装包，带 key；复制到 opus-video-maker/public/downloads/vcorp-chrome.zip`);
 console.log(`已剥掉 manifest.key${key ? '' : '（原本就没有）'}；版本 ${manifest.version}。`);
 console.log('下一步是人做的：https://chrome.google.com/webstore/devconsole → 上传这个 zip → 填隐私声明（PRIVACY.md）→ 提交审核。');

@@ -800,11 +800,20 @@ async function noteMarked(tabId, on) {
 //
 // 两条铁律，都朝「宁可不画，绝不误伤」那一侧偏：
 // 1. **绝不碰用户自己的组。** tab 已经在组里而那个组不是我们建的，就当没看见。
-// 2. **只动确认还是我们的组。** groupId 记在 storage.local（跨扩展重载不丢），
-//    代价是浏览器重启后这个 id 可能被发给别的组。所以动手前先验指纹：
-//    组标题必须还是我们写上去的那个 emoji。用户改过组名？那它已经是
-//    用户的组了，按铁律 1 处理。指纹会放过「用户恰好建了个同 emoji 的组」，
-//    但那种碰撞的后果只是多染一个组，比拆错用户的组轻得多。
+// 2. **认组靠标题指纹，不靠记下的 groupId。** groupId 浏览器一重启就作废，
+//    Chrome 恢复出来的旧组拿的是新 id——只认 id 的话，这些组会被当成「用户的组」
+//    永远不再碰，标签页关掉后就一个个留在书签栏上（见下面「组的善后」）。
+//    所以标题是 GROUP_TITLE 的组就是我们的；用户改过组名，它就成了用户的组。
+//    指纹会放过「用户恰好建了个同名组」，但那种碰撞的后果只是多染一个组。
+//
+// 组的善后：新版 Chrome 会把每个标签组自动存成「已保存的组」钉在书签栏上。
+// 组里的页面被**关掉**，组只是变成「已关闭」，胶囊照样留在书签栏，而扩展
+// 再也查不到它（tabGroups 只看得见开着的组）——长时间运行后书签栏挂满 vcorp。
+// 只有把标签页**移出**组、组空了，Chrome 才真正删掉它。所以：
+// - 我们自己关页面之前先 ungroupIfOurs（closeTab）；
+// - 会话下线时 resyncMarks 把它的页面摘出组；
+// - 有现成的同色组就归队，不为每个会话、每次重启都新建一个组。
+// 用户手动关掉的页面拦不住，那部分只能留给用户自己清。
 const groupKey = (sid) => `agentGroup:${sid}`;
 
 // 组名是品牌字不是彩色圆点 emoji（花叔定的：色块图标丑）。它同时是「这个组
@@ -813,48 +822,74 @@ const groupKey = (sid) => `agentGroup:${sid}`;
 const GROUP_TITLE = 'vcorp';
 const groupTitleOk = (title, sid) => title === GROUP_TITLE || title === identityOf(sid).emoji;
 
+const storedGroups = (all) => new Map(Object.entries(all)
+  .filter(([k]) => k.startsWith('agentGroup:'))
+  .map(([k, v]) => [k.slice('agentGroup:'.length), v]));
+
+// tab 所在的组是我们的就返回它，否则（没在组里、用户的组）返回 null
+async function ourGroupOf(tab, ours) {
+  if (tab.groupId === -1) return null;
+  const g = await chrome.tabGroups.get(tab.groupId).catch(() => null);
+  if (!g) return null;
+  if (g.title === GROUP_TITLE) return g;
+  for (const [sid, gid] of ours) if (gid === g.id && groupTitleOk(g.title, sid)) return g;
+  return null;
+}
+
+// 关页面前调：把它移出我们的组，组空了 Chrome 会删掉组，而不是留一个已关闭的组在书签栏
+async function ungroupIfOurs(tabId) {
+  try {
+    if (!chrome.tabGroups) return;
+    const tab = await chrome.tabs.get(tabId);
+    if (await ourGroupOf(tab, storedGroups(await chrome.storage.local.get(null)))) await chrome.tabs.ungroup(tabId);
+  } catch { /* 标签页已关——那就没什么可摘的 */ }
+}
+
+async function closeTab(tabId) {
+  await ungroupIfOurs(tabId);
+  await chrome.tabs.remove(tabId);
+}
+
 async function syncGroup(tabId, owners) {
   try {
     if (!chrome.tabGroups) return;   // 旧 Chrome 没有这个 API
     const tab = await chrome.tabs.get(tabId);
-    const all = await chrome.storage.local.get(null);
-    const ours = new Map(Object.entries(all)
-      .filter(([k]) => k.startsWith('agentGroup:'))
-      .map(([k, v]) => [k.slice('agentGroup:'.length), v]));
+    const ours = storedGroups(await chrome.storage.local.get(null));
+    const cur = await ourGroupOf(tab, ours);
+    if (tab.groupId !== -1 && !cur) return;                       // 用户的组，不碰
 
-    // 这一页没有主：还挂在我们的组里就摘出来。组空了 Chrome 会自己解散它。
+    // 这一页没有主：还挂在我们的组里就摘出来。组空了 Chrome 会删掉它。
     if (!owners.length) {
-      if (tab.groupId === -1) return;
-      for (const [sid, gid] of ours) {
-        if (gid !== tab.groupId) continue;
-        const g = await chrome.tabGroups.get(gid).catch(() => null);
-        if (g && groupTitleOk(g.title, sid)) await chrome.tabs.ungroup(tabId);
-        return;
-      }
+      if (cur) await chrome.tabs.ungroup(tabId);
       return;
     }
 
     // 多主时跟第一个——组只有一个，双色条纹画不进标签栏；页内边框负责说清「有两个主」
     const o = owners[0];
     const stored = ours.get(o.sid);
-    if (tab.groupId !== -1) {
-      if (tab.groupId === stored) return;                         // 已经在对的组里
-      if (![...ours.values()].includes(tab.groupId)) return;      // 用户的组，不碰
+    // 已经在一个同色的我们的组里（包括浏览器重启后恢复出来的旧组）→ 认下它，不动
+    if (cur && cur.color === o.group) {
+      if (stored !== cur.id) await chrome.storage.local.set({ [groupKey(o.sid)]: cur.id });
+      return;
     }
-    // 旧组还在、还像我们的、且在同一个窗口 → 归队；否则新建。
+    // 找一个可以归队的组：先看记下的那个，再看同窗口里现成的同色 vcorp 组。
     // 跨窗口不归队：group({groupId}) 会把标签页搬进另一个窗口，比不显著更糟。
     let gid = null;
     if (stored !== undefined) {
       const g = await chrome.tabGroups.get(stored).catch(() => null);
       if (g && g.windowId === tab.windowId && groupTitleOk(g.title, o.sid)) gid = stored;
     }
+    if (gid === null) {
+      const [g] = await chrome.tabGroups.query({ windowId: tab.windowId, title: GROUP_TITLE, color: o.group });
+      if (g) gid = g.id;
+    }
     if (gid !== null) {
       await chrome.tabs.group({ tabIds: tabId, groupId: gid });
     } else {
       gid = await chrome.tabs.group({ tabIds: tabId });
       await chrome.tabGroups.update(gid, { title: GROUP_TITLE, color: o.group });
-      await chrome.storage.local.set({ [groupKey(o.sid)]: gid });
     }
+    if (stored !== gid) await chrome.storage.local.set({ [groupKey(o.sid)]: gid });
   } catch { /* 标签页正被拖动/已关、API 不可用——都不是命令的错 */ }
 }
 
@@ -2792,7 +2827,7 @@ const HANDLERS = {
     if (p.action === 'close') {
       const id = await resolveTab(p.tabId, sid, ctx);
       const warn = await conflictNote(id, sid, ctx);
-      await chrome.tabs.remove(id);
+      await closeTab(id);
       return { text: warn + `已关闭标签页 ${id}` };
     }
     throw err('INTERNAL', `未知 tabs 动作 ${p.action}`);

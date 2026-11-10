@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readBridgeInfo, DEFAULT_PORT, HOME, AUDIT_FILE, LOG_FILE } from './lib/paths.js';
 import { VERSION } from './lib/version.js';
-import { compat, compatNote } from '../extension/compat.js';
+import { compat, compatNote, bridgeIsStale } from '../extension/compat.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, '..');
@@ -188,6 +188,19 @@ async function doctor() {
   let info = readBridgeInfo();
   let alive = false;
   if (info) { try { process.kill(info.pid, 0); alive = true; } catch {} }
+  if (alive && bridgeIsStale(info.version, VERSION)) {
+    console.log(`  ·  在跑的桥是 v${info.version}（pid ${info.pid}），这个客户端是 v${VERSION}。老桥不读新代码，换掉再探…`);
+    const { stopBridge } = await import('./lib/rpc.js');
+    const pid = info.pid;
+    stopBridge(info);
+    const untilDead = Date.now() + 4000;
+    while (Date.now() < untilDead) {
+      try { process.kill(pid, 0); } catch { break; }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    alive = false;
+    info = null;
+  }
   if (!alive) {
     // 桥没跑时以前直接放弃探测，打一句「不用管」然后接着「扩展 ✅」——新机器上
     // 装完扩展跑 doctor 看到的就是这个假绿，引导页承诺的「扩展在线」永远看不到。

@@ -17,6 +17,14 @@ export function cmpVersion(a, b) {
   return 0;
 }
 
+// 在跑的桥比这个客户端旧，才该换掉。
+// 反过来不行：开发机上的新扩展配的是仓库里的新桥，旁边的 npx 旧包
+// 只要看见版本不同就杀掉它，侧栏会一直显示旧的本地端版本。
+export function bridgeIsStale(running, mine) {
+  if (!running || !mine) return false;
+  return cmpVersion(running, mine) < 0;
+}
+
 // level：
 //   same      完全一致
 //   patch     只差补丁号——静默，补丁版本互相兼容

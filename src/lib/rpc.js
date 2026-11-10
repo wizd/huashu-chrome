@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { DEFAULT_PORT, LOCK_FILE, LOG_FILE, BRIDGE_FILE, readBridgeInfo, ensureHome } from './paths.js';
 import { VERSION } from './version.js';
+import { bridgeIsStale } from '../../extension/compat.js';
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cli.js');
 
@@ -61,9 +62,12 @@ export class BridgeClient {
       const info = readBridgeInfo();
       // 桥是长驻单例：它一旦起来就再也不会读磁盘上的代码。用户 npm update 之后
       // 老桥还在跑老逻辑，症状是「新版本的修复没生效」，而且不报错。
-      // 版本对不上就当场换掉——这是唯一能自动发现的时机。
-      if (info && info.version && info.version !== VERSION && !spawned) {
+      // 只在它比这个客户端旧时换掉。新桥不能被旁边的旧客户端降级——
+      // 否则开发机重载了 2.6.1 扩展，侧栏仍会连上 npx 缓存里的 2.6.0。
+      if (info && bridgeIsStale(info.version, VERSION) && !spawned) {
+        const pid = info.pid;
         stopBridge(info);
+        await waitDead(pid);
         spawned = tryStartBridge();
         await sleep(400);
         continue;
@@ -203,3 +207,18 @@ export function tryStartBridge() {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// SIGTERM 是异步的。不等进程退出就去占端口，Windows 上经常 EADDRINUSE，
+// 新桥没起来，旧版本号就留在侧栏里。
+function waitDead(pid, ms = 4000) {
+  if (!pid) return Promise.resolve(true);
+  const until = Date.now() + ms;
+  return new Promise((resolve) => {
+    const tick = () => {
+      try { process.kill(pid, 0); } catch { return resolve(true); }
+      if (Date.now() > until) return resolve(false);
+      setTimeout(tick, 100);
+    };
+    tick();
+  });
+}

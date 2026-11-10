@@ -20,6 +20,11 @@ const el = (tag, cls, text) => {
 };
 const send = (msg) => chrome.runtime.sendMessage(msg).catch(() => null);
 const MINE = chrome.runtime.getManifest().version;
+// 扩展在 chrome://extensions 上被重新加载之后，已经打开的侧栏还是旧文档，
+// 版本号会停在重载前（控制台里的 service worker 已经是新的）。上下文一失效就刷新。
+setInterval(() => {
+  try { if (!chrome.runtime?.id) location.reload(); } catch { location.reload(); }
+}, 1000);
 const ACT_MS = 5000;   // 「正在做」只亮 5 秒——停手了还亮着就是在骗人
 
 $('connJump').onclick = (e) => {

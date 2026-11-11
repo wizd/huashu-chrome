@@ -182,6 +182,19 @@ export function stopBridge(info) {
   return true;
 }
 
+// MCP server 一启动就调：桥不在就拉一个，在就不碰（老版本的换代留给 connect）。
+// 以前桥要等 agent 第一次调工具才起，于是重启电脑后 agent 开着、扩展侧栏却一直
+// 「本地端未连接」，点「重连」也没用——那头根本没人在听。
+// 只拉进程不连接：会话身份要等宿主 initialize 之后才定（见 identify）。
+export function startBridgeIfDown(env = process.env) {
+  if (env.HUASHU_CHROME_EAGER_BRIDGE === '0') return false;
+  const info = readBridgeInfo();
+  if (info?.pid) {
+    try { process.kill(info.pid, 0); return false; } catch { /* 记录里的进程已经没了 */ }
+  }
+  return !!tryStartBridge();
+}
+
 export function tryStartBridge() {
   ensureHome();
   const grab = () => { try { return fs.openSync(LOCK_FILE, 'wx'); } catch { return null; } }; // O_EXCL：只有一个进程能建成功

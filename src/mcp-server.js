@@ -7,7 +7,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { BridgeClient } from './lib/rpc.js';
+import { BridgeClient, startBridgeIfDown } from './lib/rpc.js';
 import { resolveHost } from './lib/host.js';
 import { flatCount } from '../extension/script.js';
 import { LOADS } from '../extension/loads/index.js';
@@ -822,6 +822,7 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
   }
 
   await server.connect(new StdioServerTransport());
+  try { startBridgeIfDown(); } catch (e) { console.error(`[vcorp-chrome] 预拉桥失败：${e.message}`); }
   watchIdle();
   return server;
 }

@@ -8,11 +8,14 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'src', 'cli.js');
+// mcp 一启动就会去拉真桥（写 ~/.vcorp-chrome、占 8899）。测试不许碰用户这台机器上的那个
+process.env.HUASHU_CHROME_EAGER_BRIDGE = '0';
 
 test('agent 能通过 stdio 挂上 MCP server 并拿到工具表', async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [CLI, 'mcp', '--client', 'test'],
+    env: { ...process.env },
   });
   const client = new Client({ name: 'test', version: '0' }, { capabilities: {} });
   await client.connect(transport);
@@ -106,4 +109,9 @@ test('闲置上限：默认 4 小时，0 和乱填都按「关掉」或默认处
   assert.equal(idleLimitMs({ HUASHU_CHROME_MCP_IDLE_MIN: '30' }), 30 * 60000);
   assert.equal(idleLimitMs({ HUASHU_CHROME_MCP_IDLE_MIN: '0' }), 0);
   assert.equal(idleLimitMs({ HUASHU_CHROME_MCP_IDLE_MIN: 'abc' }), 0);
+});
+
+test('HUASHU_CHROME_EAGER_BRIDGE=0 时 mcp 启动不拉桥', async () => {
+  const { startBridgeIfDown } = await import('../src/lib/rpc.js');
+  assert.equal(startBridgeIfDown({ HUASHU_CHROME_EAGER_BRIDGE: '0' }), false);
 });

@@ -8,7 +8,7 @@
 // 网页的 Origin 是自己的域名，扩展的是 chrome-extension://<id>。只放后者进来。
 import { WebSocketServer } from 'ws';
 import fs from 'node:fs';
-import { DEFAULT_PORT, writeBridgeInfo, newToken, tokenEquals, audit, ensureHome, ALLOWLIST_FILE, machineId } from './lib/paths.js';
+import { DEFAULT_PORT, writeBridgeInfo, newToken, tokenEquals, audit, ensureHome, ALLOWLIST_FILE, LOCK_FILE, machineId } from './lib/paths.js';
 import { VERSION } from './lib/version.js';
 // 纯字符串判定、不碰 chrome API，所以桥这边直接复用，不再抄一份
 import { scrubProse } from '../extension/redact.js';
@@ -37,6 +37,12 @@ const IDLE_EXIT_MS = 30 * 60 * 1000; // 半小时没人用就自己退，别留�
 const EXT_SILENCE_MS = 50000;        // 扩展每 15 秒一次心跳，连着三拍没到就先探一下
 const EXT_PROBE_MS = 15000;          // 探了还不回，再等这么久才判死
 const ORPHAN_GRACE_MS = 15000;       // 扩展断开时在途命令的宽限：一个心跳周期，够它重连并补发回执
+
+// 拉起本桥的那个进程（rpc.js tryStartBridge）拿着启动锁。它常常是 doctor/install
+// 这种短命进程，等不到自己的删锁定时器；所以由桥在有了结果时亲手放锁。
+function releaseStartLock() {
+  try { fs.unlinkSync(LOCK_FILE); } catch { /* 没有就算了 */ }
+}
 
 // writeInfo=false 供测试用：不写 bridge.json，否则测试桥的 token 会盖掉
 // 真在跑的那个桥，用户所有 agent 会话当场断连。
@@ -453,7 +459,10 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
 
   const ready = new Promise((resolve) => {
     wss.on('listening', () => {
-      if (writeInfo) writeBridgeInfo({ port, token, pid: process.pid, version: VERSION, startedAt: new Date().toISOString() });
+      if (writeInfo) {
+        writeBridgeInfo({ port, token, pid: process.pid, version: VERSION, startedAt: new Date().toISOString() });
+        releaseStartLock();
+      }
       log(`桥已启动 ws://127.0.0.1:${port}`);
       resolve();
     });
@@ -462,6 +471,7 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
   wss.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
       log(`端口 ${port} 已被占用——大概率已有一个桥在跑`);
+      if (writeInfo) releaseStartLock();
       process.exit(3);
     }
     throw e;

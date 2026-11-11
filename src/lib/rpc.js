@@ -184,24 +184,41 @@ export function stopBridge(info) {
 
 export function tryStartBridge() {
   ensureHome();
-  let fd;
-  try {
-    fd = fs.openSync(LOCK_FILE, 'wx'); // O_EXCL：只有一个进程能建成功
-  } catch {
-    const age = Date.now() - (fs.statSync(LOCK_FILE).mtimeMs || 0);
-    if (age > 30000) { try { fs.unlinkSync(LOCK_FILE); } catch {} } // 上次崩在这儿留下的死锁
-    return false;
+  const grab = () => { try { return fs.openSync(LOCK_FILE, 'wx'); } catch { return null; } }; // O_EXCL：只有一个进程能建成功
+  let fd = grab();
+  if (fd === null) {
+    let age = 0;
+    try { age = Date.now() - fs.statSync(LOCK_FILE).mtimeMs; } catch { /* 刚被删掉 */ }
+    // 上次崩在这儿留下的死锁：删掉后**这一次就接着抢**。以前删完直接返回 false，
+    // 于是每个死锁都要白白赔掉一次启动——doctor 只试一次，正好报「桥拉不起来」。
+    if (age > 30000) { try { fs.unlinkSync(LOCK_FILE); } catch {} }
+    fd = grab();
+    if (fd === null) return false;
   }
+  // 返回值对老调用方只是个真值；doctor/install 要靠它说清「为什么没起来」：
+  // spawn 本身报错、子进程退出码，都只能在这里攥住，过后就没了。
+  const rec = { pid: 0, args: [CLI, 'bridge'], at: Date.now(), exit: null, error: null };
+  let out;
   try {
-    const out = fs.openSync(LOG_FILE, 'a');
-    const child = spawn(process.execPath, [CLI, 'bridge'], {
+    out = fs.openSync(LOG_FILE, 'a');
+    const child = spawn(process.execPath, rec.args, {
       detached: true,
       stdio: ['ignore', out, out],
     });
+    rec.pid = child.pid || 0;
+    child.on('error', (e) => { rec.error = e; });
+    child.on('exit', (code, signal) => { rec.exit = { code, signal }; });
     child.unref();
-    return true;
+    return rec;
+  } catch (e) {
+    rec.error = e;
+    return rec;
   } finally {
+    // 子进程已经继承了日志句柄，父进程这份留着只会漏
+    if (out !== undefined) try { fs.closeSync(out); } catch {}
     fs.closeSync(fd);
+    // 正常由桥自己在监听成功（或撞端口退出）时删锁。这个定时器只是兜底，而且
+    // unref 了——doctor/install 这种短命进程等不到它，锁会一直留到 30 秒过期。
     setTimeout(() => { try { fs.unlinkSync(LOCK_FILE); } catch {} }, 3000).unref?.();
   }
 }

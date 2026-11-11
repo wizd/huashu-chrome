@@ -8,9 +8,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { readBridgeInfo, DEFAULT_PORT, HOME, AUDIT_FILE, LOG_FILE } from './lib/paths.js';
+import { DEFAULT_PORT, HOME, AUDIT_FILE, LOG_FILE } from './lib/paths.js';
 import { VERSION } from './lib/version.js';
-import { compat, compatNote, bridgeIsStale } from '../extension/compat.js';
+import { compat, compatNote } from '../extension/compat.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(HERE, '..');
@@ -185,38 +185,15 @@ async function doctor() {
   fs.existsSync(HOME) ? ok(HOME) : bad(`${HOME} 不存在`, '跑一次 `npx vcorp-chrome mcp` 会自动创建');
 
   console.log('\n桥');
-  let info = readBridgeInfo();
-  let alive = false;
-  if (info) { try { process.kill(info.pid, 0); alive = true; } catch {} }
-  if (alive && bridgeIsStale(info.version, VERSION)) {
-    console.log(`  ·  在跑的桥是 v${info.version}（pid ${info.pid}），这个客户端是 v${VERSION}。老桥不读新代码，换掉再探…`);
-    const { stopBridge } = await import('./lib/rpc.js');
-    const pid = info.pid;
-    stopBridge(info);
-    const untilDead = Date.now() + 4000;
-    while (Date.now() < untilDead) {
-      try { process.kill(pid, 0); } catch { break; }
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    alive = false;
-    info = null;
-  }
+  // 桥没跑时以前直接放弃探测，打一句「不用管」然后接着「扩展 ✅」——新机器上
+  // 装完扩展跑 doctor 看到的就是这个假绿，引导页承诺的「扩展在线」永远看不到。
+  // 桥本来就是谁先用谁拉起的，doctor 自己拉一个再探，才探得到真相。
+  const { ensureBridgeUp, probe } = await import('./lib/bridge-up.js');
+  const up = await ensureBridgeUp({ onNote: (s) => console.log(`  ·  ${s}`) });
+  const { alive, info } = up;
   if (!alive) {
-    // 桥没跑时以前直接放弃探测，打一句「不用管」然后接着「扩展 ✅」——新机器上
-    // 装完扩展跑 doctor 看到的就是这个假绿，引导页承诺的「扩展在线」永远看不到。
-    // 桥本来就是谁先用谁拉起的，doctor 自己拉一个再探，才探得到真相。
-    console.log(`  ·  桥没在跑${info ? `（bridge.json 记着的 pid ${info.pid} 已经没了）` : ''}，先拉起来再探…`);
-    const { tryStartBridge } = await import('./lib/rpc.js');
-    tryStartBridge();
-    const until = Date.now() + 6000;
-    while (Date.now() < until) {
-      await new Promise((r) => setTimeout(r, 300));
-      info = readBridgeInfo();
-      if (info?.pid) { try { process.kill(info.pid, 0); alive = true; break; } catch {} }
-    }
-    if (!alive) {
-      bad('桥拉不起来', `看 ${LOG_FILE} 的最后几行；端口 ${DEFAULT_PORT} 被别的程序占着也会这样（lsof -i :${DEFAULT_PORT}）`);
-    }
+    bad(`桥拉不起来：${up.failure.reason}`);
+    for (const l of up.failure.lines) console.log(`     ${l}`);
   }
   if (alive) {
     ok(`pid ${info.pid} · 端口 ${info.port} · 起于 ${info.startedAt ? new Date(info.startedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '?'}`);
@@ -386,23 +363,6 @@ function auditStats(days) {
     console.log(`\nlearnings ${lrn.length} 次 · 写回 ${save} · 剧本入库 ${adopt}`);
   }
   console.log('');
-}
-
-function probe(info) {
-  return new Promise((resolve) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${info.port}`);
-    const t = setTimeout(() => { ws.close(); resolve({ ok: false, error: '超时' }); }, 3000);
-    ws.onerror = () => { clearTimeout(t); resolve({ ok: false, error: '连接被拒' }); };
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', role: 'agent', token: info.token, client: 'doctor', v: 1 }));
-    ws.onmessage = (ev) => {
-      clearTimeout(t);
-      const m = JSON.parse(ev.data);
-      ws.close();
-      resolve(m.type === 'welcome'
-        ? { ok: true, extensionOnline: m.extensionOnline, extensionVersion: m.extensionVersion, extensionProtocol: m.extensionProtocol, versionMismatch: m.versionMismatch, extensions: m.extensions || [] }
-        : { ok: false, error: JSON.stringify(m) });
-    };
-  });
 }
 
 function printExtension() {

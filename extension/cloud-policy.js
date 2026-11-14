@@ -7,8 +7,12 @@
 // 云端通道却是这个浏览器主动连出去的——对面要是被人拿下，下发的每一条命令都是敌意的。
 // 所以安全不能靠「服务器不会乱发」，只能靠扩展这一侧拒绝：
 //
-//   1. 命令白名单：只有操作页面的那一小组。eval / fetch / network / download / reload
+//   1. 命令白名单：只有操作页面的那一小组。fetch / network / download / reload
 //      一律没有——它们能读任意接口、带着 cookie 发请求、往磁盘写东西。
+//      eval 例外（2026-11-14）：由用户在侧栏「允许云端执行脚本」开关控制，默认开。
+//      先有能力、再收紧安全：它仍然只能跑在本任务自己的、停在允许网站上的标签页里，
+//      结果出门前照样复查标签页有没有跳出白名单；但页面里的代码能做页面能做的一切
+//      （读页面数据、以用户身份发请求），所以开关的说明要写清楚。
 //   2. 域名白名单：云端开的标签页只能停在用户允许过的网站上（侧栏里的名单），
 //      以及这个任务里用户点头的网站上，跳出去就屏蔽内容。扩展里没有预设的平台表。
 //   3. 标签页隔离：云端只看得见、只碰得到它自己开的标签页，用户自己的页面一个都不行。
@@ -369,7 +373,18 @@ function checkSteps(steps, hosts, depth = 0) {
 
 // 审一条云端命令。返回清洗过的参数（只留安全的字段、补上强制值），不合规直接抛。
 // tabId 不在这里管——它由 cloud.js 按「这个任务自己开过哪些页」单独核对。
-export function checkCommand(cmd, params, { hosts, origin }) {
+// 云端 eval 一次最多带这么长的代码
+export const EVAL_MAX = 200000;
+
+export function checkCommand(cmd, params, { hosts, origin, allowEval = false }) {
+  if (cmd === 'eval') {
+    if (!allowEval) throw err('CLOUD_DENIED', '用户在扩展侧栏关掉了「允许云端执行脚本」，eval 用不了；改用 snapshot / click / fill');
+    const src = String(params?.expr ?? params?.code ?? '');
+    if (!src.trim()) throw err('CLOUD_DENIED', 'eval 需要 expr：一段 JS 表达式或语句');
+    if (src.length > EVAL_MAX) throw err('CLOUD_DENIED', `eval 的代码超过 ${EVAL_MAX} 字符`);
+    const maxLength = Math.min(Math.max(Number(params?.maxLength) || 20000, 1000), 400000);
+    return { expr: src, maxLength };
+  }
   if (!CLOUD_CMDS.has(cmd)) throw err('CLOUD_DENIED', `云端任务不能调用 ${cmd}`);
   const p = { ...(params && typeof params === 'object' ? params : {}) };
   delete p.tabId;   // tabId 只能出现在信封上，由 cloud.js 核对归属

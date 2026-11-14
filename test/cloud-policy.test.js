@@ -18,7 +18,18 @@ const hosts = ['douyin.com', 'channels.weixin.qq.com'];
 const ctx = { hosts, origin: ORIGIN };
 const denied = (fn) => assert.throws(fn, (e) => e.code === 'CLOUD_DENIED');
 
-test('读接口、带 cookie 发请求、写盘、执行脚本的命令一律没有', () => {
+test('eval 只听用户的开关：关着一律拒，开着只放行代码本身', () => {
+  denied(() => checkCommand('eval', { expr: '1' }, ctx));
+  denied(() => checkCommand('eval', { expr: '1' }, { ...ctx, allowEval: false }));
+  const on = { ...ctx, allowEval: true };
+  assert.deepEqual(checkCommand('eval', { expr: 'document.title', tabId: 9, junk: 1 }, on), { expr: 'document.title', maxLength: 20000 });
+  denied(() => checkCommand('eval', { expr: '  ' }, on));
+  denied(() => checkCommand('eval', { expr: 'x'.repeat(200001) }, on));
+  // act 里塞 eval 仍然不行：开关只放行单独一条、能审计的 eval
+  denied(() => checkCommand('act', { steps: [{ do: 'eval', expr: '1' }] }, on));
+});
+
+test('读接口、带 cookie 发请求、写盘的命令一律没有（eval 不带开关时也拒）', () => {
   for (const cmd of ['eval', 'fetch', 'network', 'download', 'reload', '__pay_timeout', 'learnings', 'nope']) {
     assert.ok(!CLOUD_CMDS.has(cmd), cmd);
     denied(() => checkCommand(cmd, {}, ctx));

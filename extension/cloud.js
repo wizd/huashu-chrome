@@ -255,7 +255,7 @@ export async function connect() {
               sock.send(JSON.stringify({
                 type: 'hello', v: 1, deviceId: cfg.deviceId, sig,
                 version: chrome.runtime.getManifest().version, name: deviceName(cfg), ...identity(),
-                sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm,
+                sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg),
                 folders: mounted,
                 devices: child ? [{ ...child, parent: cfg.deviceId }] : [],
               }));
@@ -328,7 +328,9 @@ export async function ensureCloud() {
 // 这期间改的设置由 welcome 那里补发。
 const send = (m) => { try { if (welcomed && ws?.readyState === 1) ws.send(JSON.stringify(m)); } catch { /* 发送时已经断开 */ } };
 
-const configMessage = (cfg, mounted) => ({ type: 'config', name: deviceName(cfg), sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, folders: mounted });
+const configMessage = (cfg, mounted) => ({ type: 'config', name: deviceName(cfg), sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), folders: mounted });
+// 「允许云端执行脚本」：没设过就是开（先有能力，再收紧）。用户在侧栏关掉才是关。
+const evalOn = (cfg) => cfg?.allowEval !== false;
 
 // 把名字发给服务器，等它写进库。结果：
 // saved 服务器已写入；offline 没连上，连上时 hello 会带上；unconfirmed 发了但没等到确认（如服务器还是老版本）
@@ -836,7 +838,7 @@ async function openMount(folderId = '') {
 async function reportFolders() {
   const mounted = await folders.names().catch(() => []);
   const cfg = await getCfg();
-  if (cfg && ws?.readyState === 1) send({ type: 'config', sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, folders: mounted });
+  if (cfg && ws?.readyState === 1) send({ type: 'config', sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), folders: mounted });
   await chrome.storage.session.set({ folderTick: Date.now() }).catch(() => {});
 }
 
@@ -1266,7 +1268,7 @@ async function exec(m) {
   if (updated.count > policy.TASK_CMD_CAP) throw err('CLOUD_DENIED', `一个任务最多 ${policy.TASK_CMD_CAP} 条命令，已经用完`);
 
   const hosts = hostsOf(updated, cfg);
-  const p = policy.checkCommand(m.cmd, m.params, { hosts, origin: cfg.origin });
+  const p = policy.checkCommand(m.cmd, m.params, { hosts, origin: cfg.origin, allowEval: evalOn(cfg) });
   if (m.cmd === 'sites') return requestSites(updated, p, cfg);
   if (m.cmd === 'folders') return requestFolders(updated, p, cfg);
   if (m.cmd === 'apps') return requestApps(updated, p, cfg);
@@ -1438,7 +1440,7 @@ async function panelState() {
     getCfg(), chrome.storage.session.get(STATUS), chrome.storage.session.get(CLAIM), getTasks(), chrome.storage.local.get([LOG, DESK_ERR]),
   ]);
   return {
-    cfg: cfg && { origin: cfg.origin, account: cfg.account, name: deviceName(cfg), sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, paused: cfg.paused, pairedAt: cfg.pairedAt },
+    cfg: cfg && { origin: cfg.origin, account: cfg.account, name: deviceName(cfg), sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, allowEval: evalOn(cfg), paused: cfg.paused, pairedAt: cfg.pairedAt },
     status: status || { state: 'off' },
     claim: claimed && claimed.expiresAt > Date.now() ? { origin: claimed.origin, account: claimed.account, name: deviceName(cfg) } : null,
     tasks: Object.values(tasks).sort((a, b) => b.lastAt - a.lastAt).map(({ desk: _desk, ...t }) => t),
@@ -1488,6 +1490,11 @@ async function onPanel(m) {
         await setTasks(tasks);
       });
       await log({ ev: 'site_off', msg: host });
+      return panelState();
+    }
+    case 'setAllowEval': {
+      await patchCfg({ allowEval: !!m.allowEval });
+      await log({ ev: m.allowEval ? 'eval_on' : 'eval_off' });
       return panelState();
     }
     case 'setAutoConfirm': {

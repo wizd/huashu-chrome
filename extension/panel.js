@@ -271,7 +271,7 @@ const LOG_TEXT = {
   desk_confirm: '同意了桌面动作', desk_declined: '没同意桌面动作', desktop_on: '启用桌面能力', desktop_off: '停用桌面能力',
   desktop_reload: '为启用桌面能力重载扩展', desktop_fail: '桌面能力没启用成功：',
   site_on: '网站加入允许名单', site_off: '从允许名单移除网站', auto_on: '打开自动允许', auto_off: '关闭自动允许',
-  confirm_on: '打开对外动作免确认', confirm_off: '关闭对外动作免确认', ask_auto: '免确认放行', confirm_task: '本任务内都同意',
+  eval_on: '允许云端执行脚本', eval_off: '禁止云端执行脚本', confirm_on: '打开对外动作免确认', confirm_off: '关闭对外动作免确认', ask_auto: '免确认放行', confirm_task: '本任务内都同意',
   paused: '暂停', resumed: '恢复',
 };
 
@@ -380,6 +380,7 @@ function renderCloud(s) {
     ? s.status.message : `账号「${s.cfg.account || ''}」`;
   $('cloudAuto').checked = !!s.cfg.auto;
   $('cloudAutoConfirm').checked = !!s.cfg.autoConfirm;
+  $('cloudEval').checked = s.cfg.allowEval !== false;
   $('cloudPause').checked = !!s.cfg.paused;
 
   // 允许名单：用户点过「允许」的网站，含子域。没有预设的平台。
@@ -491,6 +492,7 @@ $('deviceNameSave').onclick = async () => {
 };
 $('deviceName').onkeydown = (e) => { if (e.key === 'Enter') $('deviceNameSave').click(); };
 $('cloudAuto').onchange = (e) => cloudCall('setAuto', { auto: e.target.checked });
+$('cloudEval').onchange = (e) => cloudCall('setAllowEval', { allowEval: e.target.checked });
 $('cloudAutoConfirm').onchange = (e) => cloudCall('setAutoConfirm', { autoConfirm: e.target.checked });
 $('cloudPause').onchange = (e) => cloudCall('setPaused', { paused: e.target.checked });
 $('cloudReconn').onclick = () => cloudCall('reconnect');

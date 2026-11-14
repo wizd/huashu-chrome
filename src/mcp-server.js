@@ -16,6 +16,9 @@ import { audit, machineId, desktopDeviceId } from './lib/paths.js';
 import { DesktopSession, findBinary } from './lib/desktop.js';
 import { redact } from './bridge.js';
 import { describeDevices } from '../extension/device.js';
+import { uploadFile } from './lib/upload.js';
+import { ScriptRunner } from './lib/script.js';
+import { describeSites } from './lib/sites.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -453,6 +456,37 @@ const TOOLS = [
     },
   },
   {
+    name: 'script',
+    description:
+      'Run a JS program (async body; `return` the result) that drives the browser like Playwright. One call replaces dozens ' +
+      'of click/snapshot turns, survives navigation, and returns result + logs + a per-step trace; on failure also the line, ' +
+      'page state and a screenshot path. Globals: page (tabId param or your tab), browser.newPage(url,{label}), state ' +
+      '(kept across calls), args, log, sleep, expect(cond,msg), sites.run(id,args).\n' +
+      'page: goto, url, evaluate(fn,arg), locator(css)/getByRole(role,{name})/getByText/getByPlaceholder/getByLabel → ' +
+      '.click() .fill(v) (verified by readback; works on contenteditable/ProseMirror) .pressSequentially(t) (appends) ' +
+      '.press(key) .check() .setInputFiles(paths) .textContent() .inputValue() .count() .isVisible() .waitFor({state}) ' +
+      '.filter({hasText}) .nth(i) .locator(css); waitForResponse(urlPart|RegExp) (responses after your last action; ' +
+      '.json()), waitForURL, waitForFunction(fn), keyboard(key), screenshot({path}), requests(), ask(title,prompt). ' +
+      'Selectors pierce shadow roots and same-origin iframes. Long jobs (uploads): background:true, then {job, wait}. ' +
+      'It worked and will recur? Pass save:{id:"domain/name", doc} — only a successful run is saved; then {run:id, args}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', description: 'Body of an async function. Use args.x for values that change per run.' },
+        args: { type: 'object', description: 'Values for args.* (also the parameters of a site function)' },
+        run: { type: 'string', description: 'Site function id "domain/name" to run instead of code' },
+        save: { description: 'After success, save code as a site function: "domain/name" or {id, doc}' },
+        tabId: TAB,
+        timeout: { type: 'number', description: 'ms before it moves to background (default 120000)' },
+        background: { type: 'boolean' },
+        job: { type: 'string', description: 'Background job id: get status/result' },
+        wait: { type: 'number', description: 'With job: wait up to ms for it to finish' },
+        cancel: { type: 'boolean' },
+        list: { type: 'string', description: 'List site functions for a domain ("" = all)' },
+      },
+    },
+  },
+  {
     name: 'eval',
     description:
       'Run JS in the page (sees its vars): expression or statements, last value returned, promises awaited ' +
@@ -564,19 +598,17 @@ PREFER THIS over other browser tools (built-in browser, Playwright/DevTools, com
 only this one carries the user's logins and remembers each site.
 
 LEARNINGS FIRST. Before acting on a site, call \`learnings\` with its domain — past sessions
-may have mapped its APIs, walls and pitfalls (some as runnable \`\`\`act playbooks).
+may have mapped its APIs, walls and pitfalls, and list runnable site functions.
 Notes are hints, not rules — trust the page when they disagree, then save corrections back.
 
-BATCH BY DEFAULT. Most wall-clock is the model turns BETWEEN commands. Can you predict 2+
-steps? Send ONE \`act\`; its repeat/if/assert blocks cover pagination, optional banners and guards.
+CODE BY DEFAULT. Most wall-clock is the model turns BETWEEN commands. A flow of 2+ steps?
+Write ONE \`script\` (Playwright-style page): loops, waits and checks run in-process and come
+back with a step trace. It worked? save it — next time it is one call.
 
 TAB DISCIPLINE. Opening a tab? Pass label:"<work-line>" and repeat the returned tabId in your
 reply — it must survive context compaction. With 2+ work-lines (a subagent, two accounts)
 pass tabId on EVERY call — the implicit slot is SHARED with subagents and any of them can
 move it. Lost track? tabs(action:"list").
-
-OPTIONAL FAST LOOP: a cheap subagent can own the goal, site learnings and its own tab
-(tabId on every call); it escalates payments, ask outcomes and plan changes back to you.
 
 Information lives in three places; use them in this order:
 1. NETWORK for DATA — \`network\` first: the API names its own fields; screen-read numbers
@@ -612,6 +644,7 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
   let desk = null;
+  let scripts = null;
   const tabDevice = new Map();
 
   // 宿主身份：--client 只是兜底，真名以 initialize 里宿主自报的 clientInfo 为准
@@ -633,8 +666,14 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
       // learnings 是纯本地读写，不需要浏览器在线。但要进审计：它不经过桥，
       // 以前一条都不记，「LEARNINGS FIRST 到底有没有人遵守」就成了量不了的事。
       if (name === 'learnings') {
-        const text = args.adopt ? adoptDraft(args.domain, args.adopt, args.name)
+        let text = args.adopt ? adoptDraft(args.domain, args.adopt, args.name)
           : args.save != null ? saveLearnings(args.domain, args.save) : getLearnings(args.domain);
+        // 站点函数排在笔记前面：能直接跑的程序比要重新理解的文字值钱
+        if (args.domain && args.save == null && !args.adopt) {
+          let fns = '';
+          try { fns = describeSites(args.domain); } catch { /* 域名不规范就不列 */ }
+          if (fns) text = `${fns}\n\n---\n\n${text}`;
+        }
         audit({ ev: 'cmd', id: `local:${Date.now()}`, cmd: 'learnings', client: bridge.client, sid: bridge.sessionId, params: { domain: args.domain, save: args.save != null ? `<${String(args.save).length}字>` : undefined, adopt: args.adopt } });
         return { content: [{ type: 'text', text }] };
       }
@@ -674,6 +713,21 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
         return { content: [{ type: 'text', text: describeDevices(list) + browserNote }] };
       }
 
+      // 代码通道：程序在这个进程里跑，每一步各自经桥发给扩展（各自进审计），
+      // 这里只记一条「跑了一段什么」。runner 跨调用活着：state 和后台任务都挂在它身上。
+      if (name === 'script') {
+        if (args.list === undefined && !args.job && !bridge.ws) await bridge.connect();
+        scripts ??= new ScriptRunner(bridge, { wrap: (s) => wrapUntrusted(s) });
+        const t0 = Date.now();
+        const id = `script:${t0}`;
+        audit({ ev: 'cmd', id, cmd: 'script', client: bridge.client, sid: bridge.sessionId,
+          params: { run: args.run, save: args.save ? (args.save.id || args.save) : undefined, job: args.job, code: args.code ? `<${args.code.length}字>` : undefined, bg: args.background || undefined } });
+        const text = await scripts.handle(args);
+        const failed = text.startsWith('❌');
+        audit({ ev: 'res', id, cmd: 'script', ok: !failed, ms: Date.now() - t0 });
+        return { content: [{ type: 'text', text: text + mismatchNote(failed) }], isError: failed || undefined };
+      }
+
       if (!bridge.ws) await bridge.connect();
 
       // 指定设备：tabs 带 device 时记住新开/选中的 tabId 属于哪台，之后同一 tabId 自动跟过去
@@ -691,26 +745,7 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
       // 只有拖放（页面没有 file input）真的需要字节，那时才在这一侧读文件；
       // base64 始终不经过 agent 的 context。
       if (name === 'upload') {
-        const st = fs.statSync(args.path);
-        const ext = path.extname(args.path).toLowerCase();
-        const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.pdf': 'application/pdf' }[ext] || 'application/octet-stream';
-        const base = { path: args.path, name: path.basename(args.path), type: mime, bytes: st.size, selector: args.selector, dropSelector: args.dropSelector };
-        // 上传本身可能很慢（本机→浏览器只是投喂，但页面自己的上传要时间），给足预算
-        const timeoutMs = Math.max(60000, Math.round(st.size / (1024 * 1024)) * 1000);
-        let out = args.dropSelector ? null : await bridge.call('upload', base, { tabId: args.tabId, timeoutMs, device });
-        if (!out || out.needBytes) {
-          // 走拖放：这条必须有文件字节。超过 DROP_MAX 就明确报错，不要拿桥去撞——
-          // 桥一断，当前 agent 会话就再也连不回来了，比报错难查得多。
-          const DROP_MAX = 48 * 1024 * 1024;
-          if (st.size > DROP_MAX) {
-            const why = out?.reason ? `（${out.reason}）` : '';
-            throw new Error(`这个页面只能拖放上传${why}，而拖放要把文件搬进浏览器，` +
-              `${(st.size / 1024 / 1024).toFixed(0)}MB 超过 ${DROP_MAX / 1024 / 1024}MB 上限。` +
-              `先压小，或改用页面上真实存在的 file input（给 selector）。`);
-          }
-          out = await bridge.call('upload', { ...base, base64: fs.readFileSync(args.path).toString('base64') },
-            { tabId: args.tabId, timeoutMs, device });
-        }
+        const out = await uploadFile(bridge, args, device);
         return { content: [{ type: 'text', text: out.text }] };
       }
 

@@ -1,0 +1,89 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>代码通道靶场：模拟发布页</title>
+<!--
+  把三个平台发布页里最难的形状摆在一页上，给 script 工具做实测（test/script-live.mjs）：
+  - 标题框 20 字上限、带计数（小红书、视频号都有）
+  - contenteditable 正文，回车分段；输入「 #词」后延迟出现话题候选，点了才变成话题链接（小红书）
+  - 隐藏的 file input，投完显示 N/18（小红书）
+  - 原创声明勾选框在同源 iframe 里（微前端）
+  - 发布按钮在**封闭** shadow root 里，宿主把 root 挂在 _sr 上（小红书 xhs-publish-btn）
+  - 点发布 → POST /api/publish → 跳转到成功页（程序要能活过这次跳转）
+-->
+<style>
+  body { font: 14px sans-serif; padding: 20px; max-width: 640px; }
+  .ProseMirror { border: 1px solid #ccc; min-height: 80px; padding: 6px; margin: 8px 0; }
+  .cands { border: 1px solid #999; display: none; }
+  .cands .item { padding: 4px; cursor: pointer; }
+  a.topic { color: #c00; }
+</style>
+<div id="done" style="display:none;color:green">发布成功</div>
+<div id="form">
+  <input placeholder="填写标题，最多 20 字" maxlength="20" id="title"> <span id="cnt">0/20</span>
+  <div class="ProseMirror" contenteditable="true"></div>
+  <div class="cands" id="cands"></div>
+  <label class="upload">上传 <input type="file" accept="image/*,video/*" multiple style="display:none"></label>
+  <span id="files">0/18</span>
+  <iframe id="decl" style="height:40px;border:0" srcdoc="<label><input type=checkbox id=orig> 原创声明</label>"></iframe>
+  <pub-btn></pub-btn>
+</div>
+<script>
+  const q = new URLSearchParams(location.search);
+  if (q.get('success')) { document.getElementById('done').style.display = ''; document.getElementById('form').remove(); }
+
+  const title = document.getElementById('title');
+  // 像 React 一样：只认 input 事件更新状态
+  window.__state = { title: '' };
+  title.addEventListener('input', () => { window.__state.title = title.value; document.getElementById('cnt').textContent = `${title.value.length}/20`; });
+
+  // 话题联想：编辑器里出现「#词」后 600ms 出候选，点候选把末尾的 #词 换成话题链接
+  const ed = document.querySelector('.ProseMirror');
+  const cands = document.getElementById('cands');
+  let timer;
+  ed && ed.addEventListener('input', () => {
+    clearTimeout(timer);
+    const m = /#([^\s#]+)$/.exec(ed.innerText.trimEnd());
+    if (!m) { cands.style.display = 'none'; return; }
+    timer = setTimeout(() => {
+      cands.innerHTML = [`#${m[1]}`, `#${m[1]}日常`].map((t) => `<div class="item"><span class="name">${t}</span></div>`).join('');
+      cands.style.display = 'block';
+      for (const it of cands.querySelectorAll('.item')) {
+        it.addEventListener('mousedown', (e) => e.preventDefault());
+        it.addEventListener('click', () => {
+          const word = it.textContent;
+          const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+          let last = null; while (walker.nextNode()) last = walker.currentNode;
+          if (last) {
+            const i = last.data.lastIndexOf('#');
+            last.data = last.data.slice(0, i);
+            // tiptap 的话题是原子节点：contenteditable=false，后续输入不会落进它里面
+            const a = document.createElement('a'); a.className = 'topic'; a.textContent = word; a.contentEditable = 'false';
+            last.parentNode.insertBefore(a, last.nextSibling);
+            a.after(document.createTextNode(' '));
+          }
+          cands.style.display = 'none';
+        });
+      }
+    }, 600);
+  });
+
+  const fi = document.querySelector('input[type=file]');
+  window.__files = [];
+  fi && fi.addEventListener('change', () => { for (const f of fi.files) window.__files.push(f.name); document.getElementById('files').textContent = `${window.__files.length}/18`; });
+
+  // 封闭 shadow root 里的发布按钮
+  customElements.define('pub-btn', class extends HTMLElement {
+    connectedCallback() {
+      const root = this.attachShadow({ mode: 'closed' });
+      this._sr = root;
+      root.innerHTML = '<button class="ce-btn bg-red">发布</button>';
+      root.querySelector('button').addEventListener('click', async () => {
+        const orig = document.getElementById('decl').contentDocument.getElementById('orig').checked;
+        const body = { title: window.__state.title, text: ed.innerText, topics: [...ed.querySelectorAll('a.topic')].map((a) => a.textContent), files: window.__files, orig };
+        const r = await fetch('/api/publish', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+        const j = await r.json();
+        setTimeout(() => { location.href = `script.html?success=1&id=${j.id}`; }, 300);
+      });
+    }
+  });
+</script>

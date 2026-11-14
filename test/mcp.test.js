@@ -32,7 +32,7 @@ test('agent 能通过 stdio 挂上 MCP server 并拿到工具表', async () => {
   const { tools } = await client.listTools();
   const names = tools.map((t) => t.name).sort();
 
-  assert.deepEqual(names, ['act', 'ask', 'call', 'click', 'desktop', 'devices', 'download', 'eval', 'fetch', 'fill', 'key', 'learnings', 'load', 'navigate', 'network', 'query', 'read_text', 'reload', 'screenshot', 'scroll', 'select', 'snapshot', 'status', 'tabs', 'type', 'upload', 'wait']);
+  assert.deepEqual(names, ['act', 'ask', 'call', 'click', 'desktop', 'devices', 'download', 'eval', 'fetch', 'fill', 'key', 'learnings', 'load', 'navigate', 'network', 'query', 'read_text', 'reload', 'screenshot', 'script', 'scroll', 'select', 'snapshot', 'status', 'tabs', 'type', 'upload', 'wait']);
 
   // 工具描述是每轮都在付的 context 成本，别让它悄悄膨胀
   // （16000 → 16500：v0.8 有意识地加了 learnings 工具，它自身已压到最短；
@@ -64,8 +64,10 @@ test('agent 能通过 stdio 挂上 MCP server 并拿到工具表', async () => {
   //   有类型的站点能力只能走这两个命令；本机 agent 也该用它们，而不是 upload + eval 手工注入）
   //   22700 → 24400：新增 desktop / devices（桌面能力与多设备，2026-11-02）。desktop 一个工具
   //   顶替了 29 条桌面命令，cmd 枚举是它唯一的大头；参数说明已全部挪进 STRATEGY 和回执）
+  //   24400 → 26500：新增 script（代码通道，2026-11-14）。模型写一段程序代替几十个回合的
+  //   点击/快照；描述里那份 page API 速查是模型一次写对的前提，不能省）
   const total = tools.reduce((n, t) => n + t.description.length + JSON.stringify(t.inputSchema).length, 0);
-  assert.ok(total < 24400, `工具表膨胀到 ${total} 字符了，压回 24400 以内`);
+  assert.ok(total < 26500, `工具表膨胀到 ${total} 字符了，压回 26500 以内`);
 
   // click 必须强制要 snapshotId，否则 ref 防呆整套失效
   assert.deepEqual(tools.find((t) => t.name === 'type').inputSchema.required, ['text']);

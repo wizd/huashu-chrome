@@ -18,6 +18,18 @@ const hosts = ['douyin.com', 'channels.weixin.qq.com'];
 const ctx = { hosts, origin: ORIGIN };
 const denied = (fn) => assert.throws(fn, (e) => e.code === 'CLOUD_DENIED');
 
+test('经验笔记：只认本任务允许的网站，文本有上限', () => {
+  assert.deepEqual(checkCommand('notes', { site: 'https://www.douyin.com/x' }, ctx), { site: 'douyin.com' });
+  assert.deepEqual(checkCommand('notes', { site: 'creator.douyin.com', save: '先关弹窗' }, ctx), { site: 'creator.douyin.com', save: '先关弹窗' });
+  // 允许的是子域时，查上级域的笔记也行（channels.weixin.qq.com → weixin.qq.com）
+  assert.deepEqual(checkCommand('notes', { site: 'weixin.qq.com' }, ctx), { site: 'weixin.qq.com' });
+  assert.deepEqual(checkCommand('notes', { site: 'douyin.com', save: '' }, ctx), { site: 'douyin.com', save: '' });
+  denied(() => checkCommand('notes', { site: 'xiaohongshu.com' }, ctx));
+  denied(() => checkCommand('notes', {}, ctx));
+  denied(() => checkCommand('notes', { site: 'douyin.com', save: 1 }, ctx));
+  denied(() => checkCommand('notes', { site: 'douyin.com', save: 'x'.repeat(8001) }, ctx));
+});
+
 test('eval 只听用户的开关：关着一律拒，开着只放行代码本身', () => {
   denied(() => checkCommand('eval', { expr: '1' }, ctx));
   denied(() => checkCommand('eval', { expr: '1' }, { ...ctx, allowEval: false }));

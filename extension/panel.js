@@ -271,6 +271,7 @@ const LOG_TEXT = {
   desk_confirm: '同意了桌面动作', desk_declined: '没同意桌面动作', desktop_on: '启用桌面能力', desktop_off: '停用桌面能力',
   desktop_reload: '为启用桌面能力重载扩展', desktop_fail: '桌面能力没启用成功：',
   site_on: '网站加入允许名单', site_off: '从允许名单移除网站', auto_on: '打开自动允许', auto_off: '关闭自动允许',
+  notes_saved: '记下网站经验', notes_deleted: '删除网站经验',
   eval_on: '允许云端执行脚本', eval_off: '禁止云端执行脚本', confirm_on: '打开对外动作免确认', confirm_off: '关闭对外动作免确认', ask_auto: '免确认放行', confirm_task: '本任务内都同意',
   paused: '暂停', resumed: '恢复',
 };
@@ -354,6 +355,23 @@ function syncAlert() {
 }
 $('needPill').onclick = () => $('alert').scrollIntoView({ behavior: 'smooth', block: 'start' });
 
+function renderNotes(rows) {
+  const box = $('cloudNotes');
+  if (!box) return;
+  box.textContent = '';
+  if (!rows.length) { box.appendChild(el('div', 'empty', '还没有。')); return; }
+  for (const n of rows) {
+    const d = el('details', 'note');
+    const sum = el('summary', null, `${n.site} · ${n.text.length} 字 · ${new Date(n.at).toLocaleDateString()}`);
+    const body = el('pre', 'log', n.text);
+    body.style.whiteSpace = 'pre-wrap';
+    const del = el('button', 'btn ghost', '删除');
+    del.onclick = () => { if (confirm(`删除 ${n.site} 的经验笔记？`)) cloudCall('deleteNotes', { site: n.site }); };
+    d.append(sum, body, del);
+    box.appendChild(d);
+  }
+}
+
 function renderCloud(s) {
   renderFolders(s);
   renderDesktop(s);
@@ -382,6 +400,8 @@ function renderCloud(s) {
   $('cloudAutoConfirm').checked = !!s.cfg.autoConfirm;
   $('cloudEval').checked = s.cfg.allowEval !== false;
   $('cloudPause').checked = !!s.cfg.paused;
+
+  renderNotes(s.notes || []);
 
   // 允许名单：用户点过「允许」的网站，含子域。没有预设的平台。
   const sites = $('cloudSites');

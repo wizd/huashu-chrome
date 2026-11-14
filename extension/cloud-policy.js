@@ -51,6 +51,9 @@ export const CLOUD_CMDS = new Set([
   // 不是 fetch：只 GET、只认本任务允许的网站、响应必须是媒体（mediaBody），JSON/HTML 一律不出门。
   // Cookie 由 Chrome 自己附在请求上，扩展不读它，也不会把它放进任何结果。
   'media_pull',
+  // 站点经验笔记：这个浏览器上、这个网站怎么操作更快更稳，纯文本，存在扩展自己的存储里。
+  // 只能读写本任务允许的网站；侧栏里用户能看、能删。不是代码，不会被执行。
+  'notes',
 ]);
 
 // ---------- 站点申请 ----------
@@ -376,6 +379,9 @@ function checkSteps(steps, hosts, depth = 0) {
 // 云端 eval 一次最多带这么长的代码
 export const EVAL_MAX = 200000;
 
+// 一个网站的经验笔记最长这么多字：够写清流程和坑，又不会撑爆模型的上下文
+export const NOTES_MAX = 8000;
+
 export function checkCommand(cmd, params, { hosts, origin, allowEval = false }) {
   if (cmd === 'eval') {
     if (!allowEval) throw err('CLOUD_DENIED', '用户在扩展侧栏关掉了「允许云端执行脚本」，eval 用不了；改用 snapshot / click / fill');
@@ -501,6 +507,17 @@ export function checkCommand(cmd, params, { hosts, origin, allowEval = false }) 
       const size = Number(p.media.size);
       if (!Number.isInteger(size) || size <= 0 || size > MEDIA_MAX) throw err('CLOUD_DENIED', '素材大小不对');
       return { folder, path: rel, media: { url: p.media.url, size }, overwrite: p.overwrite === true };
+    }
+    case 'notes': {
+      const site = normalizeSite(p.site);
+      if (!site) throw err('CLOUD_DENIED', 'notes 要给 site：网站域名，如 "creator.xiaohongshu.com"');
+      if (!hosts.some((root) => hostMatches(site, root) || hostMatches(root, site))) {
+        throw err('CLOUD_DENIED', `只能读写本任务允许的网站的笔记：${site}。先用 sites 申请`);
+      }
+      if (p.save === undefined) return { site };
+      if (typeof p.save !== 'string') throw err('CLOUD_DENIED', 'notes 的 save 是整份笔记的文本（覆盖旧的）；空字符串表示删除');
+      if (p.save.length > NOTES_MAX) throw err('CLOUD_DENIED', `笔记超过 ${NOTES_MAX} 字：删掉过时的、合并重复的再存`);
+      return { site, save: p.save };
     }
     case 'media_pull': {
       // 只 GET 一个地址，最多带 Range 和 Referer。别的头、方法、请求体一个都不收。

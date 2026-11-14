@@ -24,6 +24,7 @@ import { routeHere, stampFrom, capOf, cleanDevice, describeDevices, browserIdent
 
 const CFG = 'cloud';                 // storage.local：配对信息和用户的选择
 const TASKS = 'cloudTasks';          // storage.local：任务（批准状态、自己开的标签页）
+const NOTES = 'siteNotes';           // storage.local：站点经验笔记 {site: {text, at, job}}，侧栏可看可删
 const LOG = 'cloudLog';              // storage.local：审计日志，侧栏可看
 const STATUS = 'cloudStatus';        // storage.session：连接状态，侧栏订阅
 const CLAIM = 'cloudClaim';          // storage.session：配对第一步拿到的账号，等用户确认
@@ -1250,6 +1251,28 @@ async function bounce(tabId, hosts) {
   if (tab && !tabAllowed(tab, hosts)) await chrome.tabs.update(tabId, { url: 'about:blank' }).catch(() => {});
 }
 
+// 站点经验笔记。读：这个网站、它的上级域和子域的笔记都给（channels.weixin.qq.com 的笔记
+// 查 weixin.qq.com 时也出来）。写：整份覆盖这个网站的那一份；空串删除。
+async function notesCmd(p, task) {
+  const { [NOTES]: all = {} } = await chrome.storage.local.get(NOTES);
+  if (p.save !== undefined) {
+    const text = p.save.trim();
+    if (text) all[p.site] = { text, at: Date.now(), job: task.jobId };
+    else delete all[p.site];
+    await chrome.storage.local.set({ [NOTES]: all });
+    await log({ ev: text ? 'notes_saved' : 'notes_deleted', jobId: task.jobId, sites: [p.site] });
+    return { text: text ? `已记下 ${p.site} 的经验（${text.length} 字）。下次任务读 notes 就能看到` : `已删除 ${p.site} 的经验` };
+  }
+  const hits = Object.entries(all)
+    .filter(([site]) => policy.hostMatches(p.site, site) || policy.hostMatches(site, p.site))
+    .sort(([a], [b]) => a.length - b.length);
+  if (!hits.length) return { text: `这个浏览器上还没有 ${p.site} 的经验笔记。做完后把有用的经验记下来：notes {"site":"${p.site}","save":"…"}` };
+  return {
+    text: hits.map(([site, n]) => `## ${site}（${new Date(n.at).toISOString().slice(0, 10)} 更新）\n\n${n.text}`).join('\n\n')
+      + '\n\n（经验是参考，页面以现场为准。和现场对不上的、新踩到的坑，做完后改好整份再存回去。）',
+  };
+}
+
 async function exec(m) {
   const cfg = await getCfg();
   if (!cfg?.deviceId) throw err('CLOUD_UNPAIRED', '这个浏览器没有配对');
@@ -1276,6 +1299,7 @@ async function exec(m) {
   if (m.cmd === 'shell' || m.cmd === 'file') return fullCmd(m.cmd, p);
   if (m.cmd === 'fs_list' || m.cmd === 'fs_read' || m.cmd === 'fs_write') return fsCmd(m.cmd, p, updated);
   if (m.cmd === 'media_pull') return mediaPull(p, updated, hosts);
+  if (m.cmd === 'notes') return notesCmd(p, updated);
   const sid = sidOf(jobId);
   const label = labelOf(cfg.origin);
   const own = new Set(updated.tabs);
@@ -1439,6 +1463,7 @@ async function panelState() {
   const [cfg, { [STATUS]: status }, { [CLAIM]: claimed }, tasks, { [LOG]: list = [], [DESK_ERR]: deskErr }] = await Promise.all([
     getCfg(), chrome.storage.session.get(STATUS), chrome.storage.session.get(CLAIM), getTasks(), chrome.storage.local.get([LOG, DESK_ERR]),
   ]);
+  const { [NOTES]: notes = {} } = await chrome.storage.local.get(NOTES);
   return {
     cfg: cfg && { origin: cfg.origin, account: cfg.account, name: deviceName(cfg), sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, allowEval: evalOn(cfg), paused: cfg.paused, pairedAt: cfg.pairedAt },
     status: status || { state: 'off' },
@@ -1447,6 +1472,7 @@ async function panelState() {
     folders: await folders.listFolders().catch(() => []),
     desktop: await deskInfo().then((d) => (d && chrome.runtime.sendNativeMessage ? d : deskErr ? { error: deskErr } : null)),
     log: list.slice(-40).reverse(),
+    notes: Object.entries(notes).sort(([a], [b]) => a.localeCompare(b)).map(([site, n]) => ({ site, text: n.text, at: n.at })),
     defaultOrigin: policy.DEFAULT_ORIGIN,
   };
 }
@@ -1477,6 +1503,14 @@ async function onPanel(m) {
       await log({ ev: 'renamed', msg: deviceName(next) });
       const sync = await pushName(next);
       return { ...(await panelState()), rename: sync };
+    }
+    case 'deleteNotes': {
+      const site = String(m.site || '');
+      const { [NOTES]: all = {} } = await chrome.storage.local.get(NOTES);
+      delete all[site];
+      await chrome.storage.local.set({ [NOTES]: all });
+      await log({ ev: 'notes_deleted', sites: [site] });
+      return panelState();
     }
     case 'removeSite': {
       const host = String(m.host || '');

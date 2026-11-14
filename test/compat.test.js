@@ -32,6 +32,7 @@ test('只有更旧的桥才换掉，新桥不能被旧客户端降级', () => {
   assert.equal(bridgeIsStale('2.6.0', '2.6.1'), true);
   assert.equal(bridgeIsStale('2.6.1', '2.6.0'), false);
   assert.equal(bridgeIsStale('2.6.1', '2.6.1'), false);
+  assert.equal(bridgeIsStale('2.6.2', '3.0.0'), true);
   assert.equal(bridgeIsStale('', '2.6.1'), false);
 });
 

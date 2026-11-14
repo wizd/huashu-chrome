@@ -259,6 +259,28 @@ function inPage(op, spec, arg) {
     }
 
     // 页面状态的一句话诊断：脚本出错时连同错误一起交回给模型
+    // 页面自己取素材、造 File 投进去：file input 在 shadow DOM 里、或页面只认拖放时用。
+    // arg = {url, name, type, drop}。素材地址是配对服务器给的一次性地址（带 CORS）。
+    case 'putFile': return (async () => {
+      const { el } = one(spec);
+      if (!el) notFound(spec);
+      const res = await fetch(arg.url, { credentials: 'omit', cache: 'no-store' });
+      if (!res.ok) throw new Error(`页面里取素材失败：HTTP ${res.status}`);
+      const file = new File([await res.blob()], arg.name, { type: arg.type || 'application/octet-stream' });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      if (!arg.drop && el.tagName === 'INPUT' && el.type === 'file') {
+        el.files = dt.files;
+        el.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+        return { desc: describe(el), how: 'input', size: file.size };
+      }
+      for (const t of ['dragenter', 'dragover', 'drop']) {
+        el.dispatchEvent(new DragEvent(t, { bubbles: true, cancelable: true, composed: true, dataTransfer: dt }));
+      }
+      return { desc: describe(el), how: 'drop', size: file.size };
+    })();
+
     case 'diagnose': {
       const dialogs = find({ css: 'dialog[open],[role=dialog],[role=alertdialog],[aria-modal=true]', visible: true })
         .slice(0, 3).map((el) => norm(el.innerText).slice(0, 200));
@@ -647,9 +669,15 @@ export class Locator {
 
   async selectOption(value) { return this.fill(value); }
 
+  // 页面只认拖放（没有 file input）时：把文件拖到这个区域上
+  async dropFiles(files) { return this.setInputFiles(files, { drop: true }); }
+
   // 本机文件投进 file input（隐藏的也行）。多个文件按顺序一个一个投——
   // 很多编辑器靠投入顺序决定图片顺序，一次投多个顺序不保证。
-  async setInputFiles(files) {
+  //
+  // bridge 自带 upload({file, selector, spec, drop}) 时（云端：文件先传到配对服务器）交给它；
+  // 否则走本机那条路（CDP 读盘，拖放才搬字节）。
+  async setInputFiles(files, { drop = false } = {}) {
     const list = Array.isArray(files) ? files : [files];
     return this.page._step('setInputFiles', `${this} ← ${list.length} 个文件`, async () => {
       await this._ready();
@@ -657,12 +685,21 @@ export class Locator {
       const notes = [];
       for (const f of list) {
         if (!fs.existsSync(f)) throw new ScriptError(`文件不存在：${f}`, 'NO_FILE');
+        if (this.page.bridge.upload) {
+          notes.push(noteOf(await this.page.bridge.upload({ file: f, locator: this, drop }, this.page)));
+          continue;
+        }
         const st = await this.page._in('stamp', this.spec);
         if (!st.inDoc) throw new ScriptError(`${this} 在 shadow DOM 里，扩展的上传投不进去`, 'IN_SHADOW');
-        if (st.tag !== 'INPUT' || st.type !== 'file') {
-          throw new ScriptError(`${this} 不是 file input（是 ${st.desc}）。用 page.locator('input[type=file]') 找真正的上传框。`, 'NOT_FILE_INPUT');
+        const sel = `[data-vc="${st.id}"]`;
+        if (drop) {
+          notes.push(noteOf(await uploadFile(this.page.bridge, { path: f, dropSelector: sel, tabId: this.page.tabId }, this.page.device)));
+          continue;
         }
-        const r = await uploadFile(this.page.bridge, { path: f, selector: `[data-vc="${st.id}"]`, tabId: this.page.tabId }, this.page.device);
+        if (st.tag !== 'INPUT' || st.type !== 'file') {
+          throw new ScriptError(`${this} 不是 file input（是 ${st.desc}）。用 page.locator('input[type=file]') 找真正的上传框，页面只认拖放就用 dropFiles。`, 'NOT_FILE_INPUT');
+        }
+        const r = await uploadFile(this.page.bridge, { path: f, selector: sel, tabId: this.page.tabId }, this.page.device);
         notes.push(noteOf(r));
       }
       return { __note: notes.join('；') };

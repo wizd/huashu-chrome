@@ -13,7 +13,6 @@
 // 白名单在扩展侧（cloud-policy.js、background.js）查过一遍，这里再查一遍。
 const ALLOWED = new Set(__LOAD_ACTIONS__);
 const err = (code, message) => Object.assign(new Error(message), { code });
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ATTR = 'data-vcorp-flow';
 // 结果的门槛：图标、头像、提示词框里的配料小图都比这小
 const MIN_NATURAL = 256;   // 媒体本身的像素
@@ -80,10 +79,13 @@ function sizeOf(el) {
     loaded: video ? el.readyState >= 1 && el.videoWidth > 0 : el.complete && el.naturalWidth > 0,
   };
 }
-// 够格当结果的：显示着、够大、加载好了
+// 够格当结果的：显示着、够大、加载好了。视频例外：后台标签页里 Chrome 不给从没显示过的页面加载
+// <video>，videoWidth 一直是 0；有地址、屏幕上够大就算（字节由 flow.fetch 用 fetch 取，不靠播放器）
 function sizeable(el) {
   const z = sizeOf(el);
-  return z.loaded && visible(el) && Math.min(z.w, z.h) >= MIN_NATURAL && Math.min(z.sw, z.sh) >= MIN_SHOWN ? z : null;
+  if (!visible(el) || Math.min(z.sw, z.sh) < MIN_SHOWN) return null;
+  if (z.loaded && Math.min(z.w, z.h) >= MIN_NATURAL) return z;
+  return el.tagName === 'VIDEO' && !z.loaded && srcOf(el) ? { ...z, w: 0, h: 0 } : null;
 }
 // 基线之后新出现的、kind 对得上的媒体，大的在前
 function fresh(kind, skip, exclude) {
@@ -208,37 +210,37 @@ const ACTIONS = {
     return { known: keys.size };
   },
 
-  // 等结果：基线之后新出现的、够大的、加载好的图片（kind=video 时是视频），连着两次看到同一个才算。
-  // 最多等 waitMs（≤55 秒），没等到返回 done:false，云端再调。中途出现确认（花 credits？）就先
-  // 返回 approval:true，让云端点 [data-vcorp-flow="approve"]。exclude：配料（参考图）的 key。
-  'flow.result': async (p) => {
+  // 看一眼结果：基线之后新出现的、够大的、加载好的图片（kind=video 时是视频），连着两次调用看到同一个才算。
+  // 不在页面里等：任务的标签页开在后台，Chrome 会把后台页的定时器压到最慢一分钟一次，页面里 sleep
+  // 靠不住。云端隔一两秒调一次。出现确认（花 credits？）就返回 approval:true，让云端点
+  // [data-vcorp-flow="approve"]；approved：已经点过了，不再报。exclude：配料（参考图）的 key。
+  'flow.result': (p) => {
     const kind = p.kind === 'video' ? 'video' : 'image';
     const base = window.__vcorpFlowBase;
     if (!base) throw err('NO_BASELINE', '先调 flow.baseline，再提交，再读结果');
     const skip = new Set(base.keys);
     const exclude = (Array.isArray(p.exclude) ? p.exclude : []).map(String).filter((x) => x.length >= 8);
-    const until = Date.now() + Math.min(Math.max(Number(p.waitMs) || 45000, 1000), 55000);
-    let last = '', poster = null;
-    for (;;) {
-      const hit = fresh(kind, skip, exclude)[0];
-      if (hit && hit.key === last) {
-        window.__vcorpFlowHit = { key: hit.key, src: hit.src, kind };
-        window.__vcorpFlowBlob = null;
-        return { done: true, kind, key: hit.key, url: hit.src, width: hit.w, height: hit.h, fresh: true };
-      }
-      last = hit?.key || '';
-      // 要视频却只冒出了新封面：悬停一下让播放器挂上来
-      if (!hit && kind === 'video') {
-        const cover = fresh('image', skip, exclude)[0];
-        if (cover && cover.key !== poster) { poster = cover.key; hover(cover.el); }
-      }
-      // 已经点过（approved）就不再报：Flow 有时晚一拍才把它灰掉
-      if (!p.approved && mark('approve', approveEl())) return { done: false, approval: true };
-      const why = refusal();
-      if (why) return { done: false, refusal: why };
-      if (Date.now() >= until) return { done: false, ...(poster ? { poster: true } : {}) };
-      await sleep(800);
+    const hit = fresh(kind, skip, exclude)[0];
+    if (hit && hit.key === base.last) {
+      window.__vcorpFlowHit = { key: hit.key, src: hit.src, kind };
+      window.__vcorpFlowBlob = null;
+      return { done: true, kind, key: hit.key, url: hit.src, width: hit.w || null, height: hit.h || null, fresh: true };
     }
+    base.last = hit?.key || '';
+    if (hit) return { done: false, seen: true };
+    // 要视频却只冒出了新封面：悬停一下让播放器挂上来
+    let poster = false;
+    if (kind === 'video') {
+      const cover = fresh('image', skip, exclude)[0];
+      if (cover) {
+        poster = true;
+        if (cover.key !== base.poster) { base.poster = cover.key; hover(cover.el); }
+      }
+    }
+    if (!p.approved && mark('approve', approveEl())) return { done: false, approval: true };
+    const why = refusal();
+    if (why) return { done: false, refusal: why };
+    return { done: false, ...(poster ? { poster: true } : {}) };
   },
 
   // 交出 flow.result 认出的那个媒体的字节：用页面自己的 fetch 取它正在显示的地址（带这个页面的

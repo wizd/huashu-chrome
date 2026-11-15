@@ -8,7 +8,6 @@
   // loads/flow/entry.js
   var ALLOWED = new Set(define_LOAD_ACTIONS_default);
   var err = (code, message) => Object.assign(new Error(message), { code });
-  var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   var ATTR = "data-vcorp-flow";
   var MIN_NATURAL = 256;
   var MIN_SHOWN = 64;
@@ -69,7 +68,9 @@
   }
   function sizeable(el) {
     const z = sizeOf(el);
-    return z.loaded && visible(el) && Math.min(z.w, z.h) >= MIN_NATURAL && Math.min(z.sw, z.sh) >= MIN_SHOWN ? z : null;
+    if (!visible(el) || Math.min(z.sw, z.sh) < MIN_SHOWN) return null;
+    if (z.loaded && Math.min(z.w, z.h) >= MIN_NATURAL) return z;
+    return el.tagName === "VIDEO" && !z.loaded && srcOf(el) ? { ...z, w: 0, h: 0 } : null;
   }
   function fresh(kind, skip, exclude) {
     const tag = kind === "video" ? "VIDEO" : "IMG";
@@ -185,38 +186,39 @@
       window.__vcorpFlowBlob = null;
       return { known: keys.size };
     },
-    // 等结果：基线之后新出现的、够大的、加载好的图片（kind=video 时是视频），连着两次看到同一个才算。
-    // 最多等 waitMs（≤55 秒），没等到返回 done:false，云端再调。中途出现确认（花 credits？）就先
-    // 返回 approval:true，让云端点 [data-vcorp-flow="approve"]。exclude：配料（参考图）的 key。
-    "flow.result": async (p) => {
+    // 看一眼结果：基线之后新出现的、够大的、加载好的图片（kind=video 时是视频），连着两次调用看到同一个才算。
+    // 不在页面里等：任务的标签页开在后台，Chrome 会把后台页的定时器压到最慢一分钟一次，页面里 sleep
+    // 靠不住。云端隔一两秒调一次。出现确认（花 credits？）就返回 approval:true，让云端点
+    // [data-vcorp-flow="approve"]；approved：已经点过了，不再报。exclude：配料（参考图）的 key。
+    "flow.result": (p) => {
       const kind = p.kind === "video" ? "video" : "image";
       const base = window.__vcorpFlowBase;
       if (!base) throw err("NO_BASELINE", "\u5148\u8C03 flow.baseline\uFF0C\u518D\u63D0\u4EA4\uFF0C\u518D\u8BFB\u7ED3\u679C");
       const skip = new Set(base.keys);
       const exclude = (Array.isArray(p.exclude) ? p.exclude : []).map(String).filter((x) => x.length >= 8);
-      const until = Date.now() + Math.min(Math.max(Number(p.waitMs) || 45e3, 1e3), 55e3);
-      let last = "", poster = null;
-      for (; ; ) {
-        const hit = fresh(kind, skip, exclude)[0];
-        if (hit && hit.key === last) {
-          window.__vcorpFlowHit = { key: hit.key, src: hit.src, kind };
-          window.__vcorpFlowBlob = null;
-          return { done: true, kind, key: hit.key, url: hit.src, width: hit.w, height: hit.h, fresh: true };
-        }
-        last = hit?.key || "";
-        if (!hit && kind === "video") {
-          const cover = fresh("image", skip, exclude)[0];
-          if (cover && cover.key !== poster) {
-            poster = cover.key;
+      const hit = fresh(kind, skip, exclude)[0];
+      if (hit && hit.key === base.last) {
+        window.__vcorpFlowHit = { key: hit.key, src: hit.src, kind };
+        window.__vcorpFlowBlob = null;
+        return { done: true, kind, key: hit.key, url: hit.src, width: hit.w || null, height: hit.h || null, fresh: true };
+      }
+      base.last = hit?.key || "";
+      if (hit) return { done: false, seen: true };
+      let poster = false;
+      if (kind === "video") {
+        const cover = fresh("image", skip, exclude)[0];
+        if (cover) {
+          poster = true;
+          if (cover.key !== base.poster) {
+            base.poster = cover.key;
             hover(cover.el);
           }
         }
-        if (!p.approved && mark("approve", approveEl())) return { done: false, approval: true };
-        const why = refusal();
-        if (why) return { done: false, refusal: why };
-        if (Date.now() >= until) return { done: false, ...poster ? { poster: true } : {} };
-        await sleep(800);
       }
+      if (!p.approved && mark("approve", approveEl())) return { done: false, approval: true };
+      const why = refusal();
+      if (why) return { done: false, refusal: why };
+      return { done: false, ...poster ? { poster: true } : {} };
     },
     // 交出 flow.result 认出的那个媒体的字节：用页面自己的 fetch 取它正在显示的地址（带这个页面的
     // 登录，blob: 地址也行），从 offset 起交一段（≤8MB），云端按 size 接着要下一段。
@@ -255,7 +257,7 @@
     }
   };
   (window.__vcorpLoads ||= {}).flow = {
-    version: "1.1.0+ea62f5",
+    version: "1.1.0+c1a220",
     async ready() {
       if (location.hostname !== "flow.google.com") return { ok: false, reason: "\u4E0D\u5728 flow.google.com \u4E0A" };
       return { ok: true };

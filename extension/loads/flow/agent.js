@@ -43,6 +43,29 @@
     return ctl && disabled(ctl) ? null : el;
   }
   var disabled = (el) => !!el && (el.disabled || el.getAttribute("aria-disabled") === "true");
+  var CHOICES = 6;
+  function question() {
+    for (let i = 0; i < CHOICES; i++) mark(`choice-${i}`, null);
+    const groups = [...document.querySelectorAll('[role="radiogroup"]')].filter(visible);
+    const grp = groups[groups.length - 1];
+    if (!grp) return null;
+    const radios = [...grp.querySelectorAll('[role="radio"]')].filter(visible).slice(0, CHOICES);
+    if (!radios.length || radios.some((r) => r.getAttribute("aria-checked") === "true") || radios.every(disabled)) return null;
+    const options = radios.map((r) => lines(r).filter((t) => !/^radio_button/.test(t)).join(" ").slice(0, 160));
+    if (options.includes("Always approve in project")) return null;
+    const clean = (el) => (el.innerText || "").replace(/\b[a-z]+(?:_[a-z]+)+\b/g, " ");
+    const optText = clean(grp).replace(/\s+/g, "").length;
+    let host = grp;
+    for (let i = 0; i < 6 && host.parentElement && host.parentElement !== document.body; i++) {
+      host = host.parentElement;
+      if (clean(host).replace(/\s+/g, "").length > optText + 20) break;
+    }
+    let text = clean(host);
+    for (const o of [...options, ...lines(grp)]) text = text.split(o).join(" ");
+    text = text.replace(/\s+/g, " ").trim().slice(-400);
+    radios.forEach((r, i) => mark(`choice-${i}`, r));
+    return { text, options };
+  }
   var srcOf = (el) => el.currentSrc || el.src || el.querySelector?.("source[src]")?.src || "";
   function keyOf(src) {
     const s = String(src || "");
@@ -121,6 +144,39 @@
   var overlay = () => document.querySelector(".cdk-overlay-container");
   var FAILED = /something went wrong[^\n]{0,80}/gi;
   var failures = () => (document.querySelector("main")?.innerText || "").match(FAILED) || [];
+  var NOISE = /^(show thinking|google flow can make mistakes.*|approve|reject|always approve in project|try again|[a-z]+(?:_[a-z]+)+)$/i;
+  var ASKS = /\?\s*$|\b(would you like|do you want|let me know|which (one|option)|should i|shall i|please (choose|confirm|specify|provide|select|clarify))\b/i;
+  var PROGRESS = /\b(started generating|(is|are) (now |currently )?(being )?(generat|creat|render)(ed|ing)|in progress|underway|\d{1,3}\s*% (complete|done)|ready (soon|shortly)|check back)\b/i;
+  function talk(sent) {
+    const all = document.querySelector("main")?.innerText || "";
+    const tail = String(sent || "").split("\n").map((t) => t.replace(/[ \t]+/g, " ").trim()).filter(Boolean).pop() || "";
+    const key = tail.slice(-40);
+    const flat = all.replace(/[ \t]+/g, " ");
+    let at = -1;
+    if (key.length >= 12) {
+      const end = flat.lastIndexOf(key);
+      if (end >= 0) at = end + key.length;
+    }
+    const skip = new Set([...document.querySelectorAll('[role="radio"], button')].map((b) => lines(b).filter((t) => !/^[a-z]+(_[a-z]+)+$/.test(t)).join(" ")));
+    let box = document.querySelector('[data-vcorp-flow="prompt"]');
+    const start = document.querySelector('[data-vcorp-flow="start"]');
+    for (let i = 0; box && start && i < 8 && !box.contains(start); i++) box = box.parentElement;
+    if (box && box !== document.body && box.contains(start)) lines(box).forEach((t) => skip.add(t));
+    for (const ed of document.querySelectorAll('[contenteditable="true"], textarea, [role="textbox"]')) {
+      let c = ed;
+      for (let i = 0; i < 5 && c.parentElement && !c.querySelector("button"); i++) c = c.parentElement;
+      if ((c.innerText || "").length < 600) lines(c).forEach((t) => skip.add(t));
+      for (const a of ["placeholder", "aria-placeholder", "data-placeholder"]) if (ed.getAttribute(a)) skip.add(ed.getAttribute(a).trim());
+    }
+    const said = (at >= 0 ? flat.slice(at) : flat.slice(-1500)).split("\n").map((t) => t.trim()).filter((t) => t && !NOISE.test(t) && !skip.has(t));
+    const text = said.slice(-3).join(" ").slice(-400);
+    const recent = said.slice(-4);
+    const prev = window.__vcorpFlowTalk;
+    const now = Date.now();
+    if (!prev || prev.text !== text) window.__vcorpFlowTalk = { text, since: now };
+    const busy = [...document.querySelectorAll('main [role="progressbar"], main mat-spinner, main .mat-mdc-progress-spinner')].some(visible) || PROGRESS.test(recent.slice(-2).join(" "));
+    return { text, ask: recent.some((t) => ASKS.test(t)), quietMs: now - window.__vcorpFlowTalk.since, busy };
+  }
   var refusal = () => {
     const tail = (document.querySelector("main")?.innerText || "").slice(-2e3);
     return tail.match(REFUSAL)?.[0] || null;
@@ -174,7 +230,7 @@
     // 只描述元素本身（标签、role、aria-label、开头一段文字），不读别的页面内容。
     "flow.blocker": (p) => {
       const name = String(p.name || "");
-      if (!/^[a-z-]{1,24}$/.test(name)) throw err("BAD_PARAMS", "flow.blocker \u8981 name\uFF08\u88AB\u6321\u4F4F\u7684\u90A3\u4E2A\u6807\u8BB0\uFF09");
+      if (!/^[a-z0-9-]{1,24}$/.test(name)) throw err("BAD_PARAMS", "flow.blocker \u8981 name\uFF08\u88AB\u6321\u4F4F\u7684\u90A3\u4E2A\u6807\u8BB0\uFF09");
       const el = document.querySelector(`[${ATTR}="${name}"]`);
       mark("dismiss", null);
       mark("backdrop", null);
@@ -274,9 +330,11 @@
         return { done: false, failed: oops[oops.length - 1].slice(0, 120), failures: oops.length, retry: mark("retry", byName("Try again")) };
       }
       if (!p.approved && mark("approve", approveEl())) return { done: false, approval: true };
+      const q = question();
+      if (q) return { done: false, question: q.text, options: q.options };
       const why = refusal();
       if (why) return { done: false, refusal: why };
-      return { done: false, ...poster ? { poster: true } : {} };
+      return { done: false, ...poster ? { poster: true } : {}, talk: talk(p.sent) };
     },
     // 用 Flow 自己的下载拿结果（视频的地址页面 fetch 不到：它跳到别的域名）。arm:true 开始等；每次调用
     // 标出编辑页的 download-media 按钮和菜单里 quality（默认 720p）那一项，云端去点；Flow 生成的文件
@@ -337,7 +395,7 @@
     }
   };
   (window.__vcorpLoads ||= {}).flow = {
-    version: "1.2.0+012240",
+    version: "1.2.0+355900",
     async ready() {
       if (location.hostname !== "flow.google.com") return { ok: false, reason: "\u4E0D\u5728 flow.google.com \u4E0A" };
       return { ok: true };

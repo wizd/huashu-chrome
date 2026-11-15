@@ -59,6 +59,36 @@ function approveEl() {
   return ctl && disabled(ctl) ? null : el;
 }
 const disabled = (el) => !!el && (el.disabled || el.getAttribute('aria-disabled') === 'true');
+
+// Flow 的智能体有时会反问（「Veo 3.1 - Fast 只支持 8 秒，要哪个？」），选项是一组单选：
+// [role=radiogroup] 里的 [role=radio]。答过的那组会勾上或变灰。只看最新的一组：还没答、能点、
+// 又不是「Always approve in project」（那个由 approve 处理），就是一个待回答的问题。
+// 把选项标成 choice-0、choice-1…，由云端决定点哪个。
+const CHOICES = 6;
+function question() {
+  for (let i = 0; i < CHOICES; i++) mark(`choice-${i}`, null);
+  const groups = [...document.querySelectorAll('[role="radiogroup"]')].filter(visible);
+  const grp = groups[groups.length - 1];
+  if (!grp) return null;
+  const radios = [...grp.querySelectorAll('[role="radio"]')].filter(visible).slice(0, CHOICES);
+  if (!radios.length || radios.some((r) => r.getAttribute('aria-checked') === 'true') || radios.every(disabled)) return null;
+  const options = radios.map((r) => lines(r).filter((t) => !/^radio_button/.test(t)).join(' ').slice(0, 160));
+  if (options.includes('Always approve in project')) return null;
+  // 问题本身：往上找到比选项多出一段话的那一层，去掉选项的文字。图标是字体连字（radio_button_unchecked
+  // 这类），innerText 里也算字，先去掉再量
+  const clean = (el) => (el.innerText || '').replace(/\b[a-z]+(?:_[a-z]+)+\b/g, ' ');
+  const optText = clean(grp).replace(/\s+/g, '').length;
+  let host = grp;
+  for (let i = 0; i < 6 && host.parentElement && host.parentElement !== document.body; i++) {
+    host = host.parentElement;
+    if (clean(host).replace(/\s+/g, '').length > optText + 20) break;
+  }
+  let text = clean(host);
+  for (const o of [...options, ...lines(grp)]) text = text.split(o).join(' ');
+  text = text.replace(/\s+/g, ' ').trim().slice(-400);
+  radios.forEach((r, i) => mark(`choice-${i}`, r));
+  return { text, options };
+}
 // ---------- 媒体 ----------
 
 const srcOf = (el) => el.currentSrc || el.src || el.querySelector?.('source[src]')?.src || '';
@@ -144,6 +174,49 @@ const overlay = () => document.querySelector('.cdk-overlay-container');
 // 对话里旧的出错不会消失，所以报的是条数，云端只看新增的
 const FAILED = /something went wrong[^\n]{0,80}/gi;
 const failures = () => ((document.querySelector('main')?.innerText || '').match(FAILED) || []);
+// 对话：像人一样每次都看一眼智能体最后说了什么。sent 是我们最后发的那句话，只看它之后的部分；
+// 去掉选项、按钮、页脚和图标连字，剩下的最后几行就是它对我们说的话。安静了多久（这段话多久没变）、
+// 页面上有没有在转的进度，由云端决定要不要回它。
+const NOISE = /^(show thinking|google flow can make mistakes.*|approve|reject|always approve in project|try again|[a-z]+(?:_[a-z]+)+)$/i;
+const ASKS = /\?\s*$|\b(would you like|do you want|let me know|which (one|option)|should i|shall i|please (choose|confirm|specify|provide|select|clarify))\b/i;
+const PROGRESS = /\b(started generating|(is|are) (now |currently )?(being )?(generat|creat|render)(ed|ing)|in progress|underway|\d{1,3}\s*% (complete|done)|ready (soon|shortly)|check back)\b/i;
+function talk(sent) {
+  const all = document.querySelector('main')?.innerText || '';
+  // 我们那句话可能有好几行，气泡里每行各自折行：按最后一行的结尾去找
+  const tail = String(sent || '').split('\n').map((t) => t.replace(/[ \t]+/g, ' ').trim()).filter(Boolean).pop() || '';
+  const key = tail.slice(-40);
+  const flat = all.replace(/[ \t]+/g, ' ');
+  let at = -1;
+  if (key.length >= 12) {
+    const end = flat.lastIndexOf(key);
+    if (end >= 0) at = end + key.length;
+  }
+  const skip = new Set([...document.querySelectorAll('[role="radio"], button')].map((b) => lines(b).filter((t) => !/^[a-z]+(_[a-z]+)+$/.test(t)).join(' ')));
+  // 输入框那一块（占位字、模型名、按钮）不是智能体说的话：从我们标的 prompt 往上，到包住 start 的那层为止
+  let box = document.querySelector('[data-vcorp-flow="prompt"]');
+  const start = document.querySelector('[data-vcorp-flow="start"]');
+  for (let i = 0; box && start && i < 8 && !box.contains(start); i++) box = box.parentElement;
+  if (box && box !== document.body && box.contains(start)) lines(box).forEach((t) => skip.add(t));
+  // 标记不在时也认得出：可编辑的框往上到第一层带按钮的（输入框那一块，占位字常是它旁边的元素），
+  // 它不大才算；再加上占位属性
+  for (const ed of document.querySelectorAll('[contenteditable="true"], textarea, [role="textbox"]')) {
+    let c = ed;
+    for (let i = 0; i < 5 && c.parentElement && !c.querySelector('button'); i++) c = c.parentElement;
+    if ((c.innerText || '').length < 600) lines(c).forEach((t) => skip.add(t));
+    for (const a of ['placeholder', 'aria-placeholder', 'data-placeholder']) if (ed.getAttribute(a)) skip.add(ed.getAttribute(a).trim());
+  }
+  const said = (at >= 0 ? flat.slice(at) : flat.slice(-1500)).split('\n').map((t) => t.trim())
+    .filter((t) => t && !NOISE.test(t) && !skip.has(t));
+  const text = said.slice(-3).join(' ').slice(-400);
+  const recent = said.slice(-4);
+  const prev = window.__vcorpFlowTalk;
+  const now = Date.now();
+  if (!prev || prev.text !== text) window.__vcorpFlowTalk = { text, since: now };
+  // 在做着：页面上有转圈/进度条，或者它最后说的是"在生成、多少%、快好了"
+  const busy = [...document.querySelectorAll('main [role="progressbar"], main mat-spinner, main .mat-mdc-progress-spinner')].some(visible)
+    || PROGRESS.test(recent.slice(-2).join(' '));
+  return { text, ask: recent.some((t) => ASKS.test(t)), quietMs: now - window.__vcorpFlowTalk.since, busy };
+}
 const refusal = () => {
   const tail = (document.querySelector('main')?.innerText || '').slice(-2000);
   return tail.match(REFUSAL)?.[0] || null;
@@ -202,7 +275,7 @@ const ACTIONS = {
   // 只描述元素本身（标签、role、aria-label、开头一段文字），不读别的页面内容。
   'flow.blocker': (p) => {
     const name = String(p.name || '');
-    if (!/^[a-z-]{1,24}$/.test(name)) throw err('BAD_PARAMS', 'flow.blocker 要 name（被挡住的那个标记）');
+    if (!/^[a-z0-9-]{1,24}$/.test(name)) throw err('BAD_PARAMS', 'flow.blocker 要 name（被挡住的那个标记）');
     const el = document.querySelector(`[${ATTR}="${name}"]`);
     mark('dismiss', null);
     mark('backdrop', null);
@@ -295,9 +368,11 @@ const ACTIONS = {
       return { done: false, failed: oops[oops.length - 1].slice(0, 120), failures: oops.length, retry: mark('retry', byName('Try again')) };
     }
     if (!p.approved && mark('approve', approveEl())) return { done: false, approval: true };
+    const q = question();
+    if (q) return { done: false, question: q.text, options: q.options };
     const why = refusal();
     if (why) return { done: false, refusal: why };
-    return { done: false, ...(poster ? { poster: true } : {}) };
+    return { done: false, ...(poster ? { poster: true } : {}), talk: talk(p.sent) };
   },
 
   // 用 Flow 自己的下载拿结果（视频的地址页面 fetch 不到：它跳到别的域名）。arm:true 开始等；每次调用

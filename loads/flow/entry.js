@@ -7,6 +7,8 @@
 //   2. 提交前记一条基线：页面上此刻已经有哪些图片、视频；
 //   3. 认结果：基线之后页面上新出现的、够大的、已经加载好的图片/视频，就是这次生成的东西；
 //   4. 交字节：用页面自己的 fetch（带这个页面的登录）取它正在显示的那个地址，分段交给服务器的 pull 槽。
+//      视频的地址会跳到别的域名，页面 fetch 不到：改走 Flow 自己的「Download media」，留下它生成的文件
+//      （flow.download），同样分段交出。
 // 认结果不看 Flow 的接口名（as29s 之类）、不看组件名、不看链接长什么样：Flow 改了接口、换了 CDN，
 // 只要它还把结果显示出来，这里就认得出、取得到。生成扣的是这个浏览器里登录的 Google 账号自己的 Flow 额度。
 //
@@ -112,6 +114,29 @@ function hover(el) {
   }
 }
 
+// Flow 自己的「Download media」：它把文件取成一个 Blob，createObjectURL 之后点一个带 download 的 <a>，
+// 随即 revoke。准备好以后（window.__vcorpFlowDl）留下那个 Blob，并拦下那次点击，不往用户磁盘存文件
+function hookDownloads() {
+  if (window.__vcorpFlowDlHooked) return;
+  window.__vcorpFlowDlHooked = true;
+  const create = URL.createObjectURL;
+  URL.createObjectURL = function (obj) {
+    const url = create.call(URL, obj);
+    const dl = window.__vcorpFlowDl;
+    if (dl && !dl.blob && obj instanceof Blob && obj.size > 0 && (!obj.type || obj.type.startsWith(`${dl.kind}/`))) {
+      dl.blob = obj;
+      dl.url = url;
+    }
+    return url;
+  };
+  const click = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () {
+    const dl = window.__vcorpFlowDl;
+    if (dl && dl.url && this.href === dl.url) { dl.name = String(this.download || '').slice(0, 120); return; }
+    return click.call(this);
+  };
+}
+
 const ingredients = () => [...document.querySelectorAll('img[alt="Ingredient image"]')]
   .map((i) => keyOf(srcOf(i))).filter(Boolean);
 const overlay = () => document.querySelector('.cdk-overlay-container');
@@ -138,9 +163,12 @@ const ACTIONS = {
       'close-account': mark('close-account', byName('Close account panel')),
       'uploads-tab': mark('uploads-tab', ov ? byText('Uploads', ov) : null),
       approve: mark('approve', approveEl()),
+      back: mark('back', byName('Back button to go to previous page')),
     };
     return {
       url: location.origin + location.pathname,
+      // 单个镜头的编辑页（点开结果后到这里）：它也有提示词框，但在那儿提交是改这个镜头，下一次生成要先退回项目
+      editing: /\/edit\//.test(location.pathname),
       // 只说登没登录，不把账号邮箱交出去
       loggedIn: !!document.querySelector('[aria-label^="Google Account:"]'),
       project,
@@ -176,7 +204,23 @@ const ACTIONS = {
     const r = el.getBoundingClientRect();
     const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
     if (!top || top === el || el.contains(top)) return { blocked: false };
-    const host = top.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], .cdk-overlay-pane') || top;
+    const pop = top.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], .cdk-overlay-pane, .cdk-overlay-container');
+    const host = pop || top;
+    // 不是弹窗：盖住它的是页面本身的内容（比如窄窗口里面板叠到了网格下面，或按钮在可视区外）。
+    // 按 Escape 没用；滚到它那儿，报几何信息，让云端换个办法
+    let floating = false;
+    for (let n = top; n && n !== document.body; n = n.parentElement) {
+      const cs = getComputedStyle(n);
+      if ((cs.position === 'fixed' || cs.position === 'sticky') || (cs.position === 'absolute' && cs.zIndex !== 'auto' && Number(cs.zIndex) > 0)) { floating = true; break; }
+    }
+    if (!pop && !floating) {
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      const q = el.getBoundingClientRect();
+      return { blocked: true, layout: true,
+        by: { tag: top.tagName.toLowerCase(), role: top.getAttribute('role') || '', label: label(top).slice(0, 60), cls: [...top.classList].slice(0, 3).join(' ').slice(0, 80), text: '' },
+        target: [r.left, r.top, r.width, r.height].map(Math.round), after: [q.left, q.top, q.width, q.height].map(Math.round),
+        viewport: [innerWidth, innerHeight], hidden: document.visibilityState !== 'visible' };
+    }
     const desc = {
       tag: host.tagName.toLowerCase(),
       role: host.getAttribute('role') || '',
@@ -207,6 +251,7 @@ const ACTIONS = {
     window.__vcorpFlowBase = { t: Date.now(), keys: [...keys] };
     window.__vcorpFlowHit = null;
     window.__vcorpFlowBlob = null;
+    window.__vcorpFlowDl = null;
     return { known: keys.size };
   },
 
@@ -224,6 +269,8 @@ const ACTIONS = {
     if (hit && hit.key === base.last) {
       window.__vcorpFlowHit = { key: hit.key, src: hit.src, kind };
       window.__vcorpFlowBlob = null;
+      // 云端点它就打开这个镜头的编辑页，那里有 Flow 自己的下载
+      mark('result', hit.el);
       return { done: true, kind, key: hit.key, url: hit.src, width: hit.w || null, height: hit.h || null, fresh: true };
     }
     base.last = hit?.key || '';
@@ -241,6 +288,30 @@ const ACTIONS = {
     const why = refusal();
     if (why) return { done: false, refusal: why };
     return { done: false, ...(poster ? { poster: true } : {}) };
+  },
+
+  // 用 Flow 自己的下载拿结果（视频的地址页面 fetch 不到：它跳到别的域名）。arm:true 开始等；每次调用
+  // 标出编辑页的 download-media 按钮和菜单里 quality（默认 720p）那一项，云端去点；Flow 生成的文件
+  // 一到就留给 flow.fetch，got:true。这里不点任何东西。
+  'flow.download': (p) => {
+    const hit = window.__vcorpFlowHit;
+    if (!hit || hit.key !== String(p.key || '')) throw err('NO_RESULT', '先用 flow.result 认出结果，再按它给的 key 下载');
+    hookDownloads();
+    let dl = window.__vcorpFlowDl;
+    if (p.arm || !dl || dl.key !== hit.key) dl = window.__vcorpFlowDl = { key: hit.key, kind: hit.kind, blob: null, url: '', name: '' };
+    if (dl.blob) {
+      window.__vcorpFlowBlob = { key: hit.key, blob: dl.blob };
+      return { got: true, size: dl.blob.size, type: dl.blob.type || '', name: dl.name };
+    }
+    const quality = String(p.quality || '720p').slice(0, 20);
+    const ov = overlay();
+    const opt = ov ? [...ov.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="option"], button')]
+      .find((b) => visible(b) && !disabled(b) && (b.innerText || '').includes(quality)) : null;
+    return {
+      got: false,
+      editor: mark('download-media', byName('Download media')),
+      menu: mark('download-option', opt || null),
+    };
   },
 
   // 交出 flow.result 认出的那个媒体的字节：用页面自己的 fetch 取它正在显示的地址（带这个页面的

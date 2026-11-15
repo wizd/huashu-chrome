@@ -3,7 +3,7 @@
 
 (() => {
   // <define:__LOAD_ACTIONS__>
-  var define_LOAD_ACTIONS_default = ["flow.state", "flow.option", "flow.blocker", "flow.baseline", "flow.result", "flow.fetch"];
+  var define_LOAD_ACTIONS_default = ["flow.state", "flow.option", "flow.blocker", "flow.baseline", "flow.result", "flow.download", "flow.fetch"];
 
   // loads/flow/entry.js
   var ALLOWED = new Set(define_LOAD_ACTIONS_default);
@@ -94,6 +94,29 @@
       }
     }
   }
+  function hookDownloads() {
+    if (window.__vcorpFlowDlHooked) return;
+    window.__vcorpFlowDlHooked = true;
+    const create = URL.createObjectURL;
+    URL.createObjectURL = function(obj) {
+      const url = create.call(URL, obj);
+      const dl = window.__vcorpFlowDl;
+      if (dl && !dl.blob && obj instanceof Blob && obj.size > 0 && (!obj.type || obj.type.startsWith(`${dl.kind}/`))) {
+        dl.blob = obj;
+        dl.url = url;
+      }
+      return url;
+    };
+    const click = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function() {
+      const dl = window.__vcorpFlowDl;
+      if (dl && dl.url && this.href === dl.url) {
+        dl.name = String(this.download || "").slice(0, 120);
+        return;
+      }
+      return click.call(this);
+    };
+  }
   var ingredients = () => [...document.querySelectorAll('img[alt="Ingredient image"]')].map((i) => keyOf(srcOf(i))).filter(Boolean);
   var overlay = () => document.querySelector(".cdk-overlay-container");
   var refusal = () => {
@@ -115,10 +138,13 @@
         "new-project": mark("new-project", byName("New project")),
         "close-account": mark("close-account", byName("Close account panel")),
         "uploads-tab": mark("uploads-tab", ov ? byText("Uploads", ov) : null),
-        approve: mark("approve", approveEl())
+        approve: mark("approve", approveEl()),
+        back: mark("back", byName("Back button to go to previous page"))
       };
       return {
         url: location.origin + location.pathname,
+        // 单个镜头的编辑页（点开结果后到这里）：它也有提示词框，但在那儿提交是改这个镜头，下一次生成要先退回项目
+        editing: /\/edit\//.test(location.pathname),
         // 只说登没登录，不把账号邮箱交出去
         loggedIn: !!document.querySelector('[aria-label^="Google Account:"]'),
         project,
@@ -152,7 +178,29 @@
       const r = el.getBoundingClientRect();
       const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
       if (!top || top === el || el.contains(top)) return { blocked: false };
-      const host = top.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], .cdk-overlay-pane') || top;
+      const pop = top.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], .cdk-overlay-pane, .cdk-overlay-container');
+      const host = pop || top;
+      let floating = false;
+      for (let n = top; n && n !== document.body; n = n.parentElement) {
+        const cs = getComputedStyle(n);
+        if (cs.position === "fixed" || cs.position === "sticky" || cs.position === "absolute" && cs.zIndex !== "auto" && Number(cs.zIndex) > 0) {
+          floating = true;
+          break;
+        }
+      }
+      if (!pop && !floating) {
+        el.scrollIntoView({ block: "center", inline: "center" });
+        const q = el.getBoundingClientRect();
+        return {
+          blocked: true,
+          layout: true,
+          by: { tag: top.tagName.toLowerCase(), role: top.getAttribute("role") || "", label: label(top).slice(0, 60), cls: [...top.classList].slice(0, 3).join(" ").slice(0, 80), text: "" },
+          target: [r.left, r.top, r.width, r.height].map(Math.round),
+          after: [q.left, q.top, q.width, q.height].map(Math.round),
+          viewport: [innerWidth, innerHeight],
+          hidden: document.visibilityState !== "visible"
+        };
+      }
       const desc = {
         tag: host.tagName.toLowerCase(),
         role: host.getAttribute("role") || "",
@@ -184,6 +232,7 @@
       window.__vcorpFlowBase = { t: Date.now(), keys: [...keys] };
       window.__vcorpFlowHit = null;
       window.__vcorpFlowBlob = null;
+      window.__vcorpFlowDl = null;
       return { known: keys.size };
     },
     // 看一眼结果：基线之后新出现的、够大的、加载好的图片（kind=video 时是视频），连着两次调用看到同一个才算。
@@ -200,6 +249,7 @@
       if (hit && hit.key === base.last) {
         window.__vcorpFlowHit = { key: hit.key, src: hit.src, kind };
         window.__vcorpFlowBlob = null;
+        mark("result", hit.el);
         return { done: true, kind, key: hit.key, url: hit.src, width: hit.w || null, height: hit.h || null, fresh: true };
       }
       base.last = hit?.key || "";
@@ -219,6 +269,28 @@
       const why = refusal();
       if (why) return { done: false, refusal: why };
       return { done: false, ...poster ? { poster: true } : {} };
+    },
+    // 用 Flow 自己的下载拿结果（视频的地址页面 fetch 不到：它跳到别的域名）。arm:true 开始等；每次调用
+    // 标出编辑页的 download-media 按钮和菜单里 quality（默认 720p）那一项，云端去点；Flow 生成的文件
+    // 一到就留给 flow.fetch，got:true。这里不点任何东西。
+    "flow.download": (p) => {
+      const hit = window.__vcorpFlowHit;
+      if (!hit || hit.key !== String(p.key || "")) throw err("NO_RESULT", "\u5148\u7528 flow.result \u8BA4\u51FA\u7ED3\u679C\uFF0C\u518D\u6309\u5B83\u7ED9\u7684 key \u4E0B\u8F7D");
+      hookDownloads();
+      let dl = window.__vcorpFlowDl;
+      if (p.arm || !dl || dl.key !== hit.key) dl = window.__vcorpFlowDl = { key: hit.key, kind: hit.kind, blob: null, url: "", name: "" };
+      if (dl.blob) {
+        window.__vcorpFlowBlob = { key: hit.key, blob: dl.blob };
+        return { got: true, size: dl.blob.size, type: dl.blob.type || "", name: dl.name };
+      }
+      const quality = String(p.quality || "720p").slice(0, 20);
+      const ov = overlay();
+      const opt = ov ? [...ov.querySelectorAll('[role="menuitem"], [role="menuitemradio"], [role="option"], button')].find((b) => visible(b) && !disabled(b) && (b.innerText || "").includes(quality)) : null;
+      return {
+        got: false,
+        editor: mark("download-media", byName("Download media")),
+        menu: mark("download-option", opt || null)
+      };
     },
     // 交出 flow.result 认出的那个媒体的字节：用页面自己的 fetch 取它正在显示的地址（带这个页面的
     // 登录，blob: 地址也行），从 offset 起交一段（≤8MB），云端按 size 接着要下一段。
@@ -257,7 +329,7 @@
     }
   };
   (window.__vcorpLoads ||= {}).flow = {
-    version: "1.1.0+c1a220",
+    version: "1.2.0+b1ebd9",
     async ready() {
       if (location.hostname !== "flow.google.com") return { ok: false, reason: "\u4E0D\u5728 flow.google.com \u4E0A" };
       return { ok: true };

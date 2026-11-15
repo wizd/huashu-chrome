@@ -3,6 +3,7 @@
 // 老客户端（Cherry Studio、NextChat、new-api 渠道……）原来指向 flow2api，改个 base URL 就能接过来：
 //   GET  /v1/models                                   OpenAI 模型列表（flow2api 同名）
 //   POST /v1/chat/completions                         stream 走 SSE；进度放 reasoning_content，结果放 content
+//   GET  /v1/media?url=<flow-content 签名 URL>         取结果字节（先给本机已下好的文件，没有再代拉）
 //   GET  /v1beta/models[/{model}]                     Gemini 模型列表
 //   POST /v1beta/models/{model}:generateContent       Gemini；图片回 inlineData，视频回 fileData
 //   POST /v1beta/models/{model}:streamGenerateContent ?alt=sse 走 SSE，否则回 JSON 数组
@@ -140,7 +141,11 @@ function fromGemini(body) {
 
 // ---------- 主体 ----------
 
-export function createCompat({ submit, cancel, readJson, json, log = () => {} }) {
+const MEDIA_MAX = 200 * 1024 * 1024;
+const mimeOf = (f) => ({ '.png': 'image/png', '.webp': 'image/webp', '.mp4': 'video/mp4', '.webm': 'video/webm' })[path.extname(f).toLowerCase()] || 'image/jpeg';
+
+// findMedia(mediaId) → 本机已下好的文件路径或 null（网关在任务目录里找）
+export function createCompat({ submit, cancel, readJson, json, findMedia = () => null, log = () => {} }) {
   // 请求 → 任务。返回 {job, spec, tmp}
   async function startJob(modelName, norm) {
     const spec = parseModel(modelName);
@@ -148,7 +153,8 @@ export function createCompat({ submit, cancel, readJson, json, log = () => {} })
     if (!norm.prompt) throw Object.assign(new Error('提示词为空'), { status: 400, code: 'BAD_REQUEST' });
     if (norm.size && !/^1k$/i.test(norm.size)) throw unsupported(`imageSize ${norm.size}：2K/4K 放大还没接上`);
     if (spec.needsImages && !norm.images.length) throw Object.assign(new Error(`${modelName} 需要至少一张输入图`), { status: 400, code: 'BAD_REQUEST' });
-    if (norm.images.length > 3) throw Object.assign(new Error('最多 3 张输入图'), { status: 400, code: 'BAD_REQUEST' });
+    const maxImages = spec.kind === 'image' ? 4 : 3;
+    if (norm.images.length > maxImages) throw Object.assign(new Error(`最多 ${maxImages} 张输入图`), { status: 400, code: 'BAD_REQUEST' });
     const tmp = norm.images.length ? fs.mkdtempSync(path.join(os.tmpdir(), 'vc-gw-in-')) : null;
     try {
       const images = [];
@@ -259,11 +265,39 @@ export function createCompat({ submit, cancel, readJson, json, log = () => {} })
   });
 
   // 返回 true 表示处理了
+  // GET /v1/media?url=<flow-content 签名 URL>：flow2api 同名接口。调用方（如 opus-video-maker）只认 base URL
+  // 同源的下载，不直接拉 Google 的链接。先找本机已下好的文件，找不到再由这里去拉签名 URL。
+  async function media(res, raw) {
+    let u;
+    try { u = new URL(String(raw || '')); } catch { u = null; }
+    const m = u && u.protocol === 'https:' && u.hostname === 'flow-content.google' && /^\/(image|video)\/([0-9a-f-]{36})$/.exec(u.pathname);
+    if (!m) throw Object.assign(new Error('url 只接受 https://flow-content.google/image|video/{mediaId} 的签名链接'), { status: 400, code: 'UNSUPPORTED_MEDIA' });
+    const local = findMedia(m[2]);
+    if (local) {
+      res.writeHead(200, { 'content-type': mimeOf(local), 'content-length': fs.statSync(local).size, 'cache-control': 'no-store' });
+      fs.createReadStream(local).pipe(res);
+      return;
+    }
+    let r;
+    try { r = await fetch(u, { redirect: 'follow', signal: AbortSignal.timeout(120000) }); } catch (e) {
+      throw Object.assign(new Error(`下载媒体失败：${e.message}`), { status: 502, code: 'MEDIA_DOWNLOAD_FAILED' });
+    }
+    if (!r.ok) throw Object.assign(new Error(`下载媒体失败：HTTP ${r.status}（签名约 6 小时过期）`), { status: r.status === 403 || r.status === 404 ? 404 : 502, code: 'MEDIA_DOWNLOAD_FAILED' });
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (!buf.length || buf.length > MEDIA_MAX) throw Object.assign(new Error('媒体为空或超过 200MB'), { status: 502, code: 'MEDIA_DOWNLOAD_FAILED' });
+    res.writeHead(200, { 'content-type': r.headers.get('content-type') || (m[1] === 'video' ? 'video/mp4' : 'image/jpeg'), 'content-length': buf.length, 'cache-control': 'no-store' });
+    res.end(buf);
+  }
+
   async function handle(req, res, url, parts) {
     const p = parts[0] === 'v1beta' ? parts.slice(1) : parts[0] === 'models' ? parts : parts[0] === 'v1' ? parts.slice(1) : null;
     if (!p) return false;
     const isV1 = parts[0] === 'v1';
 
+    if (isV1 && p[0] === 'media' && p.length === 1 && req.method === 'GET') {
+      await media(res, url.searchParams.get('url'));
+      return true;
+    }
     if (isV1 && p[0] === 'models' && req.method === 'GET') {
       if (p.length === 1) return json(res, 200, { object: 'list', data: listModels().map((m) => ({ id: m.id, object: 'model', created: 0, owned_by: 'flow-browser', kind: m.kind })) }), true;
       if (p.length === 2) {

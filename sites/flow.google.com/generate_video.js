@@ -1,4 +1,4 @@
-// @doc 在 Flow 项目里生一段视频并存到本地。args: prompt(必填), model(默认 'Omni 1.2 Flash'), seconds(默认 3), resolution(默认 '360p'), aspect(默认 '16:9'), images(本机图片路径数组, 可选), mode('frames'=首帧/首尾帧 | 'reference'=参考素材, 缺省按张数), project(可选, 缺省进最近的项目), outDir(本机调用必填；HTTP 网关自动给), timeoutMs(默认 600000)。Flow 的 agent 会弹「花 N credits？」确认，本函数点 Always approve in project。读 as29s 里的 flow-content.google/video 签名 URL，Node 端下载。返回 {mediaId, sessionId, projectId, file, bytes, creditsLeft, secs}。
+// @doc 在 Flow 项目里生一段视频并存到本地。args: prompt(必填), model(默认 'Omni 1.2 Flash'), seconds(默认 3), resolution(默认 '720p'，'360p' 最省 credits), aspect(默认 '16:9'), images(本机图片路径数组, 可选), mode('frames'=首帧/首尾帧 | 'reference'=参考素材, 缺省按张数), project(可选, 缺省进最近的项目), outDir(本机调用必填；HTTP 网关自动给), timeoutMs(默认 600000)。Flow 的 agent 会弹「花 N credits？」确认，本函数点 Always approve in project。读 as29s 里的 flow-content.google/video 签名 URL，Node 端下载。返回 {mediaId, sessionId, projectId, file, bytes, creditsLeft, secs}。
 // @args {"prompt":"a paper boat floating on a calm pond","outDir":"D:/out"}
 // @saved 2026-11-14
 // @capability video.generate
@@ -25,7 +25,7 @@ export default async function ({ page, args = {}, log, sleep, expect }) {
   const t0 = Date.now();
   const timeout = args.timeoutMs || 600000;
   const model = args.model || 'Omni 1.2 Flash';
-  const spec = `${args.seconds || 3} seconds, ${args.resolution || (/omni/i.test(model) ? '360p' : '720p')}, ${args.aspect || '16:9'}`;
+  const spec = `${args.seconds || 3} seconds, ${args.resolution || '720p'}, ${args.aspect || '16:9'}`;
 
   // 1. 项目页 + 新会话
   await openProject(page, args.project);

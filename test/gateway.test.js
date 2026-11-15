@@ -194,3 +194,27 @@ test('兼容层用到的每种能力，仓库里都带着出厂站点函数（�
     assert.ok(fn.requires.includes('google-account') && fn.home, `${fn.id} 缺 @requires / @home`);
   }
 });
+
+test('/v1/media：按签名 URL 里的 mediaId 交回本机任务目录里的文件；别的地址 400', async () => {
+  const id = '11111111-2222-3333-4444-555555555555';
+  const d = path.join(process.env.VCORP_CHROME_OUT_DIR, '20990101-media00001');
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, `${id}.jpg`), Buffer.from([0xff, 0xd8, 0xff, 0x00]));
+  const u = encodeURIComponent(`https://flow-content.google/image/${id}?Expires=1&KeyName=k&Signature=s`);
+  const r = await fetch(`${base}/media?url=${u}`, { headers: { authorization: `Bearer ${TOKEN}` } });
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('content-type'), 'image/jpeg');
+  assert.deepEqual([...Buffer.from(await r.arrayBuffer())], [0xff, 0xd8, 0xff, 0x00]);
+  assert.equal((await call(`/media?url=${encodeURIComponent('http://169.254.169.254/latest')}`)).status, 400);
+  assert.equal((await call('/media?url=' + encodeURIComponent('https://evil.example/image/' + id))).status, 400);
+});
+
+test('生图收 4 张参考图，生视频最多 3 张', async () => {
+  const img = { type: 'image_url', image_url: { url: 'ftp://x' } };
+  // 张数先过检查，才会去读图（ftp 读不了 → 400 BAD_IMAGE，而不是张数错）
+  let r = await call('/chat/completions', { method: 'POST', body: { model: 'gemini-3.1-flash-image-square', messages: [{ role: 'user', content: [{ type: 'text', text: 'x' }, img, img, img, img] }] } });
+  assert.equal(r.status, 400);
+  assert.doesNotMatch(r.json.error.message, /最多/);
+  r = await call('/chat/completions', { method: 'POST', body: { model: 'omni-1.1-flash-4s-landscape', messages: [{ role: 'user', content: [{ type: 'text', text: 'x' }, img, img, img, img] }] } });
+  assert.match(r.json.error.message, /最多 3 张/);
+});

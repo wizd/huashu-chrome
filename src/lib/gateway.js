@@ -44,14 +44,19 @@ const KEEP_JOBS = 200;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // API token 和桥的 token 分开：桥的每次启动都轮换，外部程序没法长期持有。
-export function apiToken() {
-  try {
-    const t = JSON.parse(fs.readFileSync(API_FILE, 'utf8')).token;
-    if (typeof t === 'string' && t.length >= 32) return t;
-  } catch { /* 还没有，下面生成 */ }
+function readApiFile() {
+  try { return JSON.parse(fs.readFileSync(API_FILE, 'utf8')) || {}; } catch { return {}; }
+}
+function writeApiFile(obj) {
   ensureHome();
+  fs.writeFileSync(API_FILE, JSON.stringify(obj, null, 2), { mode: 0o600 });
+}
+
+export function apiToken() {
+  const cfg = readApiFile();
+  if (typeof cfg.token === 'string' && cfg.token.length >= 32) return cfg.token;
   const token = newToken();
-  fs.writeFileSync(API_FILE, JSON.stringify({ token }, null, 2), { mode: 0o600 });
+  writeApiFile({ ...cfg, token });
   return token;
 }
 
@@ -313,7 +318,21 @@ export function createGateway({ log = () => {}, touch = () => {}, token = apiTok
 
   // ---------------- HTTP ----------------
 
-  const compat = createCompat({ submit, cancel, readJson, json, log });
+  // mediaId → 某个任务目录里下好的文件。先看内存里的任务，再扫磁盘上的任务目录（桥重启过也找得到）
+  function findMedia(mediaId) {
+    for (const j of jobs.values()) if (j.result?.mediaId === mediaId && j.result.file && fs.existsSync(j.result.file)) return j.result.file;
+    let dirs = [];
+    try { dirs = fs.readdirSync(OUT_DIR).sort().reverse().slice(0, 500); } catch { return null; }
+    for (const d of dirs) {
+      let names = [];
+      try { names = fs.readdirSync(path.join(OUT_DIR, d)); } catch { continue; }
+      const hit = names.find((n) => n.startsWith(`${mediaId}.`));
+      if (hit) return path.join(OUT_DIR, d, hit);
+    }
+    return null;
+  }
+
+  const compat = createCompat({ submit, cancel, readJson, json, findMedia, log });
 
   async function handle(req, res) {
     touch();

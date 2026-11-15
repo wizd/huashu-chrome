@@ -1,0 +1,17 @@
+{
+  "name": "flow",
+  "title": "Google Flow 生图生视频",
+  "description": "在用户自己登录的 Google Flow（flow.google.com）项目页里读状态、标出要点的按钮、读生成结果（as29s 响应里的 flow-content 签名链接）。只读：填写、点击、上传由云端的 fill/click/upload 命令做（它们会自动改用真实事件），这里不代点任何东西。生成用的是用户自己的 Flow 额度。",
+  "version": "1.0.0",
+  "hosts": ["flow.google.com"],
+  "waitFor": "",
+  "netHook": true,
+  "files": ["agent.js"],
+  "limits": { "payloadMax": 4096, "timeoutMs": 60000, "timeoutMaxMs": 90000 },
+  "actions": {
+    "read": ["flow.state", "flow.option", "flow.baseline", "flow.result"],
+    "write": []
+  },
+  "confirm": {},
+  "denied": {}
+}

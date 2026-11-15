@@ -9,7 +9,7 @@
   "files": ["agent.js"],
   "limits": { "payloadMax": 4096, "timeoutMs": 60000, "timeoutMaxMs": 90000 },
   "actions": {
-    "read": ["flow.state", "flow.option", "flow.baseline", "flow.result"],
+    "read": ["flow.state", "flow.option", "flow.blocker", "flow.baseline", "flow.result"],
     "write": []
   },
   "confirm": {},

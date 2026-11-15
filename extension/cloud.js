@@ -20,6 +20,7 @@ import * as policy from './cloud-policy.js';
 import * as folders from './folders.js';
 import { checkDesktop, checkObserved, recordOf, filterWindows, appsToAsk, APPS_MAX } from './desktop-policy.js';
 import { renderEnvelope } from './desktop-render.js';
+import { LOADS } from './loads/index.js';
 import { routeHere, stampFrom, capOf, cleanDevice, describeDevices, browserIdentity, defaultDeviceName, cleanDeviceName } from './device.js';
 
 const CFG = 'cloud';                 // storage.local：配对信息和用户的选择
@@ -258,6 +259,8 @@ export async function connect() {
                 version: chrome.runtime.getManifest().version, name: deviceName(cfg), ...identity(),
                 sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg),
                 folders: mounted,
+                // 带着哪些能力包：服务器据此告诉用户这个浏览器能做什么（比如 flow = 生图生视频）
+                loads: Object.values(LOADS).map((l) => ({ name: l.name, title: l.title })),
                 devices: child ? [{ ...child, parent: cfg.deviceId }] : [],
               }));
             } catch { try { sock.close(); } catch { /* 已经废了 */ } }

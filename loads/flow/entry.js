@@ -131,6 +131,39 @@ const ACTIONS = {
     return { found: !!el, disabled: disabled(el) };
   },
 
+  // 云端点 [data-vcorp-flow="<name>"] 时报「被遮挡」：看是谁盖在它中心点上。盖着的若是对话框、
+  // 菜单或遮罩，顺手把里面的关闭按钮标成 dismiss、遮罩标成 backdrop，云端去点；这里不代点。
+  // 只描述元素本身（标签、role、aria-label、开头一段文字），不读别的页面内容。
+  'flow.blocker': (p) => {
+    const name = String(p.name || '');
+    if (!/^[a-z-]{1,24}$/.test(name)) throw err('BAD_PARAMS', 'flow.blocker 要 name（被挡住的那个标记）');
+    const el = document.querySelector(`[${ATTR}="${name}"]`);
+    mark('dismiss', null);
+    mark('backdrop', null);
+    if (!el) return { blocked: false, missing: true };
+    const r = el.getBoundingClientRect();
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    if (!top || top === el || el.contains(top)) return { blocked: false };
+    const host = top.closest('[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], .cdk-overlay-pane') || top;
+    const desc = {
+      tag: host.tagName.toLowerCase(),
+      role: host.getAttribute('role') || '',
+      label: label(host).slice(0, 60),
+      cls: [...host.classList].slice(0, 3).join(' ').slice(0, 80),
+      text: (host.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 100),
+    };
+    const backdrop = top.classList.contains('cdk-overlay-backdrop') ? top
+      : document.querySelector('.cdk-overlay-backdrop.cdk-overlay-backdrop-showing');
+    mark('backdrop', backdrop && visible(backdrop) ? backdrop : null);
+    const CLOSE = /^(close|dismiss|got it|not now|no thanks|skip|maybe later|关闭|知道了|以后再说)$/i;
+    let dismiss = null;
+    for (const b of host.querySelectorAll('button, [role="button"]')) {
+      if (visible(b) && (CLOSE.test(label(b)) || CLOSE.test((b.innerText || '').trim()))) { dismiss = b; break; }
+    }
+    mark('dismiss', dismiss);
+    return { blocked: true, by: desc, dismiss: !!dismiss, backdrop: !!(backdrop && visible(backdrop)) };
+  },
+
   // 提交之前记一笔：之后读结果只看这一刻以后的响应，也不认这一刻已经有的媒体
   'flow.baseline': () => {
     const ids = new Set(ingredients());

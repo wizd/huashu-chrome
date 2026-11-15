@@ -245,8 +245,8 @@ export const LOADS = {
   "flow": {
     "name": "flow",
     "title": "Google Flow 生图生视频",
-    "description": "在用户自己登录的 Google Flow（flow.google.com）项目页里读状态、标出要点的按钮、读生成结果（as29s 响应里的 flow-content 签名链接）。只读：填写、点击、上传由云端的 fill/click/upload 命令做（它们会自动改用真实事件），这里不代点任何东西。生成用的是用户自己的 Flow 额度。",
-    "version": "1.0.0+a68e8a",
+    "description": "在用户自己登录的 Google Flow（flow.google.com）项目页里读状态、标出要点的按钮、认出生成结果（提交后页面上新出现的图片、视频，不依赖 Flow 的接口名和链接格式），并用页面自己的 fetch 把它的字节交给服务器。只读：填写、点击、上传由云端的 fill/click/upload 命令做（它们会自动改用真实事件），这里不代点任何东西。生成用的是用户自己的 Flow 额度。",
+    "version": "1.1.0+27a655",
     "hosts": [
       "flow.google.com"
     ],
@@ -265,18 +265,24 @@ export const LOADS = {
         "flow.option",
         "flow.blocker",
         "flow.baseline",
-        "flow.result"
+        "flow.result",
+        "flow.fetch"
       ],
       "write": []
     },
     "confirm": {},
-    "netHook": true,
     "api": 1,
     "needs": [
-      "netHook"
+      "binaryOut"
     ],
-    "sha256": "74cfe3dfe02a2f7fe091a952312b36a8aea9179c26357084805b29dc5f9caacb",
-    "bytes": 11546
+    "outputs": {
+      "media": {
+        "sniff": "media",
+        "quota": "media"
+      }
+    },
+    "sha256": "c915835cb758dadac8ac41835ce22c30418f02a1f55921e0ef8dad85893398c5",
+    "bytes": 13377
   },
   "media": {
     "name": "media",

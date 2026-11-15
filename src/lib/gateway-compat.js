@@ -203,7 +203,7 @@ export function createCompat({ submit, cancel, readJson, json, findMedia = () =>
     const { job, spec } = await startJob(model, fromOpenAI(body));
     const id = `chatcmpl-${job.id}`;
     const created = Math.floor(Date.now() / 1000);
-    const extra = (j) => ({ vcorp: { job: j.id, file: fileUrl(j), mediaId: j.result?.mediaId, expiresNote: 'flow-content 签名 URL 约 6 小时有效；长期留存用 file（需 token）' } });
+    const extra = (j) => ({ vcorp: { job: j.id, file: fileUrl(j), mediaId: j.result?.mediaId, expiresNote: 'url 要 Google 登录才能直接下载：用本网关的 /v1/media?url=<url> 或 file 取（都要 token）' } });
 
     if (!body.stream) {
       await follow(job, res);

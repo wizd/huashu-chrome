@@ -2,6 +2,8 @@
 
 2026-11-14 实测（前端 boq_labs-ai-sandbox-frontend_20261111.08_p0）。站点函数：flow.google.com/generate_image、flow.google.com/generate_video（均已跑通，含参考图）。网关的 flow2api 兼容层（OpenAI/Gemini 格式）就是调这两个函数。
 
+2026-11-16 起两个站点函数改用共享的 Flow 驱动 src/lib/flow-driver.js（和 opus-video-maker 云端用的是同一套做法）：只靠 flow 能力包读页面，不再读 as29s 等 RPC；每一眼都读对话（反问选最接近要求的、停住在对话里催、确认点 Always approve、报错点一次 Try again）；视频走 Flow 自己的 Download media。返回的 url 是 https://flow-content.google/{image|video}/{mediaId} 形状，直接下载要登录，用网关的 /v1/media?url= 取。下面关于 RPC 的记录是旧做法，留作参考。
+
 ## 界面
 - 项目页 /project/{projectId} 是对话式 agent：输入框 textbox "What do you want to create?"（ProseMirror），按钮 "Start generation"。
 - 首次点击 Start generation 常只关掉建议浮层、没提交。以"输入框清空"为准（依赖全局设置 Clear prompt on submit 开着），没清空就再点；扩展会升级为真实事件。

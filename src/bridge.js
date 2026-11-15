@@ -6,8 +6,14 @@
 //
 // 安全边界就在 verifyClient：浏览器发起 WS 时强制带 Origin 且不可伪造，
 // 网页的 Origin 是自己的域名，扩展的是 chrome-extension://<id>。只放后者进来。
+//
+// 例外（2026-11-14）：同一个端口上挂了 HTTP 网关（src/lib/gateway.js），把站点函数
+// 开放成本机 API。网关不碰上面的路由逻辑——它自己以一个普通 agent 的身份连回本桥，
+// 走的是和任何 MCP 会话完全一样的那条路。普通 HTTP 请求一律要 API token，带 Origin 的拒。
 import { WebSocketServer } from 'ws';
+import http from 'node:http';
 import fs from 'node:fs';
+import { createGateway } from './lib/gateway.js';
 import { DEFAULT_PORT, writeBridgeInfo, newToken, tokenEquals, audit, ensureHome, ALLOWLIST_FILE, LOCK_FILE, machineId } from './lib/paths.js';
 import { VERSION } from './lib/version.js';
 // 纯字符串判定、不碰 chrome API，所以桥这边直接复用，不再抄一份
@@ -47,7 +53,7 @@ function releaseStartLock() {
 // writeInfo=false 供测试用：不写 bridge.json，否则测试桥的 token 会盖掉
 // 真在跑的那个桥，用户所有 agent 会话当场断连。
 export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo = true, orphanGraceMs = ORPHAN_GRACE_MS,
-  silenceMs = EXT_SILENCE_MS, probeMs = EXT_PROBE_MS, tickMs = 20000 } = {}) {
+  silenceMs = EXT_SILENCE_MS, probeMs = EXT_PROBE_MS, tickMs = 20000, gateway = writeInfo } = {}) {
   ensureHome();
 
   const agents = new Set();      // role=agent 的连接
@@ -121,9 +127,15 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
   let machineCache = null;
   const machine = () => (machineCache ??= machineId());
 
+  // HTTP 网关和 WS 共用端口。测试桥（writeInfo=false）默认不挂：网关会连 bridge.json 里那个真桥
+  const gw = gateway ? createGateway({ log, touch: () => { lastActivity = Date.now(); } }) : null;
+  const server = http.createServer((req, res) => {
+    if (gw) return gw.handle(req, res);
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('vcorp-chrome bridge: HTTP 网关没有开启');
+  });
   const wss = new WebSocketServer({
-    host: '127.0.0.1',
-    port,
+    server,
     verifyClient: (info, done) => {
       const origin = info.req.headers.origin;
       if (origin === undefined) return done(true);              // Node 侧，进握手后验 token
@@ -463,7 +475,7 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
         writeBridgeInfo({ port, token, pid: process.pid, version: VERSION, startedAt: new Date().toISOString() });
         releaseStartLock();
       }
-      log(`桥已启动 ws://127.0.0.1:${port}`);
+      log(`桥已启动 ws://127.0.0.1:${port}${gw ? `，HTTP 网关 http://127.0.0.1:${port}/v1` : ''}`);
       resolve();
     });
   });
@@ -522,7 +534,11 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
   }, tickMs);
   idleTimer.unref();
 
-  return { wss, port, token, ready, close: () => { clearInterval(idleTimer); wss.close(); for (const c of wss.clients) c.terminate(); } };
+  server.listen(port, '127.0.0.1');
+
+  return { wss, server, port, token, ready, close: () => {
+    clearInterval(idleTimer); gw?.close(); wss.close(); for (const c of wss.clients) c.terminate(); server.close();
+  } };
 }
 
 // 审计日志里不留敏感明文：输入的文本可能是密码、验证码

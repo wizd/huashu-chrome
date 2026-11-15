@@ -52,7 +52,13 @@ function dirsFor(domain) {
 
 function meta(src) {
   const get = (k) => new RegExp(`^//\\s*@${k}\\s+(.+)$`, 'm').exec(src)?.[1]?.trim();
-  return { doc: get('doc') || '', args: get('args') || '', saved: get('saved') || '' };
+  // capability / requires / home 给 HTTP 网关用（见 gateway.js）：
+  //   @capability image.generate          这个函数对外提供哪种能力
+  //   @requires google-account            能力成立的前提（逗号分隔），网关逐条核验
+  //   @home https://flow.google.com/      网关为它开工作标签页时先打开哪里
+  const list = (k) => (get(k) || '').split(',').map((s) => s.trim()).filter(Boolean);
+  return { doc: get('doc') || '', args: get('args') || '', saved: get('saved') || '',
+    capabilities: list('capability'), requires: list('requires'), home: get('home') || '' };
 }
 
 function readStats(file) {

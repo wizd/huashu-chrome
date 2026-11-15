@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_PORT, HOME, AUDIT_FILE, LOG_FILE } from './lib/paths.js';
+import { DEFAULT_PORT, HOME, AUDIT_FILE, LOG_FILE, readBridgeInfo } from './lib/paths.js';
 import { VERSION } from './lib/version.js';
 import { compat, compatNote } from '../extension/compat.js';
 
@@ -158,6 +158,28 @@ switch (cmd) {
     break;
   }
 
+  // HTTP 网关的地址和 token。桥要在跑（任一 agent 用过一次、或 bridge --foreground）
+  case 'api': {
+    const { apiToken, API_FILE } = await import('./lib/gateway.js');
+    const info = readBridgeInfo();
+    const base = `http://127.0.0.1:${info?.port || DEFAULT_PORT}/v1`;
+    const token = apiToken();
+    console.log(`地址   ${base}
+token  ${token}
+       （存在 ${API_FILE}，长期有效；删掉这个文件再重启桥就会换一个）
+${info ? '' : '\n⚠️  桥现在没在跑：先 vcorp-chrome bridge，或让任一 agent 用一次浏览器工具。\n'}
+  curl -H "Authorization: Bearer ${token}" ${base}/capabilities
+  curl -H "Authorization: Bearer ${token}" -H "content-type: application/json" \\
+       -d '{"capability":"image.generate","args":{"prompt":"a red apple","aspect":"1:1"}}' ${base}/jobs
+  curl -H "Authorization: Bearer ${token}" "${base}/jobs/<id>?wait=120000"
+
+flow2api 兼容（原来指向 flow2api 的客户端改 base URL + key 即可）：
+  OpenAI   base_url ${base}   key 同上   模型见 ${base}/models（如 gemini-3.1-flash-image-square、veo-3.1-fast-8s-landscape、omni-1.2-flash-i2v-3s-landscape）
+  Gemini   ${base.replace(/\/v1$/, '/v1beta')}/models/<model>:generateContent   x-goog-api-key 或 ?key= 填同一个 token
+  不支持：2K/4K 放大、视频延长（extend）——请求会直接 400`);
+    break;
+  }
+
   default:
     console.log(`vcorp-chrome — 让任何 AI agent 操控你自己的 Chrome
 
@@ -168,6 +190,7 @@ switch (cmd) {
   vcorp-chrome audit [-n 30]  看最近的浏览器操作记录
   vcorp-chrome audit --stats [--days 7]   真实 agent 的用法统计：回合数、哪类调用最多、在哪儿浪费
   vcorp-chrome bridge --foreground   前台跑桥（调试用）
+  vcorp-chrome api            HTTP 网关的地址和 token（把站点函数当 API 调）
   vcorp-chrome install --dry-run     只看会改哪些配置，不写
   vcorp-chrome desktop install|uninstall|status   让云端任务也能操作桌面应用（登记原生消息宿主）
   vcorp-chrome desktop full on|off   完全模式：云端任务能跑命令、读写文件、用全部桌面命令

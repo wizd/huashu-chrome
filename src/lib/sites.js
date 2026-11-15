@@ -61,8 +61,14 @@ function meta(src) {
     capabilities: list('capability'), requires: list('requires'), home: get('home') || '' };
 }
 
+// 出厂函数的战绩记在本机目录，不往 npm 包里写；读写都走这里
+function statsPath(file) {
+  const sf = file.replace(/\.js$/, '.stats.json');
+  return sf.startsWith(SEED_SITES) ? path.join(LOCAL_SITES, path.relative(SEED_SITES, sf)) : sf;
+}
+
 function readStats(file) {
-  try { return JSON.parse(fs.readFileSync(file.replace(/\.js$/, '.stats.json'), 'utf8')); } catch { return {}; }
+  try { return JSON.parse(fs.readFileSync(statsPath(file), 'utf8')); } catch { return {}; }
 }
 
 export function locate(id) {
@@ -113,10 +119,8 @@ export function describeSites(domain) {
 }
 
 export function recordRun(file, ok, error) {
-  const sf = file.replace(/\.js$/, '.stats.json');
-  // 出厂函数的战绩记在本机目录，不往 npm 包里写
-  const target = sf.startsWith(SEED_SITES) ? path.join(LOCAL_SITES, path.relative(SEED_SITES, sf)) : sf;
-  const st = readStats(target.replace(/\.stats\.json$/, '.js'));
+  const target = statsPath(file);
+  const st = readStats(file);
   st.runs = (st.runs || 0) + 1;
   const now = new Date().toISOString();
   if (ok) { st.ok = (st.ok || 0) + 1; st.lastOk = now; st.consecutiveFails = 0; } else {

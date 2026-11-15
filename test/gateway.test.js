@@ -185,3 +185,12 @@ test('Gemini generateContent：任务失败 → Gemini 错误体；输入图的�
   assert.equal((await r.json()).error.status, 'INTERNAL');
   assert.equal(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('vc-gw-in-')).length, before);
 });
+
+test('兼容层用到的每种能力，仓库里都带着出厂站点函数（新用户装上就能用）', () => {
+  const seed = listSites().filter((s) => s.layer === 'seed');
+  for (const cap of new Set(listModels().map((m) => parseModel(m.id).capability))) {
+    const fn = seed.find((s) => s.capabilities.includes(cap));
+    assert.ok(fn, `没有出厂函数提供 ${cap}`);
+    assert.ok(fn.requires.includes('google-account') && fn.home, `${fn.id} 缺 @requires / @home`);
+  }
+});

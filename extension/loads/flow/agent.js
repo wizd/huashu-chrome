@@ -37,6 +37,12 @@
     if (el) el.setAttribute(ATTR, name);
     return !!el;
   }
+  function approveEl() {
+    const el = byText("Always approve in project");
+    if (!el) return null;
+    const ctl = el.closest('[role="radio"], [role="button"], button, [role="menuitem"]');
+    return ctl && disabled(ctl) ? null : el;
+  }
   var disabled = (el) => !!el && (el.disabled || el.getAttribute("aria-disabled") === "true");
   var srcOf = (el) => el.currentSrc || el.src || el.querySelector?.("source[src]")?.src || "";
   function keyOf(src) {
@@ -108,7 +114,7 @@
         "new-project": mark("new-project", byName("New project")),
         "close-account": mark("close-account", byName("Close account panel")),
         "uploads-tab": mark("uploads-tab", ov ? byText("Uploads", ov) : null),
-        approve: mark("approve", byText("Always approve in project"))
+        approve: mark("approve", approveEl())
       };
       return {
         url: location.origin + location.pathname,
@@ -205,7 +211,7 @@
             hover(cover.el);
           }
         }
-        if (mark("approve", byText("Always approve in project"))) return { done: false, approval: true };
+        if (!p.approved && mark("approve", approveEl())) return { done: false, approval: true };
         const why = refusal();
         if (why) return { done: false, refusal: why };
         if (Date.now() >= until) return { done: false, ...poster ? { poster: true } : {} };
@@ -249,7 +255,7 @@
     }
   };
   (window.__vcorpLoads ||= {}).flow = {
-    version: "1.1.0+27a655",
+    version: "1.1.0+ea62f5",
     async ready() {
       if (location.hostname !== "flow.google.com") return { ok: false, reason: "\u4E0D\u5728 flow.google.com \u4E0A" };
       return { ok: true };

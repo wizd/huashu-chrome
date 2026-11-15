@@ -50,6 +50,13 @@ function mark(name, el) {
   return !!el;
 }
 
+// 「Always approve in project」：批准过以后它留在对话记录里，变成灰掉的单选项。只认还能点的那个
+function approveEl() {
+  const el = byText('Always approve in project');
+  if (!el) return null;
+  const ctl = el.closest('[role="radio"], [role="button"], button, [role="menuitem"]');
+  return ctl && disabled(ctl) ? null : el;
+}
 const disabled = (el) => !!el && (el.disabled || el.getAttribute('aria-disabled') === 'true');
 // ---------- 媒体 ----------
 
@@ -128,7 +135,7 @@ const ACTIONS = {
       'new-project': mark('new-project', byName('New project')),
       'close-account': mark('close-account', byName('Close account panel')),
       'uploads-tab': mark('uploads-tab', ov ? byText('Uploads', ov) : null),
-      approve: mark('approve', byText('Always approve in project')),
+      approve: mark('approve', approveEl()),
     };
     return {
       url: location.origin + location.pathname,
@@ -225,7 +232,8 @@ const ACTIONS = {
         const cover = fresh('image', skip, exclude)[0];
         if (cover && cover.key !== poster) { poster = cover.key; hover(cover.el); }
       }
-      if (mark('approve', byText('Always approve in project'))) return { done: false, approval: true };
+      // 已经点过（approved）就不再报：Flow 有时晚一拍才把它灰掉
+      if (!p.approved && mark('approve', approveEl())) return { done: false, approval: true };
       const why = refusal();
       if (why) return { done: false, refusal: why };
       if (Date.now() >= until) return { done: false, ...(poster ? { poster: true } : {}) };

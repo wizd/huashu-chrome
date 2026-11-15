@@ -26,7 +26,7 @@ export function actionKind(def, action) {
 // 宿主接口版本和能认的 needs（build-loads.mjs 里有同样的两份，test/loads.test.js 核对）。
 // 小脑要的宿主能力都在 load.json 里声明，这里和 background.js 只认声明，不认小脑的名字。
 export const HOST_API = 1;
-export const NEEDS = new Set(['netHook', 'early', 'binaryOut']);
+export const NEEDS = new Set(['netHook', 'early', 'binaryOut', 'frames']);
 export const needs = (def, what) => Array.isArray(def.needs) ? def.needs.includes(what) : (what === 'netHook' && !!def.netHook);
 
 // hosts: "task" 的通用小脑不限死网站：任何网页都能装，云端由 cloud.js 按任务批准的网站把关

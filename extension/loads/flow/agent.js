@@ -119,6 +119,8 @@
   }
   var ingredients = () => [...document.querySelectorAll('img[alt="Ingredient image"]')].map((i) => keyOf(srcOf(i))).filter(Boolean);
   var overlay = () => document.querySelector(".cdk-overlay-container");
+  var FAILED = /something went wrong[^\n]{0,80}/gi;
+  var failures = () => (document.querySelector("main")?.innerText || "").match(FAILED) || [];
   var refusal = () => {
     const tail = (document.querySelector("main")?.innerText || "").slice(-2e3);
     return tail.match(REFUSAL)?.[0] || null;
@@ -145,6 +147,8 @@
         url: location.origin + location.pathname,
         // 单个镜头的编辑页（点开结果后到这里）：它也有提示词框，但在那儿提交是改这个镜头，下一次生成要先退回项目
         editing: /\/edit\//.test(location.pathname),
+        // 后台标签页不出帧：Flow 的进场动画停在半路（面板没滑到位、加载页不消失），按钮会被盖住
+        hidden: document.visibilityState !== "visible",
         // 只说登没登录，不把账号邮箱交出去
         loggedIn: !!document.querySelector('[aria-label^="Google Account:"]'),
         project,
@@ -265,6 +269,10 @@
           }
         }
       }
+      const oops = failures();
+      if (oops.length > (Number(p.failures) || 0)) {
+        return { done: false, failed: oops[oops.length - 1].slice(0, 120), failures: oops.length, retry: mark("retry", byName("Try again")) };
+      }
       if (!p.approved && mark("approve", approveEl())) return { done: false, approval: true };
       const why = refusal();
       if (why) return { done: false, refusal: why };
@@ -329,7 +337,7 @@
     }
   };
   (window.__vcorpLoads ||= {}).flow = {
-    version: "1.2.0+b1ebd9",
+    version: "1.2.0+012240",
     async ready() {
       if (location.hostname !== "flow.google.com") return { ok: false, reason: "\u4E0D\u5728 flow.google.com \u4E0A" };
       return { ok: true };

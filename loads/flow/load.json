@@ -5,7 +5,7 @@
   "version": "1.2.0",
   "hosts": ["flow.google.com"],
   "waitFor": "",
-  "needs": ["binaryOut"],
+  "needs": ["binaryOut", "frames"],
   "outputs": { "media": { "sniff": "media", "quota": "media" } },
   "files": ["agent.js"],
   "limits": { "payloadMax": 4096, "timeoutMs": 60000, "timeoutMaxMs": 90000 },

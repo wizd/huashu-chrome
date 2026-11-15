@@ -140,6 +140,10 @@ function hookDownloads() {
 const ingredients = () => [...document.querySelectorAll('img[alt="Ingredient image"]')]
   .map((i) => keyOf(srcOf(i))).filter(Boolean);
 const overlay = () => document.querySelector('.cdk-overlay-container');
+// Flow 自己出错（「Something went wrong. Please try again.」+ Try again 按钮）：不是拒绝，重试一次常常就好。
+// 对话里旧的出错不会消失，所以报的是条数，云端只看新增的
+const FAILED = /something went wrong[^\n]{0,80}/gi;
+const failures = () => ((document.querySelector('main')?.innerText || '').match(FAILED) || []);
 const refusal = () => {
   const tail = (document.querySelector('main')?.innerText || '').slice(-2000);
   return tail.match(REFUSAL)?.[0] || null;
@@ -169,6 +173,8 @@ const ACTIONS = {
       url: location.origin + location.pathname,
       // 单个镜头的编辑页（点开结果后到这里）：它也有提示词框，但在那儿提交是改这个镜头，下一次生成要先退回项目
       editing: /\/edit\//.test(location.pathname),
+      // 后台标签页不出帧：Flow 的进场动画停在半路（面板没滑到位、加载页不消失），按钮会被盖住
+      hidden: document.visibilityState !== 'visible',
       // 只说登没登录，不把账号邮箱交出去
       loggedIn: !!document.querySelector('[aria-label^="Google Account:"]'),
       project,
@@ -283,6 +289,10 @@ const ACTIONS = {
         poster = true;
         if (cover.key !== base.poster) { base.poster = cover.key; hover(cover.el); }
       }
+    }
+    const oops = failures();
+    if (oops.length > (Number(p.failures) || 0)) {
+      return { done: false, failed: oops[oops.length - 1].slice(0, 120), failures: oops.length, retry: mark('retry', byName('Try again')) };
     }
     if (!p.approved && mark('approve', approveEl())) return { done: false, approval: true };
     const why = refusal();

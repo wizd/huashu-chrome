@@ -30,7 +30,7 @@ const CACHE = path.join(ROOT, '.cache', 'loads');
 const NAME_RE = /^[a-z][a-z0-9-]{0,31}$/;
 // 宿主接口版本和能认的 needs：和 extension/load.js 的 HOST_API、NEEDS 保持一致（test/loads.test.js 核对）
 const HOST_API = 1;
-const NEEDS = new Set(['netHook', 'early', 'binaryOut']);
+const NEEDS = new Set(['netHook', 'early', 'binaryOut', 'frames']);
 
 function upstream(name, vendor) {
   if (!/^[0-9a-f]{40}$/.test(vendor.commit || '')) throw new Error(`${name}: vendor.commit 要写完整的 40 位 commit`);

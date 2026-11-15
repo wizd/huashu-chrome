@@ -2093,6 +2093,17 @@ async function ensureLoad(id, def, { force = false } = {}) {
   return { version: def.version, ready, ...(reloaded ? { reloaded: true } : {}) };
 }
 
+// needs: ["frames"] 的小脑：后台标签页不出帧，页面的进场动画停在半路（面板滑一半、加载层不散），
+// 按钮被盖住、提交按钮不响应——前台用户从来见不到的状态。挂着调试会话（焦点模拟）时 Chrome 把它当
+// 可见页渲染，2026-11-15 实测：visibilityState hidden → visible，闲置 5 秒断开后又回 hidden。
+// 所以每次调用续一下会话；云端每一两秒调一次，整个任务期间这一页都在正常渲染。前台页、关了 L2 的不动。
+async function keepFrames(id) {
+  try {
+    if ((await chrome.tabs.get(id)).active || !(await cdp.isEnabled())) return;
+    await cdp.withL2(id, async () => {});
+  } catch { /* 挂不上就照旧：只是回到不出帧的老样子 */ }
+}
+
 const HANDLERS = {
   async snapshot(p, tabId, ctx) {
     const id = await resolveTab(tabId);
@@ -2602,6 +2613,7 @@ const HANDLERS = {
     let result;
     try {
       await ensureLoad(id, def);
+      if (needs(def, 'frames')) await keepFrames(id);
       result = await run();
       // 页面刚好在两步之间刷新了：再装一次，只重试这一回
       if (result?.gone) { await ensureLoad(id, def); result = await run(); }

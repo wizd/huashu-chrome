@@ -1,0 +1,20 @@
+{
+  "name": "capture",
+  "title": "播放录制",
+  "description": "把页面播放器交给 <video> 的音视频字节（MSE）分段交给沙箱合成文件：浏览器能播的就能拿到。不碰站点接口和签名，不读 Cookie；有 DRM 的不录。",
+  "version": "1.0.0",
+  "api": 1,
+  "hosts": "task",
+  "needs": ["early", "binaryOut"],
+  "early": ["early.js"],
+  "outputs": { "media": { "sniff": "media", "quota": "media" } },
+  "waitFor": "",
+  "files": ["agent.js"],
+  "limits": { "payloadMax": 4096, "timeoutMs": 60000, "timeoutMaxMs": 120000 },
+  "actions": {
+    "read": ["capture.status", "capture.start", "capture.seek", "capture.pull", "capture.stop"],
+    "write": []
+  },
+  "confirm": {},
+  "denied": {}
+}

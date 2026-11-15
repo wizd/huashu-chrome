@@ -25,14 +25,14 @@ test('虚拟光标的钩子名两侧一致', () => {
 
 test('光标钩子在遮挡检测之前调用', () => {
   // 顺序是安全约束不是风格：钩子内部会让驾驶舱对落点让路（pointer-events:none
-  // 同步生效）。反过来的话，elementFromPoint 会把我们自己的面板当成遮挡物，
+  // 同步生效）。反过来的话，命中检测会把我们自己的面板当成遮挡物，
   // L2 的真实点击更会直接点进面板里。
-  // 范围限定在 doLocate 里：realClick 在文件更早的位置也有一个
-  // elementFromPoint，那个不归这条约束管
+  // 范围限定在 doLocate 里：realClick 在文件更早的位置也做命中检测，
+  // 那个不归这条约束管
   const fn = content.slice(content.indexOf('async function doLocate'));
   const i = fn.indexOf('window.__hcCursor?.(x, y');
-  const j = fn.indexOf('document.elementFromPoint(x, y)');
-  assert.ok(i > 0 && j > 0 && i < j, 'doLocate 里光标钩子必须在 elementFromPoint 之前');
+  const j = fn.indexOf('occluderAt(el, x, y)');
+  assert.ok(i > 0 && j > 0 && i < j, 'doLocate 里光标钩子必须在遮挡检测之前');
 });
 
 test('ask 协议的四个动词都由 mark.js 接住', () => {
@@ -114,4 +114,21 @@ test('头像资产已内嵌且不走会被 CSP 拦的路', () => {
   // 盯代码不盯注释：createElement('img') / new Image 才是会被 CSP 拦的那条路
   assert.ok(!/createElement\(['"]img['"]\)|new Image\(/.test(mark),
     'mark.js 不许创建 img 元素——严格 CSP 站点 img-src 不带 data: 时会静默烂掉');
+});
+
+test('关标签页前先移出我们的组，否则书签栏留下已关闭的 vcorp 组', () => {
+  // Chrome 把标签组自动存成书签栏上的「已保存的组」。页面被直接 remove，
+  // 组只是变成已关闭、胶囊永远留着；移出组让它空掉，Chrome 才会删掉它。
+  const close = background.slice(background.indexOf("p.action === 'close'"), background.indexOf("p.action === 'close'") + 300);
+  assert.ok(close.includes('closeTab('), 'tabs close 必须走 closeTab');
+  assert.ok(!close.includes('chrome.tabs.remove('), 'tabs close 不许直接 chrome.tabs.remove');
+  const fn = background.slice(background.indexOf('async function closeTab'), background.indexOf('async function closeTab') + 200);
+  assert.ok(fn.indexOf('ungroupIfOurs') > -1 && fn.indexOf('ungroupIfOurs') < fn.indexOf('chrome.tabs.remove'), 'closeTab 必须先移出组再关');
+});
+
+test('认组靠标题指纹，重启后恢复的旧组也认', () => {
+  // 只认记下的 groupId 的话，重启后恢复的 vcorp 组会被当成用户的组永远不摘
+  const fn = background.slice(background.indexOf('async function ourGroupOf'), background.indexOf('async function ourGroupOf') + 400);
+  assert.ok(fn.includes('g.title === GROUP_TITLE'), 'ourGroupOf 必须按标题认组');
+  assert.ok(background.includes('chrome.tabGroups.query({ windowId: tab.windowId, title: GROUP_TITLE'), '新建前要先找现成的同色组');
 });

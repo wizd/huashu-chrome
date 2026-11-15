@@ -9,6 +9,7 @@
 // 网页标题、client 名）一律 textContent——它们都可能源自被注入的页面。
 
 import { compat, compatNote, cmpVersion } from './compat.js';
+import { setWrite } from './folders.js';
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -19,9 +20,17 @@ const el = (tag, cls, text) => {
 };
 const send = (msg) => chrome.runtime.sendMessage(msg).catch(() => null);
 const MINE = chrome.runtime.getManifest().version;
+// 扩展在 chrome://extensions 上被重新加载之后，已经打开的侧栏还是旧文档，
+// 版本号会停在重载前（控制台里的 service worker 已经是新的）。上下文一失效就刷新。
+setInterval(() => {
+  try { if (!chrome.runtime?.id) location.reload(); } catch { location.reload(); }
+}, 1000);
 const ACT_MS = 5000;   // 「正在做」只亮 5 秒——停手了还亮着就是在骗人
 
-$('ver').textContent = `v${MINE}`;
+$('connJump').onclick = (e) => {
+  e.preventDefault();
+  $('conn').scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
 
 const relTime = (t) => {
   const s = Math.max(0, Math.round((Date.now() - t) / 1000));
@@ -116,7 +125,7 @@ async function renderSessions() {
   box.textContent = '';
   const rows = r?.sessions || [];
   if (!rows.length) {
-    box.appendChild(el('div', 'empty', '还没有 agent 在线。在 Claude Code、Codex 这类工具里让它用 huashu-chrome 做件事，这里就会出现。'));
+    box.appendChild(el('div', 'empty', '还没有 agent 在线。在 Claude Code、Codex 这类工具里让它用 vcorp-chrome 做件事，这里就会出现。'));
     return rows;
   }
   for (const s of rows) {
@@ -167,24 +176,31 @@ async function renderConn(sessionCount) {
     const level = compat({ ext: MINE, cli: r.bridge });
     const note = compatNote(level, { ext: MINE, cli: r.bridge });
     const needCli = level === 'cli-old' || (level === 'protocol' && cmpVersion(MINE, r.bridge) > 0);
-    box.appendChild(light(note ? 'warn' : 'ok', `本地端 v${r.bridge || '?'}`, note || '已连接', needCli ? 'npx -y huashu-chrome@latest install' : null));
+    box.appendChild(light(note ? 'warn' : 'ok', `本地端 v${r.bridge || '?'}`, note || '已连接', needCli ? 'npx -y vcorp-chrome@latest install' : null));
     pill = note ? ['warn', '已连接（有更新）'] : ['ok', '已连接'];
   } else {
     const never = !r.lastRx;
     box.appendChild(light('bad', '本地端未连接',
       never ? '还没装本地端，或者装了但还没有 agent 用过它（本地端由 agent 第一次调用时拉起）。在终端里跑这一行，它会自动配好你电脑上的 agent：'
         : `上次收到心跳是 ${relTime(r.lastRx)}。先点下面的「重连」；不行再在终端跑：`,
-      never ? 'npx -y huashu-chrome@latest install' : 'npx huashu-chrome doctor'));
+      never ? 'npx -y vcorp-chrome@latest install' : 'npx vcorp-chrome doctor'));
     if (r.offscreenError) box.appendChild(light('warn', '后台文档建不起来', r.offscreenError));
   }
   $('reconnRow').hidden = !!r.connected;
 
+  // 没连着桥时，名单里只剩云端任务——本机 agent 不是「没有」，是看不见，话要说准
+  const localUnknown = '本机 agent 要等本地端连上才看得到';
   box.appendChild(sessionCount
-    ? light('ok', `${sessionCount} 个 agent 在线`, '每个 agent 用自己的颜色，页面描边和标签组同色')
-    : light('', '暂无 agent 在线', '在你的 agent 里说一句「用 huashu-chrome 打开……」就会出现在这里'));
+    ? light('ok', `${sessionCount} 个 agent 在线`, r.connected ? '每个 agent 用自己的颜色，页面描边和标签组同色' : `这里只算云端任务；${localUnknown}`)
+    : r.connected
+      ? light('', '暂无 agent 在线', '在你的 agent 里说一句「用 vcorp-chrome 打开……」就会出现在这里')
+      : light('', '本机 agent 状态未知', localUnknown));
 
   $('pilldot').className = `dot ${pill[0]}`;
   $('pilltxt').textContent = pill[1];
+  // 断了或有更新时，跳转链接改成「去修复」，修法在下面的连接区
+  $('connJump').textContent = pill[0] === 'ok' ? '连接详情' : '去修复';
+  $('connJump').className = `jump${pill[0] === 'bad' ? ' bad' : ''}`;
 }
 
 async function refreshAll() {
@@ -202,6 +218,11 @@ $('reconn').onclick = async () => {
 };
 
 // ---------- 设置 ----------
+
+$('guide').onclick = (e) => {
+  e.preventDefault();
+  chrome.tabs.create({ url: chrome.runtime.getURL('welcome.html') });
+};
 
 chrome.storage.local.get('l2Disabled', ({ l2Disabled }) => { $('l2').checked = !l2Disabled; });
 
@@ -222,9 +243,302 @@ $('mark').onchange = async (e) => {
   refreshAll();
 };
 
+// ---------- 云端发布 ----------
+//
+// 状态全在 background（cloud.js），这里只发操作、只渲染。服务器给的文字
+// （账号名、任务标题）一律 textContent——服务器被攻破时它们就是攻击者写的。
+
+const cloudCall = async (op, extra = {}) => {
+  const r = await send({ __hcCloud: op, ...extra });
+  $('cloudErr').hidden = !!r?.ok;
+  if (!r?.ok) $('cloudErr').textContent = r?.error || '扩展没有响应，稍后再试';
+  if (r?.state) renderCloud(r.state);
+  return r;
+};
+
+const CLOUD_STATE = {
+  online: ['ok', '已连接'],
+  connecting: ['warn', '连接中'],
+  paused: ['warn', '已暂停'],
+  error: ['bad', '连接失败'],
+  off: ['', '未连接'],
+};
+const LOG_TEXT = {
+  paired: '配对', unpaired: '解除配对', renamed: '改名为', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
+  sites_on: '允许了新网站', sites_off: '拒绝了新网站', sites_timeout: '新网站没回应',
+  folders_on: '允许了本地文件夹', folders_auto: '自动放行本地文件夹', folders_off: '拒绝了本地文件夹', folders_timeout: '本地文件夹没回应',
+  apps_on: '允许了桌面应用', apps_off: '拒绝了桌面应用', apps_timeout: '桌面应用没回应',
+  desk_confirm: '同意了桌面动作', desk_declined: '没同意桌面动作', desktop_on: '启用桌面能力', desktop_off: '停用桌面能力',
+  desktop_reload: '为启用桌面能力重载扩展', desktop_fail: '桌面能力没启用成功：',
+  site_on: '网站加入允许名单', site_off: '从允许名单移除网站', auto_on: '打开自动允许', auto_off: '关闭自动允许',
+  notes_saved: '记下网站经验', notes_deleted: '删除网站经验',
+  eval_on: '允许云端执行脚本', eval_off: '禁止云端执行脚本', confirm_on: '打开对外动作免确认', confirm_off: '关闭对外动作免确认', ask_auto: '免确认放行', confirm_task: '本任务内都同意',
+  paused: '暂停', resumed: '恢复',
+};
+
+const PERM_WORD = { granted: '可读', prompt: '需要恢复访问', denied: '已拒绝', unknown: '打不开' };
+
+function renderFolders(s) {
+  const box = $('folderList');
+  if (!box) return;
+  box.textContent = '';
+  const rows = s.folders || [];
+  if (!rows.length) {
+    box.appendChild(el('div', 'empty', '还没有。添加后，任务要读的时候会再问你一次。'));
+    return;
+  }
+  for (const f of rows) {
+    const row = el('div', 'sw-row');
+    const text = el('span', 'txt');
+    const word = f.permission === 'granted' && f.write ? '可读写' : PERM_WORD[f.permission] || PERM_WORD.unknown;
+    text.append(el('div', null, f.name), el('div', 'sub', word));
+    row.appendChild(text);
+    if (f.permission !== 'granted') {
+      const restore = el('button', 'btn', '恢复访问');
+      restore.onclick = () => cloudCall('openMount', { folderId: f.id });
+      row.appendChild(restore);
+    } else {
+      // requestPermission 要用户手势，侧栏是扩展页面，这一下点击就够
+      const flip = el('button', 'btn ghost', f.write ? '改为只读' : '允许写入');
+      flip.title = f.write ? '任务不能再往里存文件' : '让任务可以把做好的文件（下载的视频、报告）存进来';
+      flip.onclick = async () => {
+        flip.disabled = true;
+        try {
+          const state = await setWrite(f.id, !f.write);
+          if (state !== 'granted') alert('没有允许写入，这个文件夹仍是只读。');
+        } catch (e) { alert(e.message || String(e)); }
+        await cloudCall('foldersChanged');
+        flip.disabled = false;
+      };
+      row.appendChild(flip);
+    }
+    const del = el('button', 'btn ghost', '移除');
+    del.onclick = () => {
+      if (confirm(`移除「${f.name}」？已经批准的任务也不能再读它。文件夹本身不会被删除。`)) cloudCall('removeFolder', { id: f.id });
+    };
+    row.appendChild(del);
+    box.appendChild(row);
+  }
+}
+
+function renderDesktop(s) {
+  const d = s.desktop || {};
+  $('deskOn').hidden = !!d.device;
+  $('deskOff').hidden = !d.device;
+  $('deskState').textContent = d.device
+    ? `已启用 · ${d.device.id}${d.ready === false ? ' · agent-desktop 用不了，终端里运行 npx vcorp-chrome desktop status 看原因' : ''}`
+    : d.error || '未启用';
+}
+
+// 一条待批准的申请，放进顶上的「需要你处理」
+function askBox(title, lines, yesText, noText, op, jobId) {
+  const box = el('div', 'task pending');
+  box.appendChild(el('div', 't', title));
+  for (const line of lines) box.appendChild(el('div', 'sub', line));
+  const row = el('div', 'row');
+  const yes = el('button', 'btn', yesText);
+  const no = el('button', 'btn ghost', noText);
+  yes.onclick = () => cloudCall(op, { jobId, allow: true });
+  no.onclick = () => cloudCall(op, { jobId, allow: false });
+  row.append(yes, no);
+  box.appendChild(row);
+  $('asks').appendChild(box);
+}
+
+// 有事要处理：顶上区块和标题栏的闪烁徽标一起亮，处理完一起收
+function syncAlert() {
+  const n = $('asks').childElementCount + ($('cloudClaim').hidden ? 0 : 1);
+  $('alert').hidden = !n;
+  $('needPill').hidden = !n;
+  $('needPill').textContent = `${n} 项待处理`;
+  document.title = n ? `(${n}) vcorp-chrome` : 'vcorp-chrome';
+}
+$('needPill').onclick = () => $('alert').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+function renderNotes(rows) {
+  const box = $('cloudNotes');
+  if (!box) return;
+  box.textContent = '';
+  if (!rows.length) { box.appendChild(el('div', 'empty', '还没有。')); return; }
+  for (const n of rows) {
+    const d = el('details', 'note');
+    const sum = el('summary', null, `${n.site} · ${n.text.length} 字 · ${new Date(n.at).toLocaleDateString()}`);
+    const body = el('pre', 'log', n.text);
+    body.style.whiteSpace = 'pre-wrap';
+    const del = el('button', 'btn ghost', '删除');
+    del.onclick = () => { if (confirm(`删除 ${n.site} 的经验笔记？`)) cloudCall('deleteNotes', { site: n.site }); };
+    d.append(sum, body, del);
+    box.appendChild(d);
+  }
+}
+
+function renderCloud(s) {
+  renderFolders(s);
+  renderDesktop(s);
+  $('asks').textContent = '';
+  const on = !!s.cfg;
+  $('cloudPair').hidden = on || !!s.claim;
+  $('cloudClaim').hidden = on || !s.claim;
+  $('cloudOn').hidden = !on;
+  if (!$('pairOrigin').value) $('pairOrigin').value = s.defaultOrigin;
+  if (s.claim) {
+    $('claimOrigin').textContent = new URL(s.claim.origin).host;
+    $('claimAccount').textContent = `「${s.claim.account || '（未命名）'}」`;
+    if (!$('claimName').value) $('claimName').value = s.claim.name;
+  }
+  if (!on) { syncAlert(); return; }
+  if (document.activeElement !== $('deviceName')) $('deviceName').value = s.cfg.name;
+  // 改名时没连上：连上那一刻 hello 已把名字写进服务器，提示跟着变
+  if (namePending === s.cfg.name && s.status?.state === 'online') nameSaved(s);
+
+  const [cls, word] = CLOUD_STATE[s.status?.state] || CLOUD_STATE.off;
+  $('cloudDot').className = `dot ${cls}`;
+  $('cloudName').textContent = `${new URL(s.cfg.origin).host} · ${word}`;
+  $('cloudSub').textContent = s.status?.state === 'error' || s.status?.state === 'paused'
+    ? s.status.message : `账号「${s.cfg.account || ''}」`;
+  $('cloudAuto').checked = !!s.cfg.auto;
+  $('cloudAutoConfirm').checked = !!s.cfg.autoConfirm;
+  $('cloudEval').checked = s.cfg.allowEval !== false;
+  $('cloudPause').checked = !!s.cfg.paused;
+
+  renderNotes(s.notes || []);
+
+  // 允许名单：用户点过「允许」的网站，含子域。没有预设的平台。
+  const sites = $('cloudSites');
+  sites.textContent = '';
+  if (!s.cfg.sites.length) sites.appendChild(el('div', 'empty', '还没有。任务申请网站、你点了允许，就会出现在这里。'));
+  for (const host of s.cfg.sites) {
+    const row = el('div', 'site');
+    row.appendChild(el('span', 'host', host));
+    const del = el('button', 'btn ghost', '移除');
+    del.onclick = () => cloudCall('removeSite', { host });
+    row.appendChild(del);
+    sites.appendChild(row);
+  }
+
+  // 要用户点头的一律进顶上的「需要你处理」，这里只留进行中任务的状态
+  const tasks = $('cloudTasks');
+  tasks.textContent = '';
+  for (const t of s.tasks.filter((x) => x.state !== 'denied')) {
+    const title = t.title || `任务 ${t.jobId}`;
+    if (t.state === 'pending') {
+      const lines = [];
+      if (t.ask?.length) lines.push(`请求访问这些网站：${t.ask.join('、')}（允许后加入允许名单）`);
+      if (t.use?.length) lines.push(`要用允许名单里的：${t.use.join('、')}`);
+      if (t.purpose) lines.push(`用途：${t.purpose}`);
+      askBox(`新任务：${title}`, lines, '允许', '拒绝', 'decide', t.jobId);
+      continue;
+    }
+    if (t.ask?.length) askBox(title, [`还想访问网站：${t.ask.join('、')}${t.askWhy ? `。用途：${t.askWhy}` : ''}`], '允许这些网站', '不允许', 'decideSites', t.jobId);
+    if (t.folderAsk?.length) askBox(title, [`还想读取本地文件夹：${t.folderAsk.join('、')}${t.folderAskWhy ? `。用途：${t.folderAskWhy}` : ''}`], '允许这些文件夹', '不允许', 'decideFolders', t.jobId);
+    if (t.appAsk?.length) askBox(title, [`还想操作桌面应用：${t.appAsk.join('、')}${t.appAskWhy ? `。用途：${t.appAskWhy}` : ''}`], '允许这些应用', '不允许', 'decideApps', t.jobId);
+    if (t.deskAsk) askBox(title, [`要在桌面上：${t.deskAsk}`], '同意', '不同意', 'decideDesk', t.jobId);
+
+    const box = el('div', 'task');
+    box.appendChild(el('div', 't', title));
+    const where = [...new Set([...(t.use || []), ...(t.sites || [])])].join('、') || '（还没有网站）';
+    box.appendChild(el('div', 'sub', `进行中 · ${where} · ${t.count} 条命令 · ${relTime(t.lastAt)}`));
+    if (t.folders?.length) box.appendChild(el('div', 'sub', `可读本地文件夹：${t.folders.join('、')}`));
+    if (t.apps?.length) box.appendChild(el('div', 'sub', `可操作桌面应用：${t.apps.join('、')}`));
+    const row = el('div', 'row');
+    const stop = el('button', 'btn ghost', '收回（关掉它的标签页）');
+    stop.onclick = () => cloudCall('endTask', { jobId: t.jobId });
+    row.appendChild(stop);
+    box.appendChild(row);
+    tasks.appendChild(box);
+  }
+  syncAlert();
+
+  const log = $('cloudLog');
+  log.textContent = '';
+  if (!s.log.length) log.appendChild(el('div', null, '还没有记录'));
+  for (const r of s.log) {
+    const row = el('div');
+    const text = r.ev === 'approved' && r.msg === '自动放行'
+      ? '自动放行了任务'
+      : r.ev ? `${LOG_TEXT[r.ev] || r.ev}${r.msg ? ` ${r.msg}` : ''}` : `${r.cmd}${r.ok ? '' : ` ✗ ${r.code}${r.msg ? `：${r.msg}` : ''}`}`;
+    row.append(el('span', 'ago', relTime(r.t)), el('span', r.ok === false ? 'no' : null, `${text}${r.job ? ` · ${String(r.job).slice(-6)}` : ''}`));
+    log.appendChild(row);
+  }
+}
+
+$('pairGo').onclick = async () => {
+  $('pairGo').disabled = true;
+  await cloudCall('claim', { origin: $('pairOrigin').value, code: $('pairCode').value });
+  $('pairGo').disabled = false;
+};
+$('pairCode').onkeydown = (e) => { if (e.key === 'Enter') $('pairGo').click(); };
+$('claimYes').onclick = async () => {
+  $('claimYes').disabled = true;
+  await cloudCall('confirm', { name: $('claimName').value });
+  $('claimYes').disabled = false;
+  $('pairCode').value = '';
+  $('claimName').value = '';
+};
+$('claimNo').onclick = () => { $('claimName').value = ''; cloudCall('cancelClaim'); };
+// 改名的结果就写在输入框下面，不弹窗；服务器确认写入才说「已保存」
+let namePending = null;
+let nameMsgTimer = null;
+function nameMsg(cls, text) {
+  clearTimeout(nameMsgTimer);
+  const box = $('deviceNameMsg');
+  box.className = `msg ${cls}`;
+  box.textContent = text;
+  box.hidden = !text;
+}
+function nameSaved(s) {
+  namePending = null;
+  nameMsg('ok', `已保存，${new URL(s.cfg.origin).host} 的「执行设备」里现在显示「${s.cfg.name}」`);
+  nameMsgTimer = setTimeout(() => nameMsg('', ''), 8000);
+}
+$('deviceNameSave').onclick = async () => {
+  const name = $('deviceName').value;
+  $('deviceNameSave').disabled = true;
+  $('deviceName').blur();
+  namePending = null;
+  nameMsg('muted', '保存中…');
+  const r = await cloudCall('rename', { name });
+  $('deviceNameSave').disabled = false;
+  if (!r?.ok) { nameMsg('bad', `没有保存：${r?.error || '扩展没有响应，稍后再试'}`); return; }
+  const host = new URL(r.state.cfg.origin).host;
+  if (r.state.rename === 'saved') nameSaved(r.state);
+  else if (r.state.rename === 'unconfirmed') nameMsg('warn', `已发给 ${host}，但没等到确认。请到它的「执行设备」里看一下名字对不对`);
+  else {
+    namePending = r.state.cfg.name;
+    nameMsg('warn', r.state.status?.state === 'paused'
+      ? `已存到本机。云端已暂停，恢复后会更新到 ${host}`
+      : `已存到本机，还没连上 ${host}，连上后会自动更新`);
+  }
+};
+$('deviceName').onkeydown = (e) => { if (e.key === 'Enter') $('deviceNameSave').click(); };
+$('cloudAuto').onchange = (e) => cloudCall('setAuto', { auto: e.target.checked });
+$('cloudEval').onchange = (e) => cloudCall('setAllowEval', { allowEval: e.target.checked });
+$('cloudAutoConfirm').onchange = (e) => cloudCall('setAutoConfirm', { autoConfirm: e.target.checked });
+$('cloudPause').onchange = (e) => cloudCall('setPaused', { paused: e.target.checked });
+$('cloudReconn').onclick = () => cloudCall('reconnect');
+$('cloudUnpair').onclick = () => {
+  if (confirm('断开后这个服务器再也不能在本浏览器里发布，它开的标签页会被关掉。要再用得重新配对。')) cloudCall('unpair');
+};
+$('folderAdd').onclick = () => cloudCall('openMount');
+// 原生消息权限只能在用户手势里申请，所以在侧栏这里要，而不是在后台
+$('deskOn').onclick = async () => {
+  const granted = await chrome.permissions.request({ permissions: ['nativeMessaging'] }).catch(() => false);
+  if (!granted) { $('deskState').textContent = '没有拿到权限，桌面能力保持关闭'; return; }
+  $('deskState').textContent = '启用中…第一次启用要重载扩展，侧栏若关掉了，重新打开即可';
+  const r = await cloudCall('desktopEnable');
+  // 失败原因写在桌面这一栏，不要留着「启用中…」，也不用在顶上再报一遍
+  if (r && !r.ok && r.error) { $('deskState').textContent = r.error; $('cloudErr').hidden = true; }
+};
+$('deskOff').onclick = async () => {
+  await cloudCall('desktopDisable');
+  await chrome.permissions.remove({ permissions: ['nativeMessaging'] }).catch(() => {});
+};
+
 // ---------- 订阅 ----------
 
 chrome.storage.onChanged.addListener((changes, area) => {
+  const keys0 = Object.keys(changes);
+  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudLog', 'cloudStatus', 'cloudClaim', 'folderTick', 'cloudDesktop', 'cloudDesktopError'].includes(k))) void cloudCall('state');
   if (area !== 'session') return;
   const keys = Object.keys(changes);
   if (keys.includes(`panel:${tabId}`) || keys.includes('liveSids')) renderPage();
@@ -235,5 +549,6 @@ chrome.tabs.onUpdated.addListener((id, info) => { if (info.title) refreshAll(); 
 
 renderPage();
 refreshAll();
+void cloudCall('state');
 // 相对时间要走字，连接状态要跟上（桥的心跳不写 storage）
-setInterval(() => { renderPage(); refreshAll(); }, 15000);
+setInterval(() => { renderPage(); refreshAll(); void cloudCall('state'); }, 15000);

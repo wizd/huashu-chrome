@@ -6,9 +6,15 @@
 //
 // 安全边界就在 verifyClient：浏览器发起 WS 时强制带 Origin 且不可伪造，
 // 网页的 Origin 是自己的域名，扩展的是 chrome-extension://<id>。只放后者进来。
+//
+// 例外（2026-11-14）：同一个端口上挂了 HTTP 网关（src/lib/gateway.js），把站点函数
+// 开放成本机 API。网关不碰上面的路由逻辑——它自己以一个普通 agent 的身份连回本桥，
+// 走的是和任何 MCP 会话完全一样的那条路。普通 HTTP 请求一律要 API token，带 Origin 的拒。
 import { WebSocketServer } from 'ws';
+import http from 'node:http';
 import fs from 'node:fs';
-import { DEFAULT_PORT, writeBridgeInfo, newToken, tokenEquals, audit, ensureHome, ALLOWLIST_FILE } from './lib/paths.js';
+import { createGateway } from './lib/gateway.js';
+import { DEFAULT_PORT, writeBridgeInfo, newToken, tokenEquals, audit, ensureHome, ALLOWLIST_FILE, LOCK_FILE, machineId } from './lib/paths.js';
 import { VERSION } from './lib/version.js';
 // 纯字符串判定、不碰 chrome API，所以桥这边直接复用，不再抄一份
 import { scrubProse } from '../extension/redact.js';
@@ -38,10 +44,16 @@ const EXT_SILENCE_MS = 50000;        // 扩展每 15 秒一次心跳，连着三
 const EXT_PROBE_MS = 15000;          // 探了还不回，再等这么久才判死
 const ORPHAN_GRACE_MS = 15000;       // 扩展断开时在途命令的宽限：一个心跳周期，够它重连并补发回执
 
+// 拉起本桥的那个进程（rpc.js tryStartBridge）拿着启动锁。它常常是 doctor/install
+// 这种短命进程，等不到自己的删锁定时器；所以由桥在有了结果时亲手放锁。
+function releaseStartLock() {
+  try { fs.unlinkSync(LOCK_FILE); } catch { /* 没有就算了 */ }
+}
+
 // writeInfo=false 供测试用：不写 bridge.json，否则测试桥的 token 会盖掉
 // 真在跑的那个桥，用户所有 agent 会话当场断连。
 export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo = true, orphanGraceMs = ORPHAN_GRACE_MS,
-  silenceMs = EXT_SILENCE_MS, probeMs = EXT_PROBE_MS, tickMs = 20000 } = {}) {
+  silenceMs = EXT_SILENCE_MS, probeMs = EXT_PROBE_MS, tickMs = 20000, gateway = writeInfo } = {}) {
   ensureHome();
 
   const agents = new Set();      // role=agent 的连接
@@ -81,7 +93,7 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
   // 话术和 doctor、mcp-server 的 hint 保持一致：首选动作是扩展弹窗里的「重连」，
   // 不是去 chrome://extensions——插件从来没消失过，去那儿只会把人引向「重装」。
   const NO_EXT_MSG = '扩展没连上桥。桥已经替你等过一轮'
-    + `（最多 ${WAIT_MAX / 1000}s），它还没回来。让用户点一下浏览器工具栏的 huashu-chrome 图标 → 「重连」`
+    + `（最多 ${WAIT_MAX / 1000}s），它还没回来。让用户点一下浏览器工具栏的 vcorp-chrome 图标 → 「重连」`
     + '（插件没消失，只是这条连接断了）；Chrome 没开就先开；改过扩展代码才需要去 chrome://extensions 重载。';
 
   let lastActivity = Date.now();
@@ -112,10 +124,18 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
     return pool.reduce((a, b) => (a.lastRx >= b.lastRx ? a : b));
   }
   const extLabel = (ws) => `Chrome ${ws.chromeVersion || '?'}${ws.headless ? ' · headless' : ''} · 扩展 ${ws.extVersion}`;
+  let machineCache = null;
+  const machine = () => (machineCache ??= machineId());
 
+  // HTTP 网关和 WS 共用端口。测试桥（writeInfo=false）默认不挂：网关会连 bridge.json 里那个真桥
+  const gw = gateway ? createGateway({ log, touch: () => { lastActivity = Date.now(); } }) : null;
+  const server = http.createServer((req, res) => {
+    if (gw) return gw.handle(req, res);
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('vcorp-chrome bridge: HTTP 网关没有开启');
+  });
   const wss = new WebSocketServer({
-    host: '127.0.0.1',
-    port,
+    server,
     verifyClient: (info, done) => {
       const origin = info.req.headers.origin;
       if (origin === undefined) return done(true);              // Node 侧，进握手后验 token
@@ -216,6 +236,8 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
       // 老扩展不报 instanceId。退回按扩展 id 认——行为和单槽那版一样
       // （同一份代码的两个实例仍会互相替换），但至少不会跟新扩展混着算。
       ws.instanceId = msg.instanceId || `ext:${msg.extId || '?'}`;
+      // 设备号由实例号派生：同一个 Chrome profile 重启、重载扩展都不变（见 extension/device.js）
+      ws.deviceId = `browser-${String(ws.instanceId).replace(/[^\w.-]/g, '').slice(0, 64) || 'unknown'}`;
 
       // 同一个实例又连了一条：那是断线重连或重载扩展，旧的那条已经是死的，
       // 顶掉它。**只顶同实例的**——顶错了就退回单槽，每秒互踢的老毛病就回来了。
@@ -241,6 +263,10 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
           + `命令路由到：${extLabel(primary())}`);
       }
       send(ws, { type: 'welcome', bridge: VERSION, v: PROTOCOL });
+      // 连上就给一份名单，哪怕是空的。扩展手里那份可能是上一个桥留下的：桥换过之后
+      // 旧连接不会再发 close，不推的话死会话要等下一条命令才被冲掉——面板就一直
+      // 显示着已经不在的 agent。
+      send(ws, { type: 'event', event: 'sessions', live: liveSessions() });
       broadcast({ type: 'event', event: 'extension_online' });
       flushWaiting();
       return;
@@ -265,6 +291,8 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
       const ext = primary();
       send(ws, {
         type: 'welcome', bridge: VERSION, v: PROTOCOL,
+        // 设备目录与按 to.device 投递。老桥没有这一项：它会把指名的命令照样投给默认的那个 Chrome
+        devices: true,
         extensionOnline: !!ext,
         extensionVersion: ext?.extVersion,
         // 老 MCP 只认 versionMismatch：只在真需要人处理时置位，补丁号差异不再惊动它
@@ -286,6 +314,25 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
     // agent → extension
     if (msg.type === 'cmd') {
       if (!agents.has(ws)) return;
+      // 本机设备目录：桥是唯一知道「有几个 Chrome 连着」的一方，这条由它自己答
+      if (msg.cmd === 'devices') {
+        const main = primary();
+        return send(ws, { type: 'res', id: msg.id, ok: true, data: { devices: liveExtensions().map((e) => ({
+          id: e.deviceId, kind: 'browser', name: extLabel(e), machine: machine(), online: true,
+          caps: { platform: 'chrome', version: e.extVersion, cmds: [] }, primary: e === main,
+        })) } });
+      }
+      // 指名道姓的命令只投给那一个实例。它不在就直说，不改投别的 Chrome——
+      // agent 指定设备正是因为它在意落在哪一台上
+      const want = msg.to?.device;
+      if (want) {
+        const hit = liveExtensions().find((e) => e.deviceId === want);
+        if (!hit) {
+          return send(ws, { type: 'res', id: msg.id, ok: false, error: { code: 'DEVICE_OFFLINE',
+            message: `浏览器设备 ${String(want).slice(0, 80)} 没有连着。用 devices 看看现在有哪些。` } });
+        }
+        return dispatch(ws, msg, hit);
+      }
       const target = primary();
       if (!target) return enqueue(ws, msg);
       return dispatch(ws, msg, target);
@@ -349,7 +396,7 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
     // 只有 281 个不同的 id，最多的一个出现了 1088 次。
     // 路由用的一直是 connId:id，审计却记裸 id——「出事能查」这条承诺
     // 在数据结构层面就不成立。
-    audit({ ev: 'cmd', id: key, cmd: msg.cmd, client: ws.client, sid: ws.sid, params: redact(msg.params) });
+    audit({ ev: 'cmd', id: key, cmd: msg.cmd, client: ws.client, sid: ws.sid, device: target.deviceId, params: redact(msg.params) });
     // sid 盖章：扩展据此维护每个会话自己的受控 tab 槽（多 agent 并发隔离）。
     // live 是此刻还连着的会话，扩展拿它判断某个标签页「还有没有主」。
     // client / label 是给人看的：页面上的控制标记要写出「Codex CLI」而不是一串 sid。
@@ -424,8 +471,11 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
 
   const ready = new Promise((resolve) => {
     wss.on('listening', () => {
-      if (writeInfo) writeBridgeInfo({ port, token, pid: process.pid, version: VERSION, startedAt: new Date().toISOString() });
-      log(`桥已启动 ws://127.0.0.1:${port}`);
+      if (writeInfo) {
+        writeBridgeInfo({ port, token, pid: process.pid, version: VERSION, startedAt: new Date().toISOString() });
+        releaseStartLock();
+      }
+      log(`桥已启动 ws://127.0.0.1:${port}${gw ? `，HTTP 网关 http://127.0.0.1:${port}/v1` : ''}`);
       resolve();
     });
   });
@@ -433,6 +483,7 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
   wss.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
       log(`端口 ${port} 已被占用——大概率已有一个桥在跑`);
+      if (writeInfo) releaseStartLock();
       process.exit(3);
     }
     throw e;
@@ -483,7 +534,11 @@ export function startBridge({ port = DEFAULT_PORT, token = newToken(), writeInfo
   }, tickMs);
   idleTimer.unref();
 
-  return { wss, port, token, ready, close: () => { clearInterval(idleTimer); wss.close(); for (const c of wss.clients) c.terminate(); } };
+  server.listen(port, '127.0.0.1');
+
+  return { wss, server, port, token, ready, close: () => {
+    clearInterval(idleTimer); gw?.close(); wss.close(); for (const c of wss.clients) c.terminate(); server.close();
+  } };
 }
 
 // 审计日志里不留敏感明文：输入的文本可能是密码、验证码

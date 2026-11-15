@@ -1,14 +1,16 @@
 {
-  "name": "huashu-chrome",
-  "version": "1.3.0",
+  "name": "vcorp-chrome",
+  "version": "3.1.0",
   "description": "让任何 AI agent 操控你自己的 Chrome——带着全部登录态。MCP + Chrome 扩展，Claude Code / Codex / Cursor / Gemini CLI 通用。",
   "type": "module",
   "bin": {
-    "huashu-chrome": "src/cli.js"
+    "vcorp-chrome": "src/cli.js"
   },
   "files": [
     "src",
     "extension",
+    "native-host",
+    "sites",
     "docs",
     "README.md"
   ],
@@ -19,7 +21,8 @@
     "mcp": "node src/cli.js mcp",
     "bridge": "node src/cli.js bridge --foreground",
     "doctor": "node src/cli.js doctor",
-    "test": "node --test test/protocol.test.js test/mcp.test.js test/fetch-pages.test.js test/liveness.test.js test/redact.test.js test/audit-redact.test.js test/learnings.test.js test/risk.test.js test/identity.test.js test/host.test.js test/presence.test.js test/act-script.test.js test/multi-instance.test.js test/compat.test.js",
+    "build:loads": "node scripts/build-loads.mjs",
+    "test": "node --test test/protocol.test.js test/mcp.test.js test/fetch-pages.test.js test/liveness.test.js test/redact.test.js test/audit-redact.test.js test/learnings.test.js test/risk.test.js test/identity.test.js test/host.test.js test/presence.test.js test/act-script.test.js test/script.test.js test/multi-instance.test.js test/compat.test.js test/cloud-policy.test.js test/loads.test.js test/media-load.test.js test/desktop-policy.test.js test/desktop-full.test.js test/folders-write.test.js test/gateway.test.js",
     "test:live": "node --test test/scenarios.test.js"
   },
   "dependencies": {
@@ -36,9 +39,16 @@
     "ai-agent"
   ],
   "license": "MIT",
-  "author": "花叔 (alchaincyf)",
+  "author": "Wizard",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/alchaincyf/huashu-chrome.git"
+    "url": "git+https://github.com/wizd/huashu-chrome.git"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.2",
+    "jszip": "^3.10.1"
+  },
+  "optionalDependencies": {
+    "agent-desktop": "1.0.2"
   }
 }

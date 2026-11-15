@@ -8,8 +8,8 @@
 // 点错的代价在真实登录态下可能是一笔真订单。
 
 (() => {
-  if (window.__huashuChrome) return;
-  window.__huashuChrome = true;
+  if (window.__vcorpChrome) return;
+  window.__vcorpChrome = true;
 
   let refMap = new Map();
   let snapshotSeq = 0;
@@ -702,6 +702,36 @@
     }
   };
 
+  // ---------- 穿透 shadow 的命中检测 ----------
+  //
+  // document.elementFromPoint 碰到 shadow 只返回最外层宿主，Node.contains 又不跨
+  // shadow 边界。两个一起用，shadow 里的控件永远「被自己的宿主遮挡」——微前端
+  // （wujie 把整个子应用放进 <wujie-app> 的 shadow root）上每个按钮都点不了。
+  // 不能简单放行「命中宿主」：宿主里盖着弹层时那才是真遮挡，所以要逐层钻到底。
+  // closed root 读不到、停在宿主上：快照本来也进不去，那里头的元素拿不到 ref。
+  function deepElementFromPoint(x, y) {
+    let hit = document.elementFromPoint(x, y);
+    while (hit?.shadowRoot) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    return hit;
+  }
+
+  // 沿渲染树往上走（assignedSlot 优先）：a 是否在渲染上包含 n。
+  // 只走 parentNode 的话，shadow 里的容器「不包含」塞进它 <slot> 的内容。
+  function flatContains(a, n) {
+    for (; n; n = n.assignedSlot || n.parentNode || n.host) if (n === a) return true;
+    return false;
+  }
+
+  // 点这个坐标会打到别的东西上时返回那个东西，否则 null
+  function occluderAt(el, x, y) {
+    const hit = deepElementFromPoint(x, y);
+    return hit && !flatContains(el, hit) && !flatContains(hit, el) ? hit : null;
+  }
+
   function realClick(el) {
     const r = el.getBoundingClientRect();
     const x = r.left + r.width / 2;
@@ -710,12 +740,38 @@
     // 真实点击的 event.target 是光标下**最内层**的元素，事件再往上冒泡。
     // 直接派发在容器上，target 就成了容器本身——组件按 event.target 分支的逻辑
     // 会走进另一条路。react-select 的 Control 就读 event.target.tagName。
-    const inner = document.elementFromPoint(x, y);
-    if (inner && el.contains(inner)) el = inner;
+    const inner = deepElementFromPoint(x, y);
+    if (inner && flatContains(el, inner)) el = inner;
     const base = { bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, button: 0 };
     const ptr = { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true };
 
-    const fire = (Ctor, type, extra) => el.dispatchEvent(new Ctor(type, { ...extra }));
+    // 点在 <a href="javascript:..."> 上时，click 的默认动作会去执行这个地址。
+    // 页面的 CSP（script-src 没有 unsafe-inline）会拦住，并在控制台记
+    // 「Running the JavaScript URL」。监听器该跑的已经在派发过程里跑过了，
+    // 被拦的只是这段地址本身。这里在默认动作之前 preventDefault，地址不再执行。
+    const javascriptLink = (node) => {
+      for (let n = node; n; n = n.parentElement || n.parentNode?.host) {
+        if (n.nodeType !== 1 || !/^(A|AREA)$/i.test(n.tagName)) continue;
+        const href = n.getAttribute('href') || n.getAttribute('xlink:href') || '';
+        if (/^\s*javascript:/i.test(href)) return n;
+      }
+      return null;
+    };
+    const fire = (Ctor, type, extra) => {
+      if (type === 'click') {
+        const stop = (ev) => ev.preventDefault();
+        const link = javascriptLink(el);
+        const form = el.form || el.closest?.('form');
+        const blockForm = form && /^\s*javascript:/i.test(form.getAttribute('action') || '');
+        if (link) link.addEventListener('click', stop, true);
+        if (blockForm) form.addEventListener('submit', stop, true);
+        const sent = el.dispatchEvent(new Ctor(type, { ...extra }));
+        if (link) link.removeEventListener('click', stop, true);
+        if (blockForm) form.removeEventListener('submit', stop, true);
+        return sent;
+      }
+      return el.dispatchEvent(new Ctor(type, { ...extra }));
+    };
     try {
       fire(PointerEvent, 'pointerover', ptr);
       fire(MouseEvent, 'mouseover', base);
@@ -899,15 +955,14 @@
 
     // 虚拟光标（mark.js，和本文件同一个 isolated world）：坐标就地递过去，
     // 零消息往返。L1 和 L2 都走 locate，所以两条路的光标一致。
-    // **必须在下面的 elementFromPoint 之前调**——坐标落在驾驶舱底下时它要
+    // **必须在下面的遮挡检测之前调**——坐标落在驾驶舱底下时它要
     // 先让路（pointer-events:none 同步生效），否则遮挡检测会把我们自己的
     // 面板当成遮挡物，L2 的真实点击更会直接点进面板里。
     window.__hcCursor?.(x, y, ({ click: 'click', type: 'type', select: 'type', key: 'key' })[p.forCmd] || 'aim');
 
     // 遮挡检测和 doClick 保持同一套判断——L2 打的是坐标，遮挡时点中的是遮挡物，
     // 比 L1 更危险，更不能放过
-    const top = document.elementFromPoint(x, y);
-    if (top && top !== el && !el.contains(top) && !top.contains(el)) {
+    if (occluderAt(el, x, y)) {
       throw fail('NOT_INTERACTABLE', `${p.ref || p.selector} 被其它元素遮挡（可能有弹窗/浮层）。先处理遮挡物。`);
     }
     // 视口外的坐标 CDP 打不中。scrollIntoView 之后仍在视口外，说明它在一个
@@ -1202,8 +1257,7 @@
     el.scrollIntoView({ block: 'center', behavior: 'instant' });
     // 被遮挡检测：点下去要是命中别的元素，多半有弹层盖着，这时候点了就是误操作
     const r = el.getBoundingClientRect();
-    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-    if (top && top !== el && !el.contains(top) && !top.contains(el)) {
+    if (occluderAt(el, r.left + r.width / 2, r.top + r.height / 2)) {
       throw fail('NOT_INTERACTABLE', `${p.ref} 被其它元素遮挡（可能有弹窗/浮层）。先处理遮挡物。`);
     }
     realClick(el);
@@ -1746,6 +1800,27 @@
     return { data: { selector: `input[data-hc-fi="${mark}"]`, accept: input.getAttribute('accept') || '' } };
   }
 
+  // 云端任务的素材：页面里直接去配对服务器取（那个接口带 CORS），在这里造 File。
+  // 不走消息通道，几百 MB 的视频不用转 base64；SW 已核对过 url 指向配对服务器。
+  // 取不到报 FETCH_FAILED，上游会改由扩展取了再转交。
+  async function doUploadUrl(p) {
+    let blob;
+    try {
+      // 到点取消，文件就不会在报错之后才进页面，重试不会传出第二份
+      const signal = p.fetchMs ? AbortSignal.timeout(p.fetchMs) : undefined;
+      const res = await fetch(p.url, { credentials: 'omit', cache: 'no-store', signal });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      blob = await res.blob();
+    } catch (e) {
+      if (e?.name === 'TimeoutError') {
+        throw fail('UPLOAD_SLOW', `素材 ${Math.round((p.bytes || 0) / 1048576)}MB 在 ${Math.round(p.fetchMs / 1000)} 秒内没有下载完，已取消，文件没有进页面。压缩后再传，或请用户手动上传。`);
+      }
+      throw fail('FETCH_FAILED', `页面里取素材失败：${e.message}`);
+    }
+    if (p.bytes && blob.size !== p.bytes) throw fail('INTERNAL', `素材大小不对：应为 ${p.bytes}，实际 ${blob.size}`);
+    return putFile(new File([blob], p.name, { type: p.type || blob.type || 'application/octet-stream' }), p, blob.size);
+  }
+
   function doUpload(p) {
     let bin;
     try {
@@ -1765,26 +1840,29 @@
     }
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const file = new File([bytes], p.name, { type: p.type || 'application/octet-stream' });
+    return putFile(new File([bytes], p.name, { type: p.type || 'application/octet-stream' }), p, bytes.length);
+  }
 
+  // 两条上传路（base64、云端素材 URL）造好 File 之后走同一段：挑同一个 input、同样的拖放回落
+  function putFile(file, p, size) {
     // 调用方明确给了 dropSelector，就是明确要走拖放——哪怕页面上另有 file input。
     // 不尊重这个意图的话，参数给了却没生效，而返回值还说「已投入」，
     // 是最难查的那种失败。
-    if (p.dropSelector) return dropFile(file, p, bytes.length);
+    if (p.dropSelector) return dropFile(file, p, size);
 
     const input = findFileInput(p);
     // 没有 file input 不等于不能上传：越来越多的编辑器（X 的 Article、Notion、语雀）
     // 只监听拖放，页面上根本不存在 <input type=file>。之前这里直接报错，
     // 等于把「往文章里插图」这一整类任务判了死刑。
-    if (!input || (input.tagName !== 'INPUT' && !p.selector)) return dropFile(file, p, bytes.length);
-    if (input.tagName !== 'INPUT') return dropFile(file, p, bytes.length, input);
+    if (!input || (input.tagName !== 'INPUT' && !p.selector)) return dropFile(file, p, size);
+    if (input.tagName !== 'INPUT') return dropFile(file, p, size, input);
 
     const dt = new DataTransfer();
     dt.items.add(file);
     input.files = dt.files;
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
-    return { data: { text: `已投入 ${p.name}（${Math.round(bytes.length / 1024)}KB）到 ${input.getAttribute('accept') ? 'accept="' + input.getAttribute('accept') + '"' : ''} input` } };
+    return { data: { text: `已投入 ${p.name}（${Math.round(size / 1024)}KB）到 ${input.getAttribute('accept') ? 'accept="' + input.getAttribute('accept') + '"' : ''} input` } };
   }
 
   // 拖放上传。要点是**整套事件都要发**：只发 drop 的话，很多实现在 dragover 里
@@ -2055,7 +2133,7 @@
           case 'query': return sendResponse(doQuery(msg));
           case 'read': return sendResponse(doRead(msg));
           case 'expect': return sendResponse(doExpect(msg));
-          case 'upload': return sendResponse(doUpload(msg));
+          case 'upload': return sendResponse(msg.url ? await doUploadUrl(msg) : doUpload(msg));
           case 'uploadTarget': return sendResponse(doUploadTarget(msg));
           case 'scroll': return sendResponse(await doScroll(msg));
           case 'history':

@@ -14,6 +14,8 @@ import { matchChallenge, hostOf, hostMatches, L2_ORIGINS_SEED } from './risk.js'
 import { CRED_URL, redactCreds } from './redact.js';
 import { identityOf, stripMarkPrefix } from './identity.js';
 import { validateScript, condText, repeatMax, EXEC_BUDGET, collectRefs, toRecipe } from './script.js';
+import { initCloud, ensureCloud } from './cloud.js';
+import { loadDef, loadHostAllowed, checkLoadParams, checkCallParams, netHookMatches, needs, hostsText, takeBinary } from './load.js';
 
 // ---------- 连接层 ----------
 //
@@ -131,9 +133,10 @@ function noteBridgeVersion(v) {
   const mine = chrome.runtime.getManifest().version;
   const level = compat({ ext: mine, cli: v });
   bridgeMismatch = (level === 'same' || level === 'patch') ? '' : v;
+  const name = chrome.runtime.getManifest().name;
   chrome.action.setTitle({ title: bridgeMismatch
-    ? `huashu-chrome：${compatNote(level, { ext: mine, cli: v })}`
-    : 'huashu-chrome' });
+    ? `${name}：${compatNote(level, { ext: mine, cli: v })}`
+    : name });
   setBadge(true);
 }
 
@@ -309,6 +312,19 @@ async function onMessage(msg) {
     // 户口簿反推归属，登记必须先落盘，否则第一条命令刷不出标记（又一个落盘竞态）
     if (tabId && msg.sid && !NO_SLOT_CMDS.has(msg.cmd)) await registerTab(msg.sid, tabId);
     let data = await handler(msg.params || {}, tabId, ctx);
+    // 小脑交出的字节（本机通道）：调用方带 binary:"base64" 时整段放进 base64 字段
+    // （CLI 的 savePath 会把它落盘，不进终端）；不带时只说字节数，免得把几 MB 倒进 agent 的上下文
+    if (data?.binary) {
+      const { bytes, type } = data.binary;
+      delete data.binary;
+      if (msg.params?.binary === 'base64') {
+        let bin = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+        data = { ...data, base64: btoa(bin), bytes: bytes.byteLength, ct: type };
+      } else {
+        data = { ...data, text: `${data.text}\n（交出 ${bytes.byteLength} 字节；要拿到字节，调用时带 "binary":"base64"）` };
+      }
+    }
     // 命令跑完才刷标记，不是跑之前：导航会把页面里的 mark.js 冲掉，
     // 提前贴的那一次多半活不到用户看见。act 顺路带上，一次消息两件事。
     // 这里**不带 msg.live**：它是命令出发时的快照。命令在途时用户关掉终端，
@@ -616,14 +632,61 @@ const markEnabled = async () => !(await chrome.storage.local.get('markDisabled')
 
 // 每条命令都带着 sid / client / live 过来，顺手记下来。
 // popup 要显示「谁在控哪一页」，而它自己够不着桥。
+//
+// 在线名单有两个来源：桥推来的本机会话，和云端通道里已批准的任务（cloud.js）。
+// 分开存、合起来写进 LIVE_SIDS——任何一边更新都不能把另一边冲掉，
+// 否则桥的一次 sessions 推送就会让云端任务的标记和标签组集体消失。
+const BRIDGE_SIDS = 'bridgeSids';
+const CLOUD_SIDS = 'cloudSids';
+
 async function noteSession(sid, client, live) {
   const patch = {};
   if (sid && client) patch[sidClientKey(sid)] = client;
-  if (Array.isArray(live)) patch[LIVE_SIDS] = live;
+  if (Array.isArray(live)) {
+    const { [CLOUD_SIDS]: cloud = [] } = await chrome.storage.session.get(CLOUD_SIDS).catch(() => ({}));
+    patch[BRIDGE_SIDS] = live;
+    patch[LIVE_SIDS] = [...new Set([...live, ...cloud])];
+  }
   if (Object.keys(patch).length) await chrome.storage.session.set(patch).catch(() => {});
 }
 
+async function setCloudLive(sids) {
+  try {
+    const { [BRIDGE_SIDS]: bridge = [] } = await chrome.storage.session.get(BRIDGE_SIDS);
+    await chrome.storage.session.set({ [CLOUD_SIDS]: sids, [LIVE_SIDS]: [...new Set([...bridge, ...sids])] });
+    await resyncMarks();
+  } catch { /* 标记是给人看的，失败不影响命令 */ }
+}
+
+// 云端通道（cloud.js）执行一条已经过它审核的命令。和 onMessage 走同一套
+// 户口簿、标记、驾驶舱，只是不走槽继承：tabId 总是由 cloud.js 显式给出。
+async function runCloud(cmd, params, tabId, sid, label) {
+  await noteSession(sid, label, null);
+  const ctx = { sid, live: await liveList(), adopted: false };
+  if (tabId && cmd !== 'tabs') await registerTab(sid, tabId);
+  const data = await HANDLERS[cmd](params, tabId, ctx);
+  const marked = tabId || data?.tabId;
+  if (marked) void syncMark(marked, { sid, act: actText(cmd, params) });
+  return data;
+}
+
 const liveList = async () => (await chrome.storage.session.get(LIVE_SIDS))[LIVE_SIDS] || [];
+
+// 桥的名单只有桥能更新，而桥一死就没人再推了——扩展不自己清，死会话会一直算在线，
+// 它们留在页面上的标记也摘不掉。只在确认重连失败之后调（见 hc-keepalive），
+// 瞬断时不能清，否则标记会闪一下。桥回来时会在 welcome 后补一份真名单。
+async function dropBridgeSessions() {
+  const { [BRIDGE_SIDS]: bridge = [] } = await chrome.storage.session.get(BRIDGE_SIDS).catch(() => ({}));
+  if (bridge.length) await onBridgeEvent({ event: 'sessions', live: [] });
+}
+
+// 面板显示用：没连着桥时只有云端名单可信。比 dropBridgeSessions 更早生效，
+// 否则「未连接」旁边最多还会挂 30 秒已经过期的本机 agent。
+async function shownSids() {
+  if (await connected()) return liveList();
+  const { [CLOUD_SIDS]: cloud = [] } = await chrome.storage.session.get(CLOUD_SIDS);
+  return cloud;
+}
 
 // 这个标签页此刻的主人们。只算**还连着**的会话——判据和 liveOwnersOf 一致：
 // 已结束的会话留下的槽不算数，否则关掉一个终端窗口之后，它的标记会永远挂在那儿。
@@ -737,61 +800,96 @@ async function noteMarked(tabId, on) {
 //
 // 两条铁律，都朝「宁可不画，绝不误伤」那一侧偏：
 // 1. **绝不碰用户自己的组。** tab 已经在组里而那个组不是我们建的，就当没看见。
-// 2. **只动确认还是我们的组。** groupId 记在 storage.local（跨扩展重载不丢），
-//    代价是浏览器重启后这个 id 可能被发给别的组。所以动手前先验指纹：
-//    组标题必须还是我们写上去的那个 emoji。用户改过组名？那它已经是
-//    用户的组了，按铁律 1 处理。指纹会放过「用户恰好建了个同 emoji 的组」，
-//    但那种碰撞的后果只是多染一个组，比拆错用户的组轻得多。
+// 2. **认组靠标题指纹，不靠记下的 groupId。** groupId 浏览器一重启就作废，
+//    Chrome 恢复出来的旧组拿的是新 id——只认 id 的话，这些组会被当成「用户的组」
+//    永远不再碰，标签页关掉后就一个个留在书签栏上（见下面「组的善后」）。
+//    所以标题是 GROUP_TITLE 的组就是我们的；用户改过组名，它就成了用户的组。
+//    指纹会放过「用户恰好建了个同名组」，但那种碰撞的后果只是多染一个组。
+//
+// 组的善后：新版 Chrome 会把每个标签组自动存成「已保存的组」钉在书签栏上。
+// 组里的页面被**关掉**，组只是变成「已关闭」，胶囊照样留在书签栏，而扩展
+// 再也查不到它（tabGroups 只看得见开着的组）——长时间运行后书签栏挂满 vcorp。
+// 只有把标签页**移出**组、组空了，Chrome 才真正删掉它。所以：
+// - 我们自己关页面之前先 ungroupIfOurs（closeTab）；
+// - 会话下线时 resyncMarks 把它的页面摘出组；
+// - 有现成的同色组就归队，不为每个会话、每次重启都新建一个组。
+// 用户手动关掉的页面拦不住，那部分只能留给用户自己清。
 const groupKey = (sid) => `agentGroup:${sid}`;
 
 // 组名是品牌字不是彩色圆点 emoji（花叔定的：色块图标丑）。它同时是「这个组
 // 是我们建的」的指纹。旧版组名用过身份 emoji，验指纹时兼容一阵子——
 // 不兼容的话，升级前建的组会因为指纹对不上而永远摘不掉。
-const GROUP_TITLE = '花叔';
+const GROUP_TITLE = 'vcorp';
 const groupTitleOk = (title, sid) => title === GROUP_TITLE || title === identityOf(sid).emoji;
+
+const storedGroups = (all) => new Map(Object.entries(all)
+  .filter(([k]) => k.startsWith('agentGroup:'))
+  .map(([k, v]) => [k.slice('agentGroup:'.length), v]));
+
+// tab 所在的组是我们的就返回它，否则（没在组里、用户的组）返回 null
+async function ourGroupOf(tab, ours) {
+  if (tab.groupId === -1) return null;
+  const g = await chrome.tabGroups.get(tab.groupId).catch(() => null);
+  if (!g) return null;
+  if (g.title === GROUP_TITLE) return g;
+  for (const [sid, gid] of ours) if (gid === g.id && groupTitleOk(g.title, sid)) return g;
+  return null;
+}
+
+// 关页面前调：把它移出我们的组，组空了 Chrome 会删掉组，而不是留一个已关闭的组在书签栏
+async function ungroupIfOurs(tabId) {
+  try {
+    if (!chrome.tabGroups) return;
+    const tab = await chrome.tabs.get(tabId);
+    if (await ourGroupOf(tab, storedGroups(await chrome.storage.local.get(null)))) await chrome.tabs.ungroup(tabId);
+  } catch { /* 标签页已关——那就没什么可摘的 */ }
+}
+
+async function closeTab(tabId) {
+  await ungroupIfOurs(tabId);
+  await chrome.tabs.remove(tabId);
+}
 
 async function syncGroup(tabId, owners) {
   try {
     if (!chrome.tabGroups) return;   // 旧 Chrome 没有这个 API
     const tab = await chrome.tabs.get(tabId);
-    const all = await chrome.storage.local.get(null);
-    const ours = new Map(Object.entries(all)
-      .filter(([k]) => k.startsWith('agentGroup:'))
-      .map(([k, v]) => [k.slice('agentGroup:'.length), v]));
+    const ours = storedGroups(await chrome.storage.local.get(null));
+    const cur = await ourGroupOf(tab, ours);
+    if (tab.groupId !== -1 && !cur) return;                       // 用户的组，不碰
 
-    // 这一页没有主：还挂在我们的组里就摘出来。组空了 Chrome 会自己解散它。
+    // 这一页没有主：还挂在我们的组里就摘出来。组空了 Chrome 会删掉它。
     if (!owners.length) {
-      if (tab.groupId === -1) return;
-      for (const [sid, gid] of ours) {
-        if (gid !== tab.groupId) continue;
-        const g = await chrome.tabGroups.get(gid).catch(() => null);
-        if (g && groupTitleOk(g.title, sid)) await chrome.tabs.ungroup(tabId);
-        return;
-      }
+      if (cur) await chrome.tabs.ungroup(tabId);
       return;
     }
 
     // 多主时跟第一个——组只有一个，双色条纹画不进标签栏；页内边框负责说清「有两个主」
     const o = owners[0];
     const stored = ours.get(o.sid);
-    if (tab.groupId !== -1) {
-      if (tab.groupId === stored) return;                         // 已经在对的组里
-      if (![...ours.values()].includes(tab.groupId)) return;      // 用户的组，不碰
+    // 已经在一个同色的我们的组里（包括浏览器重启后恢复出来的旧组）→ 认下它，不动
+    if (cur && cur.color === o.group) {
+      if (stored !== cur.id) await chrome.storage.local.set({ [groupKey(o.sid)]: cur.id });
+      return;
     }
-    // 旧组还在、还像我们的、且在同一个窗口 → 归队；否则新建。
+    // 找一个可以归队的组：先看记下的那个，再看同窗口里现成的同色 vcorp 组。
     // 跨窗口不归队：group({groupId}) 会把标签页搬进另一个窗口，比不显著更糟。
     let gid = null;
     if (stored !== undefined) {
       const g = await chrome.tabGroups.get(stored).catch(() => null);
       if (g && g.windowId === tab.windowId && groupTitleOk(g.title, o.sid)) gid = stored;
     }
+    if (gid === null) {
+      const [g] = await chrome.tabGroups.query({ windowId: tab.windowId, title: GROUP_TITLE, color: o.group });
+      if (g) gid = g.id;
+    }
     if (gid !== null) {
       await chrome.tabs.group({ tabIds: tabId, groupId: gid });
     } else {
       gid = await chrome.tabs.group({ tabIds: tabId });
       await chrome.tabGroups.update(gid, { title: GROUP_TITLE, color: o.group });
-      await chrome.storage.local.set({ [groupKey(o.sid)]: gid });
     }
+    if (stored !== gid) await chrome.storage.local.set({ [groupKey(o.sid)]: gid });
   } catch { /* 标签页正被拖动/已关、API 不可用——都不是命令的错 */ }
 }
 
@@ -837,6 +935,8 @@ function actText(cmd, p = {}) {
     case 'download': return '下载';
     case 'upload': return '上传文件';
     case 'eval': return '执行脚本';
+    case 'load': return `加载能力包 ${p.name || ''}`;
+    case 'call': return `${p.name || ''} ${p.action || ''}`;
     case 'wait': return '等待';
     case 'ask': return '请用户搭把手';
     // act 的每一步在批处理循环里单独同步过了（带「第 i/n 步」），
@@ -943,6 +1043,8 @@ function routeOf(p) {
 const contentBudget = (p) => {
   if (p?.__hc === 'wait') return (Number(p.timeout) || 10000) + 5000;
   if (p?.__hc === 'scroll') return Math.min(Number(p.times) || 1, 50) * (Number(p.wait) || 700) + 10000;
+  // 云端上传要先在页面里取完整个视频。fetchMs 是扩展按素材大小算的，内容脚本到点自己取消
+  if (p?.__hc === 'upload' && p.fetchMs) return p.fetchMs + 15000;
   return 15000;
 };
 
@@ -955,7 +1057,7 @@ const contentBudget = (p) => {
 //   忙   —— 页面在跑重脚本，改走 network / fetch 读数据比干等有用
 const STALL = Symbol('stall');
 
-async function diagnoseStall(tabId, budget) {
+async function diagnoseStall(tabId, budget, cmd) {
   const secs = Math.round(budget / 1000);
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab) return err('NO_TAB', '标签页已经关了');
@@ -971,6 +1073,9 @@ async function diagnoseStall(tabId, budget) {
   if (dialog) {
     return err('DIALOG_BLOCKING', `页面上开着一个 ${dialog.type} 对话框：「${String(dialog.message || '').slice(0, 120)}」。`
       + `它挡住了页面的全部脚本。这个框要由用户决定点哪个按钮——用 ask 把框里的原文告诉他，请他处理。`);
+  }
+  if (cmd === 'upload') {
+    return err('PAGE_BUSY', `上传 ${secs} 秒没有回音，结果不明：文件可能稍后才进页面。先 wait 再 snapshot 看上传框，确认没进去才重试，不要连续重试。`);
   }
   return err('PAGE_BUSY', `页面脚本 ${secs} 秒没有响应，但没有发现对话框——页面多半在跑重脚本，或者后台页被浏览器限流。`
     + `别让用户去关什么框。要数据就改走 network / fetch；要操作就稍后重试一次，仍不行再 tabs(action:"select", focus:true) 拉到前台。`);
@@ -999,10 +1104,10 @@ async function toContent(tabId, payload, frameId = 0) {
           r = await send();
         } catch (e2) {
           if (e2 !== STALL) throw e2?.code ? e2 : err('TIMEOUT', `页面无响应（${e2?.message}）`);
-          throw await diagnoseStall(tabId, budget);
+          throw await diagnoseStall(tabId, budget, payload.__hc);
         }
       } else {
-        throw await diagnoseStall(tabId, budget);
+        throw await diagnoseStall(tabId, budget, payload.__hc);
       }
     } else {
       if (e?.code) throw e;
@@ -1133,6 +1238,21 @@ async function ensureNetHook() {
     allFrames: false,
   }]);
   return true; // 刚注册，当前这个页面还没被 hook 到，得刷一次
+}
+
+// 能力包用的网络记录：只开在 netHook 包的 hosts 上（不是 <all_urls>），云端任务也能用上。
+// 记录只留在页面里；读取只经能力包的白名单 action，云端碰不到 network 本身。
+const LOAD_NET_SCRIPT_ID = 'hc-net-hook-loads';
+
+async function ensureLoadNetHook(tabId) {
+  const matches = netHookMatches();
+  if (!matches.length) return;
+  const [existing] = await chrome.scripting.getRegisteredContentScripts({ ids: [LOAD_NET_SCRIPT_ID] }).catch(() => []);
+  const script = { id: LOAD_NET_SCRIPT_ID, matches, js: ['net-hook.js'], runAt: 'document_start', world: 'MAIN', allFrames: false };
+  if (!existing) await chrome.scripting.registerContentScripts([script]).catch(() => {});
+  else if (JSON.stringify(existing.matches) !== JSON.stringify(matches)) await chrome.scripting.updateContentScripts([script]).catch(() => {});
+  // 页面在注册之前就加载了：补一针，记录从现在开始（net-hook.js 自己防重复）
+  await chrome.scripting.executeScript({ target: { tabId }, world: 'MAIN', files: ['net-hook.js'] }).catch(() => {});
 }
 
 // 顶层框架的快照 + 各子框架的快照，拼成一份。子框架的 ref 打上 @fN。
@@ -1871,6 +1991,108 @@ function sparse(text) {
   return n <= 3 && excerpt.replace(/\s+/g, '').length < 160;
 }
 
+// ---------- 能力包 ----------
+//
+// 装包的顺序：先核对页面在包的 hosts 里，再等页面自己的全局（waitFor）出现，
+// 最后注入扩展包里的文件、调 ready()。页面上已经是同一版本就不重复注入——
+// 重注会把上游里的模块状态（缓存、事件监听）再建一份。
+
+function withTimeout(promise, ms, what) {
+  let t;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      t = setTimeout(() => reject(err('TIMEOUT', `${what} 超过 ${Math.round(ms / 1000)} 秒没返回`)), ms);
+    }),
+  ]).finally(() => clearTimeout(t));
+}
+
+const LOAD_WAIT_MS = 30000;
+
+// 小脑的 early 钩子（load.json 的 early）：要在页面自己的脚本之前装好，只能 document_start 注入。
+// 只为这一个标签页的这一次重载注册：注册 → 重载 → 等到钩子出现或页面加载完 → 注销。
+// 注册是按网站生效的，同站别的标签页恰好在这几秒里加载也会装上；钩子自己保证没人用时只透传、少量留存。
+async function installEarly(tabId, def, tab) {
+  const host = hostOf(tab.url);
+  if (!host) throw err('LOAD_DENIED', `能力包 ${def.name} 要装早期钩子，这个标签页不是网页`);
+  const id = `hc-early-${def.name}-${tabId}`;
+  await chrome.scripting.unregisterContentScripts({ ids: [id] }).catch(() => {});
+  await chrome.scripting.registerContentScripts([{
+    id, matches: [`*://${host}/*`], js: def.early, runAt: 'document_start', world: 'MAIN', allFrames: false, persistAcrossSessions: false,
+  }]);
+  try {
+    await chrome.tabs.reload(tabId, { bypassCache: false });
+    const until = Date.now() + LOAD_WAIT_MS;
+    for (;;) {
+      await sleep(400);
+      const t = await chrome.tabs.get(tabId).catch(() => null);
+      if (!t) throw err('LOAD_GONE', '标签页在重载时关掉了');
+      const [{ result } = {}] = await chrome.scripting.executeScript({
+        target: { tabId }, world: 'MAIN', func: (name) => !!(window.__vcorpEarly && window.__vcorpEarly[name]), args: [def.name],
+      }).catch(() => [{}]);
+      if (result) return;
+      if (t.status === 'complete' && Date.now() > until - LOAD_WAIT_MS + 3000) {
+        throw err('LOAD_NOT_READY', `能力包 ${def.name} 的早期钩子没装上（页面重载完了也没有）`);
+      }
+      if (Date.now() > until) throw err('LOAD_NOT_READY', `页面 ${LOAD_WAIT_MS / 1000} 秒内没重载完`);
+    }
+  } finally {
+    await chrome.scripting.unregisterContentScripts({ ids: [id] }).catch(() => {});
+  }
+}
+
+async function ensureLoad(id, def, { force = false } = {}) {
+  const tab = await chrome.tabs.get(id);
+  if (!loadHostAllowed(def, tab.url)) {
+    throw err('LOAD_DENIED', `能力包 ${def.name} 只能用在 ${hostsText(def)}，这个标签页在 ${hostOf(tab.url) || '非网页地址'}`);
+  }
+  const probe = async () => (await chrome.scripting.executeScript({
+    target: { tabId: id },
+    world: 'MAIN',
+    func: (name, waitFor) => ({
+      page: !waitFor || typeof window[waitFor] !== 'undefined',
+      version: (window.__vcorpLoads && window.__vcorpLoads[name] && window.__vcorpLoads[name].version) || '',
+      early: !!(window.__vcorpEarly && window.__vcorpEarly[name]),
+    }),
+    args: [def.name, def.waitFor],
+  }))[0]?.result;
+
+  let reloaded = false;
+  if (def.early?.length && (force || !(await probe())?.early)) {
+    await installEarly(id, def, tab);
+    reloaded = true;
+  }
+  const until = Date.now() + LOAD_WAIT_MS;
+  let st = await probe();
+  while (!st?.page) {
+    if (Date.now() > until) throw err('LOAD_NOT_READY', `页面 ${LOAD_WAIT_MS / 1000} 秒内没准备好（缺 ${def.waitFor}）。等编辑器加载完、或先打开一个工程再试`);
+    await sleep(500);
+    st = await probe();
+  }
+  if (needs(def, 'netHook')) await ensureLoadNetHook(id);
+  if (force || reloaded || st.version !== def.version) {
+    await chrome.scripting.executeScript({ target: { tabId: id }, world: 'MAIN', files: def.files });
+  }
+  // ready() 说没准备好（比如编辑器还在打开工程）就接着等，和上面等 waitFor 共用一个期限
+  const readyOnce = async () => (await withTimeout(chrome.scripting.executeScript({
+    target: { tabId: id },
+    world: 'MAIN',
+    func: async (name) => {
+      const load = window.__vcorpLoads && window.__vcorpLoads[name];
+      if (!load) return { ok: false, reason: '注入后没注册上' };
+      try { return await load.ready(); } catch (e) { return { ok: false, reason: String((e && e.message) || e) }; }
+    },
+    args: [def.name],
+  }), LOAD_WAIT_MS, `${def.name}.ready`))[0]?.result;
+  let ready = await readyOnce();
+  while (!ready?.ok && Date.now() < until) {
+    await sleep(1000);
+    ready = await readyOnce();
+  }
+  if (!ready?.ok) throw err('LOAD_NOT_READY', `能力包 ${def.name} 没准备好：${ready?.reason || '未知原因'}`);
+  return { version: def.version, ready, ...(reloaded ? { reloaded: true } : {}) };
+}
+
 const HANDLERS = {
   async snapshot(p, tabId, ctx) {
     const id = await resolveTab(tabId);
@@ -1887,7 +2109,9 @@ const HANDLERS = {
         await cdp.forceFrame(id);
         await domQuiet(id, { quiet: 300, cap: 1500, deadline: Date.now() + 2500 });
         const again = await guardCreds(id, await snapshotAll(id, p));
-        if (!sparse(again.text)) snap = { ...again, text: '（这一页在后台没渲染完，已自动推了一帧再拍）\n' + again.text };
+        // 重拍过，页面上生效的就是这一份。不管内容多不多都得返回它：还给 agent 第一份的话，
+        // 它手里的 snapshotId 已经作废，下一次点击必报 STALE_SNAPSHOT，而页面其实没变
+        snap = sparse(again.text) ? again : { ...again, text: '（这一页在后台没渲染完，已自动推了一帧再拍）\n' + again.text };
       } catch { /* 推不动就按原样返回 */ }
     }
     return drift ? { ...snap, text: drift + '\n' + snap.text } : snap;
@@ -2139,7 +2363,7 @@ const HANDLERS = {
   // 这条路由浏览器原生下载，不进内存、不进 context，还自带断点和大文件支持。
   // saveAs:false 是关键：不弹系统保存对话框（那是扩展够不着的东西）。
   async download(p) {
-    const filename = p.filename || `huashu-chrome/${Date.now()}-${(p.url.split('/').pop() || 'file').split('?')[0].slice(0, 60)}`;
+    const filename = p.filename || `vcorp-chrome/${Date.now()}-${(p.url.split('/').pop() || 'file').split('?')[0].slice(0, 60)}`;
     const dlId = await chrome.downloads.download({ url: p.url, filename, conflictAction: 'uniquify', saveAs: false });
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -2335,6 +2559,71 @@ const HANDLERS = {
   //
   // 换到 MAIN world 之后受页面 CSP 管：没设 CSP 的站点能用了，大站仍然拦——
   // 但那是真实且可解释的边界，不再是「哪儿都不能用」。
+  // 能力包：把扩展包里的一套有类型的接口装进页面（见 load.js 顶部）。
+  // 和 eval 的区别：注入的是扩展自己的文件（executeScript files），调用传的是结构化克隆的数据，
+  // 没有字符串变代码这一步——所以云端可以开放它，页面 CSP 也拦不住。
+  async load(p, tabId) {
+    const { name } = checkLoadParams(p);
+    const id = await resolveTab(tabId);
+    const def = loadDef(name);
+    const info = await ensureLoad(id, def, { force: !!p.reload });
+    const lines = [
+      `已加载能力包 ${def.name}（${def.title}）${info.version}`,
+      `页面状态：${JSON.stringify(info.ready)}`,
+      `用 call {name:"${def.name}", action, payload} 调用。`,
+      `只读（${def.actions.read.length}）：${def.actions.read.join(' ')}`,
+      `写操作（${def.actions.write.length}）：${def.actions.write.join(' ')}`,
+    ];
+    return { untrusted: true, text: lines.join('\n') };
+  },
+
+  async call(p, tabId) {
+    const { name, action, payload, timeout, kind } = checkCallParams(p);
+    const def = loadDef(name);
+    const id = await resolveTab(tabId);
+    const run = () => withTimeout(chrome.scripting.executeScript({
+      target: { tabId: id },
+      world: 'MAIN',
+      func: async (name, action, payload) => {
+        const load = window.__vcorpLoads && window.__vcorpLoads[name];
+        if (!load) return { gone: true };
+        try {
+          const v = await load.call(action, payload);
+          let text;
+          try { text = JSON.stringify(v === undefined ? null : v); } catch { text = JSON.stringify(String(v)); }
+          return { ok: true, text };
+        } catch (e) {
+          return { ok: false, code: (e && e.code) || '', message: String((e && e.message) || e) };
+        }
+      },
+      args: [name, action, payload],
+    }), timeout, `${name}.${action}`).then((r) => r?.[0]?.result);
+
+    let result;
+    try {
+      await ensureLoad(id, def);
+      result = await run();
+      // 页面刚好在两步之间刷新了：再装一次，只重试这一回
+      if (result?.gone) { await ensureLoad(id, def); result = await run(); }
+    } catch (e) {
+      if (e.code) throw e;
+      throw err('LOAD_GONE', `${name}.${action} 没跑完：${e.message}（页面可能刷新或关掉了，结果未知，先读一下现状再决定要不要重做）`);
+    }
+    if (!result || result.gone) throw err('LOAD_GONE', `页面里找不到能力包 ${name}`);
+    if (!result.ok) {
+      const pass = ['LOAD_DENIED', 'DRM', 'EARLY_MISSING', 'OVERFLOW', 'NEED_RELOAD', 'BAD_PARAMS'];
+      throw err(pass.includes(result.code) ? result.code : 'LOAD_ERROR', `${name}.${action} 失败：${result.message}`);
+    }
+    // 小脑交出的字节（binaryOut）：拆出来交给调用方（cloud.js 传到服务器的 pull 槽），不进 text
+    let value = JSON.parse(result.text);
+    const bin = takeBinary(def, value);
+    if (bin.bytes) {
+      value = bin.value;
+      return { untrusted: true, text: JSON.stringify(value), binary: { bytes: bin.bytes, type: bin.type } };
+    }
+    return { untrusted: true, text: result.text, ...(kind === 'write' ? { audit: `${name}.${action}` } : {}) };
+  },
+
   async eval(p, tabId) {
     const id = await resolveTab(tabId);
 
@@ -2399,7 +2688,8 @@ const HANDLERS = {
 
     if (!result) throw err('NOT_INTERACTABLE', '无法在此页面注入脚本');
     if (!result.ok) {
-      const csp = /Content Security Policy|unsafe-eval/i.test(result.message);
+      // YouTube 这类开了 Trusted Types（require-trusted-types-for 'script'）的站报的是 Trusted Type
+      const csp = /Content Security Policy|unsafe-eval|Trusted Type/i.test(result.message);
       // CSP 拦下时升级 L2：调试器的求值通道不受页面 CSP 管。
       // 顺序是「先页面世界、拦了再升级」而不是直接上 L2——小站和本地页面
       // 走页面世界就够，没必要为它们挂一下黄条。
@@ -2537,7 +2827,7 @@ const HANDLERS = {
     if (p.action === 'close') {
       const id = await resolveTab(p.tabId, sid, ctx);
       const warn = await conflictNote(id, sid, ctx);
-      await chrome.tabs.remove(id);
+      await closeTab(id);
       return { text: warn + `已关闭标签页 ${id}` };
     }
     throw err('INTERNAL', `未知 tabs 动作 ${p.action}`);
@@ -2585,7 +2875,7 @@ const HANDLERS = {
     chrome.notifications?.create(`hc-ask-${Date.now()}`, {
       type: 'basic',
       iconUrl: 'icons/icon128.png',
-      title: p.title || 'huashu-chrome 需要你搭把手',
+      title: p.title || `${chrome.runtime.getManifest().name} 需要你搭把手`,
       message: String(p.prompt || '').slice(0, 180),
       priority: 2,
     }, () => void chrome.runtime.lastError);
@@ -2593,6 +2883,7 @@ const HANDLERS = {
     const started = Date.now();
     await chrome.tabs.sendMessage(id, {
       __hcAsk: 'show', title: p.title, prompt: p.prompt, timeout, wantNote: p.wantNote !== false,
+      ...(p.kind === 'confirm' ? { offerAlways: true } : {}),
     });
     const panel = pollPanel(id, timeout);
 
@@ -2617,6 +2908,7 @@ const HANDLERS = {
 
     return {
       outcome: res.outcome,
+      ...(res.always ? { always: true } : {}),
       text: `${head}${res.note ? `\n用户留言：${res.note}` : ''}\n\n${snap.text}`,
     };
   },
@@ -2688,6 +2980,7 @@ cdp.reapOrphans();
 // 没连上就先把 offscreen 扶起来，还不行就自己顶上——这是「装完就自动连上、
 // 永远不需要用户手点」的最后一道保险，所以判据必须是连通性本身。
 chrome.alarms?.onAlarm.addListener(async () => {
+  void ensureCloud();   // 云端通道和本机桥互不相干，各自自愈
   await ensureOffscreen();
   if (await connected()) return setBadge(true);
   // 先让 offscreen 那条腿尽力——kick 会等它把五个端口探完再回话。
@@ -2698,7 +2991,9 @@ chrome.alarms?.onAlarm.addListener(async () => {
   const kicked = await chrome.runtime.sendMessage({ __hcBridge: 'kick' }).catch(() => null);
   if (kicked?.connected) return setBadge(true);
   await directConnect();
-  setBadge(await connected());
+  const up = await connected();
+  setBadge(up);
+  if (!up) await dropBridgeSessions();
 });
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   // 全局槽 + 所有会话级槽一次扫清，别留指向死 tab 的槽
@@ -2809,7 +3104,7 @@ chrome.runtime.onMessage.addListener((m, sender, sendResponse) => {
   if (m.__hcPopup === 'sessions') {
     (async () => {
       try {
-        const [all, lives] = await Promise.all([chrome.storage.local.get(null), liveList()]);
+        const [all, lives] = await Promise.all([chrome.storage.local.get(null), shownSids()]);
         const clients = await chrome.storage.session.get(lives.map(sidClientKey));
         const rows = [];
         for (const sid of lives) {
@@ -2843,6 +3138,9 @@ chrome.runtime.onMessage.addListener((m, sender, sendResponse) => {
     return true;
   }
 });
+
+// 云端通道：配过对才会连，没配对时什么都不做
+initCloud({ run: runCloud, setCloudLive });
 
 // SW 每次醒来（安装、浏览器启动、alarm 唤醒、offscreen 递消息）都会跑到这里。
 // 给 offscreen 一点时间自己连上，它没连上就自己顶。

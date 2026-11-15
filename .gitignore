@@ -26,3 +26,6 @@ _archive/
 
 # 宣传片工程（素材大，本地留）
 发布动画/
+
+# 能力包构建时拉的上游源码（scripts/build-loads.mjs）
+.cache/

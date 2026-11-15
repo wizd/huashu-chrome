@@ -1,7 +1,7 @@
 // 扩展与本地端的兼容分级。以前补丁号差一位就报警，商店用户 17 天天天看见。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { compat, compatNote, cmpVersion } from '../extension/compat.js';
+import { compat, compatNote, cmpVersion, bridgeIsStale } from '../extension/compat.js';
 
 test('补丁号不同 = 兼容，静默', () => {
   assert.equal(compat({ ext: '1.2.0', cli: '1.2.1' }), 'patch');
@@ -11,7 +11,7 @@ test('补丁号不同 = 兼容，静默', () => {
 test('次版本落后分清是哪一边', () => {
   assert.equal(compat({ ext: '1.2.1', cli: '1.3.0' }), 'ext-old');
   assert.equal(compat({ ext: '1.3.0', cli: '1.2.1' }), 'cli-old');
-  assert.match(compatNote('cli-old', { ext: '1.3.0', cli: '1.2.1' }), /huashu-chrome@latest install/);
+  assert.match(compatNote('cli-old', { ext: '1.3.0', cli: '1.2.1' }), /vcorp-chrome@latest install/);
   assert.match(compatNote('ext-old', { ext: '1.2.1', cli: '1.3.0' }), /自动更新/);
 });
 
@@ -26,6 +26,15 @@ test('版本号按数字比，不按字符串比', () => {
 
 test('缺任一边版本时不报警', () => {
   assert.equal(compat({ ext: '', cli: '1.2.1' }), 'same');
+});
+
+test('只有更旧的桥才换掉，新桥不能被旧客户端降级', () => {
+  assert.equal(bridgeIsStale('2.6.0', '2.6.1'), true);
+  assert.equal(bridgeIsStale('2.6.1', '2.6.0'), false);
+  assert.equal(bridgeIsStale('2.6.1', '2.6.1'), false);
+  assert.equal(bridgeIsStale('2.6.2', '3.0.0'), true);
+  assert.equal(bridgeIsStale('3.0.0', '3.1.0'), true);
+  assert.equal(bridgeIsStale('', '2.6.1'), false);
 });
 
 // 审计里的效果分类：只取类别、不存正文

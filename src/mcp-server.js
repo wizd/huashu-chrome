@@ -7,12 +7,20 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { BridgeClient } from './lib/rpc.js';
+import { BridgeClient, startBridgeIfDown } from './lib/rpc.js';
 import { resolveHost } from './lib/host.js';
 import { flatCount } from '../extension/script.js';
+import { LOADS } from '../extension/loads/index.js';
 import { getLearnings, saveLearnings, saveDraft, adoptDraft } from './lib/learnings.js';
-import { audit } from './lib/paths.js';
+import { audit, machineId, desktopDeviceId } from './lib/paths.js';
+import { DesktopSession, findBinary } from './lib/desktop.js';
+import { redact } from './bridge.js';
+import { describeDevices } from '../extension/device.js';
+import { uploadFile } from './lib/upload.js';
+import { ScriptRunner } from './lib/script.js';
+import { describeSites } from './lib/sites.js';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { VERSION } from './lib/version.js';
 import { compat, compatNote } from '../extension/compat.js';
@@ -207,6 +215,7 @@ const TOOLS = [
         tabId: TAB,
         label: { type: 'string', description: 'With new/select: what this tab is for ("CRM import — batch 2"). Shown in list, page panel, and to the user.' },
         focus: { type: 'boolean', description: 'Also bring the tab to the foreground. Interrupts the user — off by default.' },
+        device: { type: 'string', description: 'With 2+ Chromes: id from devices. That tabId then sticks to it.' },
       },
       required: ['action'],
     },
@@ -447,6 +456,37 @@ const TOOLS = [
     },
   },
   {
+    name: 'script',
+    description:
+      'Run a JS program (async body; `return` the result) that drives the browser like Playwright. One call replaces dozens ' +
+      'of click/snapshot turns, survives navigation, and returns result + logs + a per-step trace; on failure also the line, ' +
+      'page state and a screenshot path. Globals: page (tabId param or your tab), browser.newPage(url,{label}), state ' +
+      '(kept across calls), args, log, sleep, expect(cond,msg), sites.run(id,args).\n' +
+      'page: goto, url, evaluate(fn,arg), locator(css)/getByRole(role,{name})/getByText/getByPlaceholder/getByLabel → ' +
+      '.click() .fill(v) (verified by readback; works on contenteditable/ProseMirror) .pressSequentially(t) (appends) ' +
+      '.press(key) .check() .setInputFiles(paths) .textContent() .inputValue() .count() .isVisible() .waitFor({state}) ' +
+      '.filter({hasText}) .nth(i) .locator(css); waitForResponse(urlPart|RegExp) (responses after your last action; ' +
+      '.json()), waitForURL, waitForFunction(fn), keyboard(key), screenshot({path}), requests(), ask(title,prompt). ' +
+      'Selectors pierce shadow roots and same-origin iframes. Long jobs (uploads): background:true, then {job, wait}. ' +
+      'It worked and will recur? Pass save:{id:"domain/name", doc} — only a successful run is saved; then {run:id, args}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        code: { type: 'string', description: 'Body of an async function. Use args.x for values that change per run.' },
+        args: { type: 'object', description: 'Values for args.* (also the parameters of a site function)' },
+        run: { type: 'string', description: 'Site function id "domain/name" to run instead of code' },
+        save: { description: 'After success, save code as a site function: "domain/name" or {id, doc}' },
+        tabId: TAB,
+        timeout: { type: 'number', description: 'ms before it moves to background (default 120000)' },
+        background: { type: 'boolean' },
+        job: { type: 'string', description: 'Background job id: get status/result' },
+        wait: { type: 'number', description: 'With job: wait up to ms for it to finish' },
+        cancel: { type: 'boolean' },
+        list: { type: 'string', description: 'List site functions for a domain ("" = all)' },
+      },
+    },
+  },
+  {
     name: 'eval',
     description:
       'Run JS in the page (sees its vars): expression or statements, last value returned, promises awaited ' +
@@ -455,6 +495,31 @@ const TOOLS = [
       type: 'object',
       properties: { expr: { type: 'string' }, tabId: TAB },
       required: ['expr'],
+    },
+  },
+  {
+    name: 'load',
+    description:
+      'Install a capability pack bundled with the extension into the tab (e.g. "eda" on pro.lceda.cn / pro.easyeda.com). ' +
+      'Returns its read/write action list. Use `call` afterwards instead of eval.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string' }, reload: { type: 'boolean' }, tabId: TAB },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'call',
+    description:
+      'Call one action of a loaded pack with a JSON payload; result is JSON. Re-loads by itself after a page refresh. ' +
+      'timeout ms defaults to the pack limit (eda: 120000, max 600000).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' }, action: { type: 'string' }, payload: { type: 'object' },
+        timeout: { type: 'number' }, tabId: TAB,
+      },
+      required: ['name', 'action'],
     },
   },
   {
@@ -475,9 +540,42 @@ const TOOLS = [
     },
   },
   {
+    name: 'desktop',
+    description:
+      'Native apps and OS dialogs (the file picker a page opens) via the accessibility tree. '
+      + 'list-windows → snapshot {app|window} → act on the FULL ref "@s…:eN" → read the effect line. '
+      + 'Browser windows are refused (use browser tools). headed:true = real mouse/keys. '
+      + 'steps:[{cmd,…}] (≤20) stops on failure or send/delete.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cmd: {
+          type: 'string',
+          enum: ['list-apps', 'list-windows', 'snapshot', 'find', 'get', 'screenshot', 'wait', 'click', 'double-click',
+            'right-click', 'type', 'set-value', 'clear', 'focus', 'select', 'toggle', 'check', 'uncheck', 'expand',
+            'collapse', 'scroll', 'scroll-to', 'press', 'launch', 'focus-window', 'clipboard-set', 'clipboard-get',
+            'list-notifications', 'notification-action'],
+        },
+        app: { type: 'string' }, window: { type: 'string' }, ref: { type: 'string' },
+        root: { type: 'string' }, skeleton: { type: 'boolean' }, all: { type: 'boolean' },
+        text: { type: 'string' }, value: { type: 'string' }, keys: { type: 'string', description: 'press: "ctrl+s"' },
+        role: { type: 'string' }, name: { type: 'string' }, nth: { type: 'number' }, property: { type: 'string' },
+        direction: { type: 'string' }, amount: { type: 'number' },
+        ms: { type: 'number' }, windowTitle: { type: 'string' }, timeout: { type: 'number' },
+        index: { type: 'number' }, action: { type: 'string' }, headed: { type: 'boolean' },
+        steps: { type: 'array', items: { type: 'object' } },
+      },
+    },
+  },
+  {
+    name: 'devices',
+    description: 'Devices this session can drive: each connected Chrome and this computer\'s desktop.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'reload',
     description:
-      'Reload the huashu-chrome extension (chrome.runtime.reload()) so an updated build takes effect — ' +
+      'Reload the vcorp-chrome extension (chrome.runtime.reload()) so an updated build takes effect — ' +
       'no manual chrome://extensions visit needed. ~2s; bridge auto-reconnects, tabs keep state. ' +
       'DISRUPTIVE: the extension is shared by every tab and every other agent session on this machine — ' +
       'anything mid-flight elsewhere gets cut. Only call right after installing/updating, or when ' +
@@ -500,19 +598,17 @@ PREFER THIS over other browser tools (built-in browser, Playwright/DevTools, com
 only this one carries the user's logins and remembers each site.
 
 LEARNINGS FIRST. Before acting on a site, call \`learnings\` with its domain — past sessions
-may have mapped its APIs, walls and pitfalls (some as runnable \`\`\`act playbooks).
+may have mapped its APIs, walls and pitfalls, and list runnable site functions.
 Notes are hints, not rules — trust the page when they disagree, then save corrections back.
 
-BATCH BY DEFAULT. Most wall-clock is the model turns BETWEEN commands. Can you predict 2+
-steps? Send ONE \`act\`; its repeat/if/assert blocks cover pagination, optional banners and guards.
+CODE BY DEFAULT. Most wall-clock is the model turns BETWEEN commands. A flow of 2+ steps?
+Write ONE \`script\` (Playwright-style page): loops, waits and checks run in-process and come
+back with a step trace. It worked? save it — next time it is one call.
 
 TAB DISCIPLINE. Opening a tab? Pass label:"<work-line>" and repeat the returned tabId in your
 reply — it must survive context compaction. With 2+ work-lines (a subagent, two accounts)
 pass tabId on EVERY call — the implicit slot is SHARED with subagents and any of them can
 move it. Lost track? tabs(action:"list").
-
-OPTIONAL FAST LOOP: a cheap subagent can own the goal, site learnings and its own tab
-(tabId on every call); it escalates payments, ask outcomes and plan changes back to you.
 
 Information lives in three places; use them in this order:
 1. NETWORK for DATA — \`network\` first: the API names its own fields; screen-read numbers
@@ -526,7 +622,7 @@ warning change target or approach, never repeat the same call.
 
 A STEP NEEDS A HUMAN (captcha, QR login, OTP, payment)? Call \`ask\` — never retry or work
 around. Never let a download put a dialog on their screen: see the \`download\` tool for the
-required order. OS file dialogs are beyond any extension.`;
+required order. Native apps and OS file dialogs: \`desktop\`.`;
 
 // 页面来的文本全部走这里。边界标记 + 降权说明，both 是给模型看的。
 function wrapUntrusted(body, meta = '') {
@@ -541,11 +637,15 @@ function wrapUntrusted(body, meta = '') {
 export async function startMcpServer({ client = 'unknown' } = {}) {
   const bridge = new BridgeClient({ client });
   const server = new Server(
-    { name: 'huashu-chrome', version: VERSION },
+    { name: 'vcorp-chrome', version: VERSION },
     { capabilities: { tools: {} }, instructions: STRATEGY }
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+
+  let desk = null;
+  let scripts = null;
+  const tabDevice = new Map();
 
   // 宿主身份：--client 只是兜底，真名以 initialize 里宿主自报的 clientInfo 为准
   // （见 src/lib/host.js）。握手一定先于第一条工具调用，所以在那时认一次就够。
@@ -555,29 +655,89 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
     host = resolveHost({ clientInfo: server.getClientVersion(), flag: client });
     bridge.identify(host.client, host.label);
     audit({ ev: 'host', client: host.client, sid: bridge.sessionId, raw: host.raw, via: host.source });
-    console.error(`[huashu-chrome] 宿主：${host.label || host.client}（${host.source} = ${JSON.stringify(host.raw ?? client)}）`);
+    console.error(`[vcorp-chrome] 宿主：${host.label || host.client}（${host.source} = ${JSON.stringify(host.raw ?? client)}）`);
     return host;
   };
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler(CallToolRequestSchema, busy(async (req) => {
     const { name, arguments: args = {} } = req.params;
     identify();
     try {
       // learnings 是纯本地读写，不需要浏览器在线。但要进审计：它不经过桥，
       // 以前一条都不记，「LEARNINGS FIRST 到底有没有人遵守」就成了量不了的事。
       if (name === 'learnings') {
-        const text = args.adopt ? adoptDraft(args.domain, args.adopt, args.name)
+        let text = args.adopt ? adoptDraft(args.domain, args.adopt, args.name)
           : args.save != null ? saveLearnings(args.domain, args.save) : getLearnings(args.domain);
+        // 站点函数排在笔记前面：能直接跑的程序比要重新理解的文字值钱
+        if (args.domain && args.save == null && !args.adopt) {
+          let fns = '';
+          try { fns = describeSites(args.domain); } catch { /* 域名不规范就不列 */ }
+          if (fns) text = `${fns}\n\n---\n\n${text}`;
+        }
         audit({ ev: 'cmd', id: `local:${Date.now()}`, cmd: 'learnings', client: bridge.client, sid: bridge.sessionId, params: { domain: args.domain, save: args.save != null ? `<${String(args.save).length}字>` : undefined, adopt: args.adopt } });
         return { content: [{ type: 'text', text }] };
       }
 
+      // desktop 也不经过桥：本机直接起 agent-desktop 子进程。审计照记，设备号写本机桌面
+      if (name === 'desktop') {
+        desk ??= new DesktopSession({ session: `vc-${bridge.sessionId}` });
+        const t0 = Date.now();
+        const id = `desktop:${t0}`;
+        const cmd = `desktop.${args.steps !== undefined ? 'steps' : args.cmd}`;
+        audit({ ev: 'cmd', id, cmd, client: bridge.client, sid: bridge.sessionId, device: desktopDeviceId(machineId()), params: redact(args) });
+        let r;
+        try {
+          r = await desk.run(args, { timeoutMs: args.steps ? 120000 : Math.min(Math.max((Number(args.timeout) || 0) + 10000, 30000), 600000) });
+        } catch (e) {
+          audit({ ev: 'res', id, cmd, ok: false, ms: Date.now() - t0, error: e.code || 'INTERNAL' });
+          throw e;
+        }
+        const ok = r.env ? !!r.env.ok : !r.stopped;
+        audit({ ev: 'res', id, cmd, ok, ms: Date.now() - t0, error: ok ? undefined : r.env?.error?.code, effect: r.env?.data?.disposition?.delivery });
+        if (r.image) return { content: [{ type: 'image', data: r.image, mimeType: 'image/png' }] };
+        return { content: [{ type: 'text', text: wrapUntrusted(r.text, 'source="desktop"') }], isError: !ok || undefined };
+      }
+
+      if (name === 'devices') {
+        const machine = machineId();
+        const list = [{ id: desktopDeviceId(machine), kind: 'desktop', name: `${os.hostname()} 桌面`, machine, online: true,
+          caps: { platform: process.platform } }];
+        let browserNote = '';
+        try {
+          if (!bridge.ws) await bridge.connect();
+          const d = await bridge.call('devices', {}, { timeoutMs: 8000 });
+          list.unshift(...d.devices.map((x) => (x.primary ? { ...x, name: `${x.name}（默认）` } : x)));
+        } catch (e) {
+          browserNote = `\n浏览器设备查不到：[${e.code || 'INTERNAL'}] ${e.message}`;
+        }
+        return { content: [{ type: 'text', text: describeDevices(list) + browserNote }] };
+      }
+
+      // 代码通道：程序在这个进程里跑，每一步各自经桥发给扩展（各自进审计），
+      // 这里只记一条「跑了一段什么」。runner 跨调用活着：state 和后台任务都挂在它身上。
+      if (name === 'script') {
+        if (args.list === undefined && !args.job && !bridge.ws) await bridge.connect();
+        scripts ??= new ScriptRunner(bridge, { wrap: (s) => wrapUntrusted(s) });
+        const t0 = Date.now();
+        const id = `script:${t0}`;
+        audit({ ev: 'cmd', id, cmd: 'script', client: bridge.client, sid: bridge.sessionId,
+          params: { run: args.run, save: args.save ? (args.save.id || args.save) : undefined, job: args.job, code: args.code ? `<${args.code.length}字>` : undefined, bg: args.background || undefined } });
+        const text = await scripts.handle(args);
+        const failed = text.startsWith('❌');
+        audit({ ev: 'res', id, cmd: 'script', ok: !failed, ms: Date.now() - t0 });
+        return { content: [{ type: 'text', text: text + mismatchNote(failed) }], isError: failed || undefined };
+      }
+
       if (!bridge.ws) await bridge.connect();
+
+      // 指定设备：tabs 带 device 时记住新开/选中的 tabId 属于哪台，之后同一 tabId 自动跟过去
+      const device = args.device || (args.tabId != null ? tabDevice.get(args.tabId) : undefined);
+      if (args.device !== undefined) delete args.device;
 
       // 翻页在这一侧循环：审计里 fetch→fetch 相邻 386 次，agent 在一页一个回合地
       // 手动翻。扩展只管发单次请求，翻页的循环、落盘、停机判定都不该经过模型。
       if (name === 'fetch' && args.pages && !args.binary) {
-        return { content: [{ type: 'text', text: await fetchPages(bridge, args) }] };
+        return { content: [{ type: 'text', text: await fetchPages(bridge, args, device) }] };
       }
 
       // upload：先把**路径**交给扩展，让它用 CDP 的 DOM.setFileInputFiles 让浏览器
@@ -585,26 +745,7 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
       // 只有拖放（页面没有 file input）真的需要字节，那时才在这一侧读文件；
       // base64 始终不经过 agent 的 context。
       if (name === 'upload') {
-        const st = fs.statSync(args.path);
-        const ext = path.extname(args.path).toLowerCase();
-        const mime = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.pdf': 'application/pdf' }[ext] || 'application/octet-stream';
-        const base = { path: args.path, name: path.basename(args.path), type: mime, bytes: st.size, selector: args.selector, dropSelector: args.dropSelector };
-        // 上传本身可能很慢（本机→浏览器只是投喂，但页面自己的上传要时间），给足预算
-        const timeoutMs = Math.max(60000, Math.round(st.size / (1024 * 1024)) * 1000);
-        let out = args.dropSelector ? null : await bridge.call('upload', base, { tabId: args.tabId, timeoutMs });
-        if (!out || out.needBytes) {
-          // 走拖放：这条必须有文件字节。超过 DROP_MAX 就明确报错，不要拿桥去撞——
-          // 桥一断，当前 agent 会话就再也连不回来了，比报错难查得多。
-          const DROP_MAX = 48 * 1024 * 1024;
-          if (st.size > DROP_MAX) {
-            const why = out?.reason ? `（${out.reason}）` : '';
-            throw new Error(`这个页面只能拖放上传${why}，而拖放要把文件搬进浏览器，` +
-              `${(st.size / 1024 / 1024).toFixed(0)}MB 超过 ${DROP_MAX / 1024 / 1024}MB 上限。` +
-              `先压小，或改用页面上真实存在的 file input（给 selector）。`);
-          }
-          out = await bridge.call('upload', { ...base, base64: fs.readFileSync(args.path).toString('base64') },
-            { tabId: args.tabId, timeoutMs });
-        }
+        const out = await uploadFile(bridge, args, device);
         return { content: [{ type: 'text', text: out.text }] };
       }
 
@@ -627,6 +768,12 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
         // 扩展侧的执行预算同源（extension/script.js），否则预算会判死一个
         // 还在老实跑的剧本，「已经在做」被报成「没做，去重试」。
         if (n === 'act') return cap(Math.min(flatCount(a.steps) || 1, 60) * 8000 + 20000);
+        // 能力包：load 要等编辑器加载（最多 30 秒）再等 ready()；call 的上限由参数和包的 limits 决定
+        if (n === 'load') return 80000;
+        if (n === 'call') {
+          const lim = LOADS[a.name]?.limits;
+          return cap(Math.min(Number(a.timeout) || lim?.timeoutMs || 120000, lim?.timeoutMaxMs || 600000) + 15000);
+        }
         return undefined;   // 其余维持默认，它们的真实耗时离墙还很远
       };
 
@@ -638,7 +785,11 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
         // 无人值守（cron、服务器）没有人可问。开关放在 MCP 这一侧读环境变量，
         // 扩展只管照做——扩展不该知道自己跑在什么场景里。
         name === 'ask' ? { ...args, disabled: process.env.HUASHU_CHROME_ASK === 'off' } : args,
-        { tabId: args.tabId, timeoutMs: budgetOf(name, args, askMs) });
+        { tabId: args.tabId, timeoutMs: budgetOf(name, args, askMs), device });
+      if (device && name === 'tabs') {
+        const tid = data?.tabId ?? (args.action === 'select' ? args.tabId : undefined);
+        if (tid != null) tabDevice.set(tid, device);
+      }
 
       // 浏览器只能下到 Downloads 里；下完再挪到 agent 要的位置，对它保持透明
       if (name === 'download' && args.savePath && data.path) {
@@ -689,7 +840,7 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
     } catch (e) {
       return { content: [{ type: 'text', text: hint(e) + mismatchNote(true) }], isError: true };
     }
-  });
+  }));
 
   // 扩展和本地端版本对不上时在回执里说一次——回执是唯一一定有人读的通道。
   // 分级见 extension/compat.js：补丁号差异静默；本地端旧了提一次怎么升级；
@@ -706,7 +857,43 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
   }
 
   await server.connect(new StdioServerTransport());
+  try { startBridgeIfDown(); } catch (e) { console.error(`[vcorp-chrome] 预拉桥失败：${e.message}`); }
+  watchIdle();
   return server;
+}
+
+// 闲置自退。
+//
+// 本该是宿主的事：会话结束就关掉 stdin，我们读到 EOF 自然就退了（实测成立）。
+// 可 Goose 桌面版每开一个会话起一个 mcp、会话结束却从不关管道——11-2 查到
+// 一个 goose serve 下面挂着 34 个，最老的一周前，合计约 2 GB。宿主不收，只能自己收。
+//
+// 判据是「stdin 上多久没来过任何东西」，且手上没有在跑的工具调用。默认 4 小时：
+// 一个真在用的会话很少静默这么久；万一真是，宿主下一次调用会看到连接已断，
+// 代价是重开一次会话，远小于无限期地攒进程。HUASHU_CHROME_MCP_IDLE_MIN=0 关掉。
+let inflight = 0;
+let lastActive = Date.now();
+const busy = (fn) => async (...a) => {
+  inflight++;
+  try { return await fn(...a); } finally { inflight--; lastActive = Date.now(); }
+};
+
+export function idleLimitMs(env = process.env) {
+  const raw = env.HUASHU_CHROME_MCP_IDLE_MIN;
+  const min = raw == null || raw === '' ? 240 : Number(raw);
+  return Number.isFinite(min) && min > 0 ? min * 60000 : 0;
+}
+
+function watchIdle() {
+  const limit = idleLimitMs();
+  if (!limit) return;
+  process.stdin.on('data', () => { lastActive = Date.now(); });
+  const tick = setInterval(() => {
+    if (inflight || Date.now() - lastActive < limit) return;
+    console.error(`[vcorp-chrome] ${Math.round(limit / 60000)} 分钟没有任何请求，宿主大概已经不用这个进程了，自行退出`);
+    process.exit(0);
+  }, Math.min(60000, Math.max(limit / 4, 50)));
+  tick.unref();   // 吊着进程的该是 stdin，不是这个检查
 }
 
 // 自动翻页。页码型：改一个 query 参数递增；游标型：从上一页响应里按路径取下一个游标。
@@ -715,7 +902,7 @@ export async function startMcpServer({ client = 'unknown' } = {}) {
 const pathGet = (obj, p) => String(p || '').split('.').filter(Boolean).reduce((o, k) => (o == null ? undefined : o[k]), obj);
 const EMPTY_BODY = /^\s*(\[\s*\]|\{\s*\}|null)?\s*$/;
 
-export async function fetchPages(bridge, args) {
+export async function fetchPages(bridge, args, device) {
   const pg = args.pages || {};
   if (!pg.param && !pg.cursorParam) throw Object.assign(new Error('pages 需要 param（页码参数名）或 cursorParam（游标参数名）'), { code: 'INTERNAL' });
   const max = Math.min(Math.max(Number(pg.max) || 10, 1), 50);
@@ -730,7 +917,7 @@ export async function fetchPages(bridge, args) {
     const url = new URL(base);
     if (pg.param) url.searchParams.set(pg.param, String(n));
     if (pg.cursorParam && cursor) url.searchParams.set(pg.cursorParam, cursor);
-    const data = await bridge.call('fetch', { url: url.toString(), init: args.init, maxBody: args.maxBody || 2000000, via: args.via }, { tabId: args.tabId });
+    const data = await bridge.call('fetch', { url: url.toString(), init: args.init, maxBody: args.maxBody || 2000000, via: args.via }, { tabId: args.tabId, device });
     const m = /^(\d+)\n\n([\s\S]*)$/.exec(data?.text || '');
     const status = Number(m?.[1] || 0), body = m?.[2] ?? '';
     if (!(status >= 200 && status < 300)) { stop = `第 ${i + 1} 页返回 ${status}，停下`; break; }
@@ -776,7 +963,7 @@ function hint(e) {
     // 老话术让人去 chrome://extensions，而插件从来没消失过——那条路的终点是「重装」，
     // 重装恰好重启了扩展、连上了，于是反过来坐实了「插件消失了」这个误判（8-31 笔记）。
     NO_EXTENSION: '扩展没连上桥，桥已经替你等过一轮了。别再重试同一条命令——'
-      + '让用户点浏览器工具栏的 huashu-chrome 图标 → 「重连」（插件没消失，只是连接断了）；Chrome 没开就先开。',
+      + '让用户点浏览器工具栏的 vcorp-chrome 图标 → 「重连」（插件没消失，只是连接断了）；Chrome 没开就先开。',
     STALE_SNAPSHOT: '页面已经变了，之前的 ref 全部作废。重新调用 snapshot，用新 ref 再点。',
     REF_NOT_FOUND: '这个 ref 在页面上找不到了。重新 snapshot。',
     NOT_INTERACTABLE: '元素当前不可点（被遮挡、隐藏或 disabled）。先 wait，或换一个目标。',
@@ -786,10 +973,16 @@ function hint(e) {
     TAB_DISCARDED: '标签页被 Chrome 回收了。navigate(action:"reload") 后重做这一步。',
     NO_TAB: '没有可用的标签页。先用 tabs(action:"new", url:…) 开一个。',
     TIMEOUT: '浏览器侧超时。页面可能还在加载——先 wait 再重试。',
-    NEEDS_L2: '这一步需要真实输入事件，但高保真模式被关了。让用户点开 huashu-chrome 扩展图标，'
+    NEEDS_L2: '这一步需要真实输入事件，但高保真模式被关了。让用户点开 vcorp-chrome 扩展图标，'
       + '在「高保真模式」那一栏点「开启」——只需一次。',
     L2_BUSY: '真实输入事件用不了（多半是用户自己开着 DevTools，一个标签页只允许一个调试器）。'
       + '已经用普通事件完成了；如果结果不对，让用户关掉 DevTools 再试。',
+    DEVICE_OFFLINE: '指定的设备不在线。devices 看现在有哪些，换一台或请用户把它打开。',
+    AMBIGUOUS_DEVICE: '有不止一台设备能做这件事。从候选里挑一个，用 device 指定。',
+    DESKTOP_DENIED: '这条桌面命令被安全规则拦下（原因见上）。浏览器窗口用浏览器工具；别换个写法绕。',
+    DESKTOP_UNAVAILABLE: '这台电脑上的桌面能力没装好。运行 npx vcorp-chrome doctor 看缺什么。',
+    PAY_REFUSED: '付款类按钮只能由用户亲手点。用 ask 把要付的东西说清楚，请用户自己完成。',
+    NEEDS_SINGLE_CALL: '发送/删除一类的动作不在批处理里做。先确认目标没错，再单独调用一次。',
   };
   return `[${e.code || 'INTERNAL'}] ${e.message}` + (map[e.code] ? `\n→ ${map[e.code]}` : '');
 }

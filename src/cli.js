@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// huashu-chrome CLI
+// vcorp-chrome CLI
 //   mcp      给 agent 用的 MCP server（stdio）。agent 配置里填的就是这条。
 //   bridge   桥 daemon。正常不用手动跑，mcp 会自己拉起。
 //   doctor   诊断：这类产品的头号支持成本就是「连不上」，把排查做成一条命令。
@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { readBridgeInfo, DEFAULT_PORT, HOME, AUDIT_FILE, LOG_FILE } from './lib/paths.js';
+import { DEFAULT_PORT, HOME, AUDIT_FILE, LOG_FILE, readBridgeInfo } from './lib/paths.js';
 import { VERSION } from './lib/version.js';
 import { compat, compatNote } from '../extension/compat.js';
 
@@ -34,8 +34,8 @@ switch (cmd) {
   }
 
   // 手动发一条命令，开发和排错时不用绕道 agent
-  //   huashu-chrome call snapshot
-  //   huashu-chrome call tabs '{"action":"new","url":"https://example.com"}'
+  //   vcorp-chrome call snapshot
+  //   vcorp-chrome call tabs '{"action":"new","url":"https://example.com"}'
   case 'call': {
     // learnings 是纯本地读写，不需要桥和浏览器
     if (argv[1] === 'learnings') {
@@ -102,6 +102,42 @@ switch (cmd) {
     await doctor();
     break;
 
+  // 云端任务够到桌面要经原生消息宿主；本机 MCP 的 desktop 工具不需要这一步
+  case 'desktop': {
+    const nat = await import('./lib/native-install.js');
+    const sub = process.argv[3];
+    if (sub === 'install') {
+      const r = nat.install();
+      console.log(`已登记原生消息宿主 ${nat.HOST_NAME}（只允许扩展 ${r.id} 调用）`);
+      for (const p of r.placed) console.log(`  ✅ ${p}`);
+      if (!r.placed.length) console.log('  ⚠️ 没找到已安装的 Chrome / Edge / Chromium 配置目录');
+      console.log('\n回到扩展侧栏点「启用桌面能力」。');
+      for (const l of (await nat.status()).lines) console.log(`  ${l}`);
+    } else if (sub === 'uninstall') {
+      const r = nat.uninstall();
+      console.log(r.removed.length ? `已移除：\n  ${r.removed.join('\n  ')}` : '本来就没有登记。');
+    } else if (sub === 'status') {
+      const { fullMode } = await import('./lib/paths.js');
+      for (const l of (await nat.status()).lines) console.log(`  ${l}`);
+      console.log(`  完全模式：${fullMode() ? '开（云端任务可以跑命令、读写文件、用全部桌面命令）' : '关'}`);
+    } else if (sub === 'full') {
+      const { setFullMode, FULL_FILE } = await import('./lib/paths.js');
+      const v = process.argv[4];
+      if (v !== 'on' && v !== 'off') {
+        console.log('用法：vcorp-chrome desktop full on | off');
+        break;
+      }
+      if (setFullMode(v === 'on')) {
+        console.log(`已打开桌面完全模式（${FULL_FILE}）。`);
+        console.log('配对服务器上的任务现在可以在这台电脑上跑任意命令、读写任意文件、操作任何应用。');
+        console.log('关掉：npx vcorp-chrome desktop full off');
+      } else console.log('已关闭桌面完全模式。');
+    } else {
+      console.log('用法：vcorp-chrome desktop install | uninstall | status | full on|off');
+    }
+    break;
+  }
+
   case 'extension':
     printExtension();
     // --reveal：在访达 / 资源管理器里选中扩展文件夹，用户拖进 chrome://extensions 就装好了。
@@ -122,17 +158,42 @@ switch (cmd) {
     break;
   }
 
-  default:
-    console.log(`huashu-chrome — 让任何 AI agent 操控你自己的 Chrome
+  // HTTP 网关的地址和 token。桥要在跑（任一 agent 用过一次、或 bridge --foreground）
+  case 'api': {
+    const { apiToken, API_FILE } = await import('./lib/gateway.js');
+    const info = readBridgeInfo();
+    const base = `http://127.0.0.1:${info?.port || DEFAULT_PORT}/v1`;
+    const token = apiToken();
+    console.log(`地址   ${base}
+token  ${token}
+       （存在 ${API_FILE}，长期有效；删掉这个文件再重启桥就会换一个）
+${info ? '' : '\n⚠️  桥现在没在跑：先 vcorp-chrome bridge，或让任一 agent 用一次浏览器工具。\n'}
+  curl -H "Authorization: Bearer ${token}" ${base}/capabilities
+  curl -H "Authorization: Bearer ${token}" -H "content-type: application/json" \\
+       -d '{"capability":"image.generate","args":{"prompt":"a red apple","aspect":"1:1"}}' ${base}/jobs
+  curl -H "Authorization: Bearer ${token}" "${base}/jobs/<id>?wait=120000"
 
-  huashu-chrome install        一键安装：自动配好所有 agent + 引导装扩展
-  huashu-chrome mcp            启动 MCP server（agent 配置里填这条，install 会自动写）
-  huashu-chrome doctor         诊断连接问题
-  huashu-chrome extension      打印扩展加载步骤
-  huashu-chrome audit [-n 30]  看最近的浏览器操作记录
-  huashu-chrome audit --stats [--days 7]   真实 agent 的用法统计：回合数、哪类调用最多、在哪儿浪费
-  huashu-chrome bridge --foreground   前台跑桥（调试用）
-  huashu-chrome install --dry-run     只看会改哪些配置，不写
+flow2api 兼容（原来指向 flow2api 的客户端改 base URL + key 即可）：
+  OpenAI   base_url ${base}   key 同上   模型见 ${base}/models（如 gemini-3.1-flash-image-square、veo-3.1-fast-8s-landscape、omni-1.2-flash-i2v-3s-landscape）
+  Gemini   ${base.replace(/\/v1$/, '/v1beta')}/models/<model>:generateContent   x-goog-api-key 或 ?key= 填同一个 token
+  不支持：2K/4K 放大、视频延长（extend）——请求会直接 400`);
+    break;
+  }
+
+  default:
+    console.log(`vcorp-chrome — 让任何 AI agent 操控你自己的 Chrome
+
+  vcorp-chrome install        一键安装：自动配好所有 agent + 引导装扩展
+  vcorp-chrome mcp            启动 MCP server（agent 配置里填这条，install 会自动写）
+  vcorp-chrome doctor         诊断连接问题
+  vcorp-chrome extension      打印扩展加载步骤
+  vcorp-chrome audit [-n 30]  看最近的浏览器操作记录
+  vcorp-chrome audit --stats [--days 7]   真实 agent 的用法统计：回合数、哪类调用最多、在哪儿浪费
+  vcorp-chrome bridge --foreground   前台跑桥（调试用）
+  vcorp-chrome api            HTTP 网关的地址和 token（把站点函数当 API 调）
+  vcorp-chrome install --dry-run     只看会改哪些配置，不写
+  vcorp-chrome desktop install|uninstall|status   让云端任务也能操作桌面应用（登记原生消息宿主）
+  vcorp-chrome desktop full on|off   完全模式：云端任务能跑命令、读写文件、用全部桌面命令
 
 配置目录 ${HOME}`);
 }
@@ -141,31 +202,21 @@ async function doctor() {
   const ok = (s) => console.log(`  ✅ ${s}`);
   const bad = (s, fix) => { console.log(`  ❌ ${s}`); if (fix) console.log(`     → ${fix}`); };
 
-  console.log('\nhuashu-chrome 体检\n');
+  console.log('\nvcorp-chrome 体检\n');
 
   console.log('配置目录');
-  fs.existsSync(HOME) ? ok(HOME) : bad(`${HOME} 不存在`, '跑一次 `huashu-chrome mcp` 会自动创建');
+  fs.existsSync(HOME) ? ok(HOME) : bad(`${HOME} 不存在`, '跑一次 `npx vcorp-chrome mcp` 会自动创建');
 
   console.log('\n桥');
-  let info = readBridgeInfo();
-  let alive = false;
-  if (info) { try { process.kill(info.pid, 0); alive = true; } catch {} }
+  // 桥没跑时以前直接放弃探测，打一句「不用管」然后接着「扩展 ✅」——新机器上
+  // 装完扩展跑 doctor 看到的就是这个假绿，引导页承诺的「扩展在线」永远看不到。
+  // 桥本来就是谁先用谁拉起的，doctor 自己拉一个再探，才探得到真相。
+  const { ensureBridgeUp, probe } = await import('./lib/bridge-up.js');
+  const up = await ensureBridgeUp({ onNote: (s) => console.log(`  ·  ${s}`) });
+  const { alive, info } = up;
   if (!alive) {
-    // 桥没跑时以前直接放弃探测，打一句「不用管」然后接着「扩展 ✅」——新机器上
-    // 装完扩展跑 doctor 看到的就是这个假绿，引导页承诺的「扩展在线」永远看不到。
-    // 桥本来就是谁先用谁拉起的，doctor 自己拉一个再探，才探得到真相。
-    console.log(`  ·  桥没在跑${info ? `（bridge.json 记着的 pid ${info.pid} 已经没了）` : ''}，先拉起来再探…`);
-    const { tryStartBridge } = await import('./lib/rpc.js');
-    tryStartBridge();
-    const until = Date.now() + 6000;
-    while (Date.now() < until) {
-      await new Promise((r) => setTimeout(r, 300));
-      info = readBridgeInfo();
-      if (info?.pid) { try { process.kill(info.pid, 0); alive = true; break; } catch {} }
-    }
-    if (!alive) {
-      bad('桥拉不起来', `看 ${LOG_FILE} 的最后几行；端口 ${DEFAULT_PORT} 被别的程序占着也会这样（lsof -i :${DEFAULT_PORT}）`);
-    }
+    bad(`桥拉不起来：${up.failure.reason}`);
+    for (const l of up.failure.lines) console.log(`     ${l}`);
   }
   if (alive) {
     ok(`pid ${info.pid} · 端口 ${info.port} · 起于 ${info.startedAt ? new Date(info.startedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '?'}`);
@@ -193,7 +244,7 @@ async function doctor() {
         // 「去浏览器点开任意页面」对半开连接是错的——半开时 offscreen 自认为在线，
         // 不会因为你开了个页面就重连；「去 chrome://extensions」则把人引向重装。
         bad('Chrome 扩展这会儿没连着桥',
-          '点浏览器工具栏的 huashu-chrome 图标 → 「重连」，几秒后再跑一次 doctor（插件没消失，只是连接断了）。'
+          '点浏览器工具栏的 vcorp-chrome 图标 → 「重连」，几秒后再跑一次 doctor（插件没消失，只是连接断了）。'
           + '图标都没有？Chrome 没开、扩展没装或被停用——按下面「扩展」一栏的目录去装。');
       }
     }
@@ -203,8 +254,7 @@ async function doctor() {
   const mf = path.join(ROOT, 'extension', 'manifest.json');
   fs.existsSync(mf)
     ? ok(`${path.join(ROOT, 'extension')}${alive ? '' : ''}（这只说明文件在；Chrome 是否从这里加载了，看上面「扩展在线」那行）`)
-    : bad('扩展目录缺失', '重装 huashu-chrome');
-
+    : bad('扩展目录缺失', '重装 vcorp-chrome');
   // bridge.log 里最近一次断连：用户体感的「插件消失」到底是什么时候、断了多久
   try {
     const lines = fs.readFileSync(LOG_FILE, 'utf8').trim().split('\n').slice(-400);
@@ -216,7 +266,19 @@ async function doctor() {
     if (lastDown) console.log(`  ·  最近一次断开 ${lastDown}${lastUp ? `，最近一次连上 ${lastUp}` : '，之后没再连上'}（bridge.log，只有时分秒）`);
   } catch { /* 没日志就没日志 */ }
 
-  // 经验库里 agent 记下的「huashu-chrome 的 X 不生效」——产品 bug 住在经验库里，
+  console.log('\n桌面');
+  {
+    const { findBinary, runAgentDesktop } = await import('./lib/desktop.js');
+    const bin = findBinary();
+    const t0 = Date.now();
+    const env = await runAgentDesktop(['list-apps'], { bin, timeoutMs: 15000 });
+    if (env.ok) ok(`agent-desktop 可用 · ${(env.data?.apps || []).length} 个应用 · ${Date.now() - t0}ms（${bin}）`);
+    else if (env.error?.code === 'PERM_DENIED') bad(`agent-desktop 没有辅助功能权限：${env.error.message}`, env.error.suggestion);
+    else bad(`desktop 工具用不了：[${env.error?.code}] ${env.error?.message}`,
+      '在 vcorp-chrome 的安装目录里补装 agent-desktop（npm i agent-desktop@1.0.2），或设 AGENT_DESKTOP_BIN 指到它的可执行文件');
+  }
+
+  // 经验库里 agent 记下的「vcorp-chrome 的 X 不生效」——产品 bug 住在经验库里，
   // 没有这一栏就永远回不到开发者手上（screenshot 的 savePath 就是这么躺了一周的）
   try {
     const { LEARNINGS_DIR } = await import('./lib/learnings.js');
@@ -224,7 +286,7 @@ async function doctor() {
     for (const f of fs.readdirSync(LEARNINGS_DIR)) {
       if (!f.endsWith('.md')) continue;
       for (const line of fs.readFileSync(path.join(LEARNINGS_DIR, f), 'utf8').split('\n')) {
-        if (/huashu-chrome/.test(line) && /不生效|无效|没实现|不工作|静默|bug|坏了|绕过|绕法/i.test(line)) hits.push(`${f}: ${line.trim().slice(0, 110)}`);
+        if (/vcorp-chrome/.test(line) && /不生效|无效|没实现|不工作|静默|bug|坏了|绕过|绕法/i.test(line)) hits.push(`${f}: ${line.trim().slice(0, 110)}`);
         if (hits.length >= 6) break;
       }
     }
@@ -236,7 +298,7 @@ async function doctor() {
 
   console.log('\n日志');
   console.log(`  桥日志   ${LOG_FILE}`);
-  console.log(`  操作审计 ${AUDIT_FILE}   （huashu-chrome audit 查看）`);
+  console.log(`  操作审计 ${AUDIT_FILE}   （vcorp-chrome audit 查看）`);
   console.log('');
 }
 
@@ -326,39 +388,19 @@ function auditStats(days) {
   console.log('');
 }
 
-function probe(info) {
-  return new Promise((resolve) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${info.port}`);
-    const t = setTimeout(() => { ws.close(); resolve({ ok: false, error: '超时' }); }, 3000);
-    ws.onerror = () => { clearTimeout(t); resolve({ ok: false, error: '连接被拒' }); };
-    ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', role: 'agent', token: info.token, client: 'doctor', v: 1 }));
-    ws.onmessage = (ev) => {
-      clearTimeout(t);
-      const m = JSON.parse(ev.data);
-      ws.close();
-      resolve(m.type === 'welcome'
-        ? { ok: true, extensionOnline: m.extensionOnline, extensionVersion: m.extensionVersion, extensionProtocol: m.extensionProtocol, versionMismatch: m.versionMismatch, extensions: m.extensions || [] }
-        : { ok: false, error: JSON.stringify(m) });
-    };
-  });
-}
-
 function printExtension() {
   const dir = path.join(ROOT, 'extension');
   console.log(`
-装扩展有两条路：
+装扩展：手动加载（这一版还没有自己的商店页）
 
-  A. 商店一键装（推荐）：https://chromewebstore.google.com/detail/foiljmaplphdfimfcnfdpekhdnfbgfbf
+  1. Chrome 打开  chrome://extensions ，右上角打开「开发者模式」
+  2. 把这个文件夹拖到那一页上（或点「加载已解压的扩展程序」选中它）：
 
-  B. 手动加载（改过扩展代码、或商店打不开时）
-     1. Chrome 打开  chrome://extensions ，右上角打开「开发者模式」
-     2. 把这个文件夹拖到那一页上（或点「加载已解压的扩展程序」选中它）：
+     ${dir}
 
-        ${dir}
+     加 --reveal 会直接在访达 / 资源管理器里选中它，拖过去就行。
 
-        加 --reveal 会直接在访达 / 资源管理器里选中它，拖过去就行。
-
-装好后扩展会自动连桥。跑 huashu-chrome doctor 应该看到「Chrome 扩展在线」
+装好后扩展会自动连桥。跑 npx vcorp-chrome doctor 应该看到「Chrome 扩展在线」
 `);
 }
 

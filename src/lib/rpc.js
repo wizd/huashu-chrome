@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { DEFAULT_PORT, LOCK_FILE, LOG_FILE, BRIDGE_FILE, readBridgeInfo, ensureHome } from './paths.js';
 import { VERSION } from './version.js';
+import { bridgeIsStale } from '../../extension/compat.js';
 
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cli.js');
 
@@ -61,9 +62,12 @@ export class BridgeClient {
       const info = readBridgeInfo();
       // 桥是长驻单例：它一旦起来就再也不会读磁盘上的代码。用户 npm update 之后
       // 老桥还在跑老逻辑，症状是「新版本的修复没生效」，而且不报错。
-      // 版本对不上就当场换掉——这是唯一能自动发现的时机。
-      if (info && info.version && info.version !== VERSION && !spawned) {
+      // 只在它比这个客户端旧时换掉。新桥不能被旁边的旧客户端降级——
+      // 否则开发机重载了 2.6.1 扩展，侧栏仍会连上 npx 缓存里的 2.6.0。
+      if (info && bridgeIsStale(info.version, VERSION) && !spawned) {
+        const pid = info.pid;
         stopBridge(info);
+        await waitDead(pid);
         spawned = tryStartBridge();
         await sleep(400);
         continue;
@@ -79,7 +83,7 @@ export class BridgeClient {
       if (!spawned) spawned = tryStartBridge();
       await sleep(250);
     }
-    throw new Error('连不上 huashu-chrome 桥。跑 `huashu-chrome doctor` 看看哪儿卡住了');
+    throw new Error('连不上 vcorp-chrome 桥。跑 `npx vcorp-chrome doctor` 看看哪儿卡住了');
   }
 
   #open(info) {
@@ -100,6 +104,7 @@ export class BridgeClient {
           this.extensionVersion = msg.extensionVersion;
           this.versionMismatch = !!msg.versionMismatch;
           this.extensionProtocol = msg.extensionProtocol;
+          this.bridgeDevices = !!msg.devices;
           ws.onmessage = (e2) => this.#dispatch(JSON.parse(e2.data));
           ws.onclose = () => { this.ws = null; this.#failAll('桥连接已断开'); };
           ws.onerror = () => {};
@@ -144,7 +149,11 @@ export class BridgeClient {
   }
 
   // 桥侧已有 30s 超时兜底；这里的 35s 只防「桥自己也没了」的情况
-  async call(cmd, params = {}, { tabId, timeoutMs = 35000 } = {}) {
+  // device：指定投给哪一个浏览器设备（devices 列出的 id）。不给就由桥挑有窗口、最近活跃的那个。
+  async call(cmd, params = {}, { tabId, timeoutMs = 35000, device } = {}) {
+    if ((device || cmd === 'devices') && this.ws && !this.bridgeDevices) {
+      throw Object.assign(new Error('在跑的桥是旧版本，不认识设备：指定 device 的命令会被它投给默认的 Chrome。所有会话都退出、桥自动重启之后再用。'), { code: 'BRIDGE_OLD' });
+    }
     if (!this.ws) await this.connect();
     const id = 'c' + ++this.seq;
     return new Promise((resolve, reject) => {
@@ -154,7 +163,7 @@ export class BridgeClient {
       }, timeoutMs);
       this.waiting.set(id, { resolve, reject, timer });
       // 桥侧也要知道这条命令能等多久，否则它按默认 30s 就把慢命令判死了
-      this.ws.send(JSON.stringify({ type: 'cmd', id, cmd, params, tabId, timeout: timeoutMs - 3000 }));
+      this.ws.send(JSON.stringify({ type: 'cmd', id, cmd, params, tabId, timeout: timeoutMs - 3000, ...(device ? { to: { device } } : {}) }));
     });
   }
 }
@@ -173,28 +182,73 @@ export function stopBridge(info) {
   return true;
 }
 
+// MCP server 一启动就调：桥不在就拉一个，在就不碰（老版本的换代留给 connect）。
+// 以前桥要等 agent 第一次调工具才起，于是重启电脑后 agent 开着、扩展侧栏却一直
+// 「本地端未连接」，点「重连」也没用——那头根本没人在听。
+// 只拉进程不连接：会话身份要等宿主 initialize 之后才定（见 identify）。
+export function startBridgeIfDown(env = process.env) {
+  if (env.HUASHU_CHROME_EAGER_BRIDGE === '0') return false;
+  const info = readBridgeInfo();
+  if (info?.pid) {
+    try { process.kill(info.pid, 0); return false; } catch { /* 记录里的进程已经没了 */ }
+  }
+  return !!tryStartBridge();
+}
+
 export function tryStartBridge() {
   ensureHome();
-  let fd;
-  try {
-    fd = fs.openSync(LOCK_FILE, 'wx'); // O_EXCL：只有一个进程能建成功
-  } catch {
-    const age = Date.now() - (fs.statSync(LOCK_FILE).mtimeMs || 0);
-    if (age > 30000) { try { fs.unlinkSync(LOCK_FILE); } catch {} } // 上次崩在这儿留下的死锁
-    return false;
+  const grab = () => { try { return fs.openSync(LOCK_FILE, 'wx'); } catch { return null; } }; // O_EXCL：只有一个进程能建成功
+  let fd = grab();
+  if (fd === null) {
+    let age = 0;
+    try { age = Date.now() - fs.statSync(LOCK_FILE).mtimeMs; } catch { /* 刚被删掉 */ }
+    // 上次崩在这儿留下的死锁：删掉后**这一次就接着抢**。以前删完直接返回 false，
+    // 于是每个死锁都要白白赔掉一次启动——doctor 只试一次，正好报「桥拉不起来」。
+    if (age > 30000) { try { fs.unlinkSync(LOCK_FILE); } catch {} }
+    fd = grab();
+    if (fd === null) return false;
   }
+  // 返回值对老调用方只是个真值；doctor/install 要靠它说清「为什么没起来」：
+  // spawn 本身报错、子进程退出码，都只能在这里攥住，过后就没了。
+  const rec = { pid: 0, args: [CLI, 'bridge'], at: Date.now(), exit: null, error: null };
+  let out;
   try {
-    const out = fs.openSync(LOG_FILE, 'a');
-    const child = spawn(process.execPath, [CLI, 'bridge'], {
+    out = fs.openSync(LOG_FILE, 'a');
+    const child = spawn(process.execPath, rec.args, {
       detached: true,
       stdio: ['ignore', out, out],
     });
+    rec.pid = child.pid || 0;
+    child.on('error', (e) => { rec.error = e; });
+    child.on('exit', (code, signal) => { rec.exit = { code, signal }; });
     child.unref();
-    return true;
+    return rec;
+  } catch (e) {
+    rec.error = e;
+    return rec;
   } finally {
+    // 子进程已经继承了日志句柄，父进程这份留着只会漏
+    if (out !== undefined) try { fs.closeSync(out); } catch {}
     fs.closeSync(fd);
+    // 正常由桥自己在监听成功（或撞端口退出）时删锁。这个定时器只是兜底，而且
+    // unref 了——doctor/install 这种短命进程等不到它，锁会一直留到 30 秒过期。
     setTimeout(() => { try { fs.unlinkSync(LOCK_FILE); } catch {} }, 3000).unref?.();
   }
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// SIGTERM 是异步的。不等进程退出就去占端口，Windows 上经常 EADDRINUSE，
+// 新桥没起来，旧版本号就留在侧栏里。
+function waitDead(pid, ms = 4000) {
+  if (!pid) return Promise.resolve(true);
+  const until = Date.now() + ms;
+  return new Promise((resolve) => {
+    const tick = () => {
+      try { process.kill(pid, 0); } catch { return resolve(true); }
+      if (Date.now() > until) return resolve(false);
+      setTimeout(tick, 100);
+    };
+    tick();
+  });
+}

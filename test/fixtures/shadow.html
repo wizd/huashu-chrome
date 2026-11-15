@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>shadow 命中检测靶场</title>
+<!-- 微前端的形状：整个子应用在 <wujie-app> 的 shadow root 里。按 ?case= 摆局面。 -->
+<wujie-app id="host" style="display:block;position:relative"></wujie-app>
+<script>
+const kase = new URLSearchParams(location.search).get('case') || 'plain';
+const host = document.getElementById('host');
+const root = host.attachShadow({ mode: 'open' });
+window.__clicks = 0;
+// 点完要有看得见的变化：页面没反应时工具会自动用真实事件再点一次，计数就成了 2
+const count = (e) => {
+  window.__clicks += 1;
+  window.__trusted = e.isTrusted;
+  document.body.insertAdjacentHTML('beforeend', '<p>点击已收到</p>');
+};
+const addButton = (parent) => {
+  parent.innerHTML += '<button id="b">发表视频</button>';
+  parent.getElementById('b').addEventListener('click', count);
+};
+
+if (kase === 'light') {
+  document.body.insertAdjacentHTML('afterbegin', '<button id="b">发表视频</button>');
+  document.getElementById('b').addEventListener('click', count);
+} else if (kase === 'nested') {
+  root.innerHTML = '<div id="inner"></div>';
+  addButton(root.getElementById('inner').attachShadow({ mode: 'open' }));
+} else if (kase === 'slotted') {
+  root.innerHTML = '<div style="padding:8px"><slot></slot></div>';
+  host.innerHTML = '<button id="b">发表视频</button>';
+  host.firstChild.addEventListener('click', count);
+} else {
+  addButton(root);
+  if (kase === 'innerOverlay') {
+    root.innerHTML += '<div style="position:absolute;inset:0;background:rgba(0,0,0,.3)"></div>';
+    root.getElementById('b').addEventListener('click', count); // innerHTML+= 重建了按钮
+  }
+  if (kase === 'outerOverlay') {
+    document.body.insertAdjacentHTML('beforeend', '<div style="position:fixed;inset:0;background:rgba(0,0,0,.3)"></div>');
+  }
+}
+</script>

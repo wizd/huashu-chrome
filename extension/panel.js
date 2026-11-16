@@ -196,6 +196,18 @@ async function renderConn(sessionCount) {
       ? light('', '暂无 agent 在线', '在你的 agent 里说一句「用 vcorp-chrome 打开……」就会出现在这里')
       : light('', '本机 agent 状态未知', localUnknown));
 
+  localPill = pill;
+  paintPill();
+}
+
+// 顶部状态：本地端和云端任一条连着就算连上。只用 Maker 云端任务的电脑
+// 根本不需要装本地端，以前这里照样亮红灯「未连接」，用户以为扩展坏了。
+// 本地端「有更新」的黄灯仍然保留，那是要用户动手的事。
+let localPill = null;
+let cloudOnline = false;
+function paintPill() {
+  if (!localPill) return;
+  const pill = localPill[0] === 'bad' && cloudOnline ? ['ok', '已连接'] : localPill;
   $('pilldot').className = `dot ${pill[0]}`;
   $('pilltxt').textContent = pill[1];
   // 断了或有更新时，跳转链接改成「去修复」，修法在下面的连接区
@@ -417,6 +429,8 @@ function renderCloud(s) {
     $('claimAccount').textContent = `「${s.claim.account || '（未命名）'}」`;
     if (!$('claimName').value) $('claimName').value = s.claim.name;
   }
+  cloudOnline = on && s.status?.state === 'online';
+  paintPill();
   if (!on) { syncAlert(); return; }
   if (document.activeElement !== $('deviceName')) $('deviceName').value = s.cfg.name;
   // 改名时没连上：连上那一刻 hello 已把名字写进服务器，提示跟着变

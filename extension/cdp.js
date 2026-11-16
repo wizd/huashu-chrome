@@ -363,7 +363,10 @@ export async function evaluate(tabId, src, { maxLength = 20000 } = {}) {
     }
     if (r.exceptionDetails) {
       const msg = r.exceptionDetails.exception?.description || r.exceptionDetails.text;
-      throw new L2Unavailable(`表达式执行失败：${msg}`, 'INTERNAL');
+      // 通道是通的，是表达式自己在页面里抛了错。打个标记，调用方别再说成「通道没能用上」
+      const e = new L2Unavailable(`表达式执行失败：${msg}`, 'INTERNAL');
+      e.pageError = true;
+      throw e;
     }
     let s;
     try { s = JSON.stringify(r.result?.value, null, 2); } catch { s = String(r.result?.value); }

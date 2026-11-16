@@ -2723,6 +2723,9 @@ const HANDLERS = {
         try {
           return { untrusted: true, text: await cdp.evaluate(id, src, { maxLength: p.maxLength || 20000 }) };
         } catch (e) {
+          // 调试器通道跑通了，是代码自己出错（选择器写错、元素不在……）：照原话报，
+          // 不提 CSP——以前这里一律说「真实求值通道也没能用上」，agent 就去换工具绕路
+          if (e.pageError) throw err('INTERNAL', e.message);
           throw err(e.code === 'NEEDS_L2' || e.code === 'L2_BUSY' ? e.code : 'INTERNAL',
             e.code === 'NEEDS_L2'
               ? `这个页面的 CSP 禁止 eval。${e.message}`

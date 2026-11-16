@@ -121,6 +121,7 @@ function inPage(op, spec, arg) {
       els = els.filter((el) => ps.some((p) => p !== el && (p.contains(el) || p.shadowRoot?.contains(el) || p._sr?.contains(el))));
     }
     if (s.hasText != null) els = els.filter((el) => textMatch(norm(el.textContent), s.hasText, false));
+    if (s.textIs != null) els = els.filter((el) => textMatch(norm(el.textContent), s.textIs, true));
     if (s.visible) els = els.filter(visible);
     els = [...new Set(els)];
     if (s.nth != null) {
@@ -411,7 +412,7 @@ export class Page {
 
   // ---- 定位器 ----
 
-  locator(css, opts = {}) { return new Locator(this, { css, ...pick(opts) }); }
+  locator(sel, opts = {}) { return new Locator(this, { ...parseSelector(sel), ...pick(opts) }); }
   getByRole(role, opts = {}) { return new Locator(this, { role, name: opts.name, exact: opts.exact, ...pick(opts) }); }
   getByText(text, opts = {}) { return new Locator(this, { text, exact: opts.exact }); }
   getByPlaceholder(text, opts = {}) { return new Locator(this, { placeholder: text, exact: opts.exact }); }
@@ -517,6 +518,88 @@ export class Page {
   }
 }
 
+// Playwright 的选择器写法（agent 张口就来）：浏览器的 querySelectorAll 不认，
+// 以前原样塞进去，报「选择器写错了」。这里先拆成 spec：
+//   'button:has-text("tune")'  →  css=button + hasText
+//   'text=发布' / 'text="发布"'（引号＝精确）/ 'text=/发.布/i'
+//   'role=button[name="发布"]'
+//   'a >> nth=1'、'div.card >> button'（>> 串起来，后一段在前一段里面找）
+//   ':visible' / 'visible=true'
+// 伪类只认写在整段末尾的；写在中间（div:has-text("x") > a）拆不了，
+// 直接说清楚该怎么写，别让它掉进 querySelectorAll 报一句看不懂的错。
+const unquote = (s) => {
+  const m = /^(["'])(.*)\1$/s.exec(s.trim());
+  return m ? { v: m[2], quoted: true } : { v: s.trim(), quoted: false };
+};
+
+function splitChain(sel) {
+  const parts = [];
+  let cur = '', q = null, depth = 0;
+  for (let i = 0; i < sel.length; i++) {
+    const c = sel[i];
+    if (q) { if (c === '\\') { cur += c + (sel[++i] ?? ''); continue; } if (c === q) q = null; cur += c; continue; }
+    if (c === '"' || c === "'") { q = c; cur += c; continue; }
+    if (c === '(' || c === '[') depth++;
+    if (c === ')' || c === ']') depth--;
+    if (!depth && sel.startsWith('>>', i)) { parts.push(cur.trim()); cur = ''; i++; continue; }
+    cur += c;
+  }
+  parts.push(cur.trim());
+  return parts.filter(Boolean);
+}
+
+const PSEUDO_TAIL = /:(has-text|text|text-is|visible)(?:\(\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^)]*)\s*\))?\s*$/;
+
+function parseOne(part) {
+  let m;
+  if ((m = /^nth=(-?\d+)$/.exec(part))) return { nth: Number(m[1]) };
+  if ((m = /^visible=(true|false)$/.exec(part))) return { visible: m[1] === 'true' };
+  if ((m = /^text=(.*)$/s.exec(part))) {
+    const re = /^\/(.*)\/([a-z]*)$/s.exec(m[1].trim());
+    if (re) return { text: { re: re[1], flags: re[2] } };
+    const { v, quoted } = unquote(m[1]);
+    return { text: v, exact: quoted };
+  }
+  if ((m = /^role=([\w-]+)(?:\[name=(.*)\])?$/s.exec(part))) {
+    const out = { role: m[1] };
+    if (m[2] != null) { const { v, quoted } = unquote(m[2]); out.name = v; out.exact = quoted; }
+    return out;
+  }
+  const s = { css: part.replace(/^css=/, '') };
+  while ((m = PSEUDO_TAIL.exec(s.css))) {
+    s.css = s.css.slice(0, m.index).trim();
+    const arg = m[2] != null ? unquote(m[2]).v : null;
+    if (m[1] === 'visible') s.visible = true;
+    else if (m[1] === 'text-is') { s.textIs = arg; }
+    else s.hasText = arg;
+  }
+  if (/:(has-text|text|text-is|visible)\b(?!-)/.test(s.css)) {
+    throw new ScriptError(
+      `选择器 ${part} 里的 :has-text / :text / :visible 只能写在最后。写在中间的拆成两步：`
+      + `page.locator('外层').filter({ hasText: '…' }).locator('里层')`, 'BAD_SELECTOR');
+  }
+  if (!s.css) s.css = '*';
+  return s;
+}
+
+// parent：链在哪个 spec 后面（Locator.locator 传自己的 spec）
+export function parseSelector(sel, parent) {
+  if (typeof sel !== 'string' || !sel.trim()) throw new ScriptError('locator() 需要一个选择器字符串', 'BAD_SELECTOR');
+  let spec = parent || null;
+  for (const part of splitChain(sel)) {
+    const p = parseOne(part);
+    if (p.nth != null && Object.keys(p).length === 1) {
+      if (!spec) throw new ScriptError(`${sel}：nth= 前面要先有一段选择器`, 'BAD_SELECTOR');
+      spec = { ...spec, nth: p.nth };
+    } else if (p.visible != null && Object.keys(p).length === 1) {
+      spec = spec ? { ...spec, visible: p.visible } : { css: '*', visible: p.visible };
+    } else {
+      spec = spec ? { ...p, parent: spec } : p;
+    }
+  }
+  return spec;
+}
+
 function pick(o) {
   const out = {};
   if (o.hasText != null) out.hasText = o.hasText;
@@ -543,14 +626,15 @@ const descSpec = (s) => {
   const base = s.css ? s.css : s.role ? `role=${s.role}${s.name != null ? `[name=${s.name}]` : ''}`
     : s.text != null ? `text=${s.text}` : s.placeholder != null ? `placeholder=${s.placeholder}` : `label=${s.label}`;
   return (s.parent ? descSpec(s.parent) + ' >> ' : '') + base
-    + (s.hasText != null ? `:has-text(${s.hasText})` : '') + (s.nth != null ? ` >> nth=${s.nth}` : '');
+    + (s.hasText != null ? `:has-text(${s.hasText})` : '') + (s.textIs != null ? `:text-is(${s.textIs})` : '')
+    + (s.visible ? ':visible' : '') + (s.nth != null ? ` >> nth=${s.nth}` : '');
 };
 
 export class Locator {
   constructor(page, spec) { this.page = page; this.spec = spec; }
 
   toString() { return descSpec(this.spec); }
-  locator(css) { return new Locator(this.page, { css, parent: this.spec }); }
+  locator(sel) { return new Locator(this.page, parseSelector(sel, this.spec)); }
   getByRole(role, o = {}) { return new Locator(this.page, { role, name: o.name, exact: o.exact, parent: this.spec }); }
   getByText(text, o = {}) { return new Locator(this.page, { text, exact: o.exact, parent: this.spec }); }
   filter({ hasText, visible } = {}) { return new Locator(this.page, { ...this.spec, ...(hasText != null ? { hasText } : {}), ...(visible != null ? { visible } : {}) }); }

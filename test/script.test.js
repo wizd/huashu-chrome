@@ -120,3 +120,17 @@ test('站点函数 id 校验', () => {
   assert.throws(() => parseId('a.com/1bad'), /函数名/);
   assert.deepEqual(parseId('https://www.A.com/doIt'.replace('https://', '')), { domain: 'a.com', name: 'doIt' });
 });
+
+test('locator 认 Playwright 选择器写法，不再原样塞给 querySelectorAll', async () => {
+  const { parseSelector } = await import('../src/lib/page.js');
+  assert.deepEqual(parseSelector('button:has-text("tune")'), { css: 'button', hasText: 'tune' });
+  assert.deepEqual(parseSelector('text="发布"'), { text: '发布', exact: true });
+  assert.deepEqual(parseSelector('text=发布'), { text: '发布', exact: false });
+  assert.deepEqual(parseSelector('text=/发.布/i'), { text: { re: '发.布', flags: 'i' } });
+  assert.deepEqual(parseSelector('role=button[name="发布"]'), { role: 'button', name: '发布', exact: true });
+  assert.deepEqual(parseSelector('a >> nth=1'), { css: 'a', nth: 1 });
+  assert.deepEqual(parseSelector('div.card >> button:visible'), { css: 'button', visible: true, parent: { css: 'div.card' } });
+  assert.deepEqual(parseSelector("button[aria-label='x >> y']"), { css: "button[aria-label='x >> y']" });
+  assert.deepEqual(parseSelector('div.card'), { css: 'div.card' });
+  assert.throws(() => parseSelector('div:has-text("x") > a'), /只能写在最后/);
+});

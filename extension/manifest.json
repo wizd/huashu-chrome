@@ -23,8 +23,15 @@
     "sidePanel",
     "notifications",
     "debugger",
-    "declarativeNetRequestWithHostAccess"
+    "declarativeNetRequestWithHostAccess",
+    "contextMenus"
   ],
+  "commands": {
+    "ask-maker": {
+      "suggested_key": { "default": "Alt+M" },
+      "description": "交给 maker：针对鼠标指着的内容（或当前页面）写一句话"
+    }
+  },
   "optional_permissions": [
     "nativeMessaging"
   ],

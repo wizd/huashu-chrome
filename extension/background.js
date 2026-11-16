@@ -15,6 +15,7 @@ import { CRED_URL, redactCreds } from './redact.js';
 import { identityOf, stripMarkPrefix } from './identity.js';
 import { validateScript, condText, repeatMax, EXEC_BUDGET, collectRefs, toRecipe } from './script.js';
 import { initCloud, ensureCloud } from './cloud.js';
+import { initAsk } from './ask.js';
 import { loadDef, loadHostAllowed, checkLoadParams, checkCallParams, netHookMatches, needs, hostsText, takeBinary } from './load.js';
 
 // ---------- 连接层 ----------
@@ -3171,6 +3172,8 @@ chrome.runtime.onMessage.addListener((m, sender, sendResponse) => {
 
 // 云端通道：配过对才会连，没配对时什么都不做
 initCloud({ run: runCloud, setCloudLive });
+// 交给 maker：右键菜单、快捷键、站点图标 → 扩展自己的输入窗口 → 云端通道
+initAsk();
 
 // SW 每次醒来（安装、浏览器启动、alarm 唤醒、offscreen 递消息）都会跑到这里。
 // 给 offscreen 一点时间自己连上，它没连上就自己顶。

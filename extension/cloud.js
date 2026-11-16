@@ -21,6 +21,7 @@ import * as folders from './folders.js';
 import { checkDesktop, checkObserved, recordOf, filterWindows, appsToAsk, APPS_MAX } from './desktop-policy.js';
 import { renderEnvelope } from './desktop-render.js';
 import { LOADS } from './loads/index.js';
+import { taskUrl } from './ask-policy.js';
 import { routeHere, stampFrom, capOf, cleanDevice, describeDevices, browserIdentity, defaultDeviceName, cleanDeviceName } from './device.js';
 
 const CFG = 'cloud';                 // storage.local：配对信息和用户的选择
@@ -293,6 +294,8 @@ export async function connect() {
             send({ type: 'res', id: m.id, ok: true, data });
             return;
           }
+          if (m.type === 'task_ack') { askWaits.get(m.id)?.ack(); return; }
+          if (m.type === 'task_res') { askWaits.get(m.id)?.done(m); return; }
           if (m.type === 'job_end') { await endTask(String(m.jobId || ''), 'server'); }
         } catch { /* 一条消息处理失败不能变成未捕获异常 */ }
       })();
@@ -303,6 +306,7 @@ export async function connect() {
       welcomed = false;
       // 没等到确认就断了：名字已存在本机，下次 hello 会带上
       for (const finish of [...configAcks.values()]) finish('offline');
+      for (const w of [...askWaits.values()]) w.lost();
       clearInterval(pingTimer); pingTimer = null;
       if (ev.code === 4401) { void setStatus('error', '服务器不认这个设备的签名，请重新配对'); return; }
       void setStatus('connecting');
@@ -354,6 +358,51 @@ async function pushName(cfg) {
     configAcks.set(id, finish);
     try { ws.send(JSON.stringify({ ...configMessage(cfg, mounted), id })); } catch { finish('offline'); }
   });
+}
+
+// ---------- 交给 maker ----------
+//
+// 这条通道上唯一一个反方向的请求：用户在扩展自己的窗口里写了一句话，让 maker 去办。
+// 谁能调到这里、那句话从哪来，规矩在 ask-policy.js 和 ask.js；这里只管送出去、等回音。
+// 服务器先回 task_ack（收到了），安排好再回 task_res。没有 ack 的是还不认识这条消息的老服务器。
+
+const ASK_ACK_MS = 8000;
+const ASK_MS = 6 * 60 * 1000;   // 安排一件事是一次模型调用，慢的时候要一两分钟
+const askWaits = new Map();     // id → { ack, done, lost }
+
+export async function startTask({ text, context }) {
+  const cfg = await getCfg();
+  if (!cfg?.deviceId) throw err('CLOUD_UNPAIRED', '这个浏览器还没有和 maker 配对。点工具栏上的 vcorp-chrome，在侧栏里配对后再交办。');
+  if (cfg.paused) throw err('CLOUD_PAUSED', '云端通道暂停着。在侧栏里恢复后再交办。');
+  await ensureCloud();
+  for (let i = 0; i < 60 && !(welcomed && ws?.readyState === 1); i++) await sleep(100);
+  if (!welcomed || ws?.readyState !== 1) throw err('CLOUD_OFFLINE', '现在连不上 maker，稍后再试。');
+  const id = crypto.randomUUID();
+  const made = await new Promise((resolve, reject) => {
+    let acked = false;
+    const finish = (e, v) => {
+      clearTimeout(ackTimer); clearTimeout(timer); askWaits.delete(id);
+      if (e) reject(e); else resolve(v);
+    };
+    const ackTimer = setTimeout(() => { if (!acked) finish(err('CLOUD_OLD', 'maker 服务器还不支持从浏览器交办任务。')); }, ASK_ACK_MS);
+    const timer = setTimeout(() => finish(err('CLOUD_TIMEOUT', '等了很久没有回音。到 maker 网页上看看任务有没有开始，没有再交办一次。')), ASK_MS);
+    askWaits.set(id, {
+      ack: () => { acked = true; },
+      done: (m) => (m.ok ? finish(null, m) : finish(err('CLOUD_REFUSED', String(m.error || 'maker 没有接下这件事').slice(0, 400)))),
+      lost: () => finish(err('CLOUD_OFFLINE', '和 maker 的连接断了，结果不明。到 maker 网页上看看任务有没有开始，没有再交办一次。')),
+    });
+    try { ws.send(JSON.stringify({ type: 'task', id, text, context })); }
+    catch { finish(err('CLOUD_OFFLINE', '现在连不上 maker，稍后再试。')); }
+  });
+  const title = String(made.title || '').replace(/[\x00-\x1f]/g, ' ').slice(0, 80);
+  await log({ ev: 'asked', msg: title });
+  return { title, url: taskUrl(cfg.origin, made.chain), origin: cfg.origin };
+}
+
+// 输入窗口要知道「交给谁」：配对的账号和服务器
+export async function askTarget() {
+  const cfg = await getCfg();
+  return cfg?.deviceId ? { origin: cfg.origin, account: cfg.account || '', paused: !!cfg.paused } : null;
 }
 
 // ---------- 任务 ----------

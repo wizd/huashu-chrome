@@ -236,7 +236,14 @@ $('guide').onclick = (e) => {
   chrome.tabs.create({ url: chrome.runtime.getURL('welcome.html') });
 };
 
-chrome.storage.local.get('l2Disabled', ({ l2Disabled }) => { $('l2').checked = !l2Disabled; });
+chrome.storage.local.get(['l2Disabled', 'askIconDisabled'], ({ l2Disabled, askIconDisabled }) => {
+  $('l2').checked = !l2Disabled;
+  $('askIcon').checked = !askIconDisabled;
+});
+
+$('askIcon').onchange = async (e) => {
+  await chrome.storage.local.set({ askIconDisabled: !e.target.checked });
+};
 
 $('l2').onchange = async (e) => {
   if (!e.target.checked) {
@@ -285,7 +292,7 @@ const LOG_TEXT = {
   site_on: '网站加入允许名单', site_off: '从允许名单移除网站', auto_on: '打开自动允许', auto_off: '关闭自动允许',
   notes_saved: '记下网站经验', notes_deleted: '删除网站经验',
   eval_on: '允许云端执行脚本', eval_off: '禁止云端执行脚本', confirm_on: '打开对外动作免确认', confirm_off: '关闭对外动作免确认', ask_auto: '免确认放行', confirm_task: '本任务内都同意',
-  paused: '暂停', resumed: '恢复',
+  paused: '暂停', resumed: '恢复', asked: '交给 maker：',
 };
 
 const PERM_WORD = { granted: '可读', prompt: '需要恢复访问', denied: '已拒绝', unknown: '打不开' };

@@ -1609,18 +1609,31 @@ async function evalCond(tabId, cond) {
 // 长回调那条路会被 back/forward cache 掐断（「The page keeping the extension port
 // is moved into back/forward cache」），而用户去解验证码、掏手机付款的过程中
 // 页面进 bfcache 恰恰是常态。
-function pollPanel(id, timeout) {
+function pollPanel(id, timeout, show) {
   return (async () => {
     const deadline = Date.now() + timeout + 2000;
+    let gone = 0;
     while (Date.now() < deadline) {
       await sleep(400);
+      let r = null;
       try {
-        const r = await chrome.tabs.sendMessage(id, { __hcAsk: 'poll' });
+        r = await chrome.tabs.sendMessage(id, { __hcAsk: 'poll' });
         if (r && !r.pending) return r;
-      } catch {
-        // 页面正在跳转或刚从 bfcache 恢复，下一轮再问。
-        // 浮条注入过的页面导航走就没了，这时靠外层超时收尾。
-      }
+      } catch { /* 页面正在跳转或刚从 bfcache 恢复 */ }
+      if (r?.open || !show) { gone = 0; continue; }
+      // 浮条跟着旧页面没了：扫码登录成功后的跳转最典型。人刚做完，回头却
+      // 找不到「我完成了」，只能干等超时。新页面加载完就原样再挂一次，倒计时接着走。
+      if (++gone < 2) continue;
+      const tab = await chrome.tabs.get(id).catch(() => null);
+      if (!tab) return { outcome: 'cancelled', note: '标签页被关掉了' };
+      if (tab.status !== 'complete') continue;
+      try {
+        await chrome.scripting.executeScript({ target: { tabId: id }, files: ['mark.js'] });
+        await chrome.tabs.sendMessage(id, {
+          ...show, timeout: Math.max(1000, deadline - 2000 - Date.now()), reshown: true,
+        });
+        gone = 0;
+      } catch { /* 受限页面（chrome://、商店）挂不上，下一轮再试 */ }
     }
     return { outcome: 'timed_out', note: '' };
   })();
@@ -1657,7 +1670,7 @@ async function confirmPay(id, pay) {
     priority: 2,
   }, () => void chrome.runtime.lastError);
 
-  await chrome.tabs.sendMessage(id, {
+  const show = {
     __hcAsk: 'show',
     danger: true,
     title: '要花钱了，确认一下',
@@ -1667,9 +1680,10 @@ async function confirmPay(id, pay) {
     noText: '不要',
     wantNote: false,
     timeout: payTimeout,
-  });
+  };
+  await chrome.tabs.sendMessage(id, show);
 
-  const res = await pollPanel(id, payTimeout);
+  const res = await pollPanel(id, payTimeout, show);
   return res.outcome === 'continued';
 }
 
@@ -2893,11 +2907,12 @@ const HANDLERS = {
     }, () => void chrome.runtime.lastError);
 
     const started = Date.now();
-    await chrome.tabs.sendMessage(id, {
+    const show = {
       __hcAsk: 'show', title: p.title, prompt: p.prompt, timeout, wantNote: p.wantNote !== false,
       ...(p.kind === 'confirm' ? { offerAlways: true } : {}),
-    });
-    const panel = pollPanel(id, timeout);
+    };
+    await chrome.tabs.sendMessage(id, show);
+    const panel = pollPanel(id, timeout, show);
 
     // until 判据：用户完成后往往不会记得回来点「我完成了」——登录跳转、
     // 验证通过这些都有明确的页面信号，能自动收工就别让他多点一下。

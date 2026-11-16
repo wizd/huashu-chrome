@@ -727,7 +727,9 @@
     if (msg && msg.__hcAsk !== undefined) {
       // show 立即返回，不攥着 sendResponse 等人——见 closeAsk 上面那段
       if (msg.__hcAsk === 'show') { showAsk(msg); sendResponse({ shown: true }); return true; }
-      if (msg.__hcAsk === 'poll') { sendResponse(askOutcome || { pending: true }); return true; }
+      // open：浮条此刻真在页面上。页面跳转后新文档里的 mark.js 也会答 pending，
+      // 但它从没 show 过——background 靠这一位分辨「人还在操作」和「浮条跟着旧页面没了」。
+      if (msg.__hcAsk === 'poll') { sendResponse(askOutcome || { pending: true, open: !!askEl }); return true; }
       if (msg.__hcAsk === 'flash') {
         const els = (msg.selectors || []).map((s) => {
           try { return document.querySelector(s); } catch { return null; }

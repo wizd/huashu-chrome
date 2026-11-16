@@ -372,6 +372,37 @@ function renderNotes(rows) {
   }
 }
 
+// 服务共享：这个账号在网页上共享出去的服务，和「允许替组织成员生成」开关。
+// 列表由服务器推（opus-video-maker 新版才推）；没推过就是 null，只留开关。
+const CAP_NAMES = { 'image.generate': '生图', 'video.generate': '生视频' };
+function renderShares(s) {
+  const list = s.shares;
+  const running = (s.tasks || []).filter((t) => t.share && (t.state === 'pending' || t.state === 'approved'));
+  // 没共享、开关也关着、手上也没活：整段不占地方
+  $('shareSec').hidden = !s.cfg || (Array.isArray(list) && !list.length && !s.cfg.shareOk && !running.length);
+  $('cloudShare').checked = !!s.cfg?.shareOk;
+  const box = $('shareList');
+  box.textContent = '';
+  if (Array.isArray(list)) {
+    if (!list.length) box.appendChild(el('div', 'empty', '这个账号没有共享任何服务。'));
+    for (const a of list) {
+      const row = el('div', 'task');
+      const head = el('div', 't', `${a.title} · ${a.caps.map((c) => CAP_NAMES[c] || c).join('、')}`);
+      if (!a.enabled) head.appendChild(el('span', 'muted', '（已暂停）'));
+      row.appendChild(head);
+      const used = a.dailyMax == null ? `今天 ${a.usedToday} 次` : `今天 ${a.usedToday} / ${a.dailyMax} 次`;
+      const hours = a.hours ? `${a.hours[0]}:00–${a.hours[1]}:00` : '全天';
+      row.appendChild(el('div', 'sub', `共享给 ${a.orgs.join('、') || '（没有组织）'} · ${used} · ${hours}`));
+      if (!a.here) row.appendChild(el('div', 'sub', '指定了另一个浏览器，不在这里做'));
+      box.appendChild(row);
+    }
+  }
+  for (const t of running) box.appendChild(el('div', 'sub', `${t.state === 'pending' ? '等你批准' : '正在'}替 ${t.share.for} 生成`));
+  const manage = $('shareManage');
+  manage.hidden = !s.cfg;
+  if (s.cfg) manage.href = `${s.cfg.origin}/orgs`;
+}
+
 function renderCloud(s) {
   renderFolders(s);
   renderDesktop(s);
@@ -398,7 +429,7 @@ function renderCloud(s) {
     ? s.status.message : `账号「${s.cfg.account || ''}」`;
   $('cloudAuto').checked = !!s.cfg.auto;
   $('cloudAutoConfirm').checked = !!s.cfg.autoConfirm;
-  $('cloudShare').checked = !!s.cfg.shareOk;
+  renderShares(s);
   $('cloudEval').checked = s.cfg.allowEval !== false;
   $('cloudPause').checked = !!s.cfg.paused;
 
@@ -540,7 +571,7 @@ $('deskOff').onclick = async () => {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   const keys0 = Object.keys(changes);
-  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudLog', 'cloudStatus', 'cloudClaim', 'folderTick', 'cloudDesktop', 'cloudDesktopError'].includes(k))) void cloudCall('state');
+  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudLog', 'cloudStatus', 'cloudClaim', 'folderTick', 'cloudDesktop', 'cloudDesktopError', 'cloudShares'].includes(k))) void cloudCall('state');
   if (area !== 'session') return;
   const keys = Object.keys(changes);
   if (keys.includes(`panel:${tabId}`) || keys.includes('liveSids')) renderPage();

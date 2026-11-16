@@ -7,6 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  cleanShares,
   checkCommand, urlAllowed, initialTask, normalizeOrigin, mediaAllowed, mediaFetchMs, MEDIA_MAX, CLOUD_CMDS,
   normalizeSite, cleanSites, cleanAllowList, SITES_MAX, taskHosts, sitesToAsk,
   cleanFolderName, cleanFolderNames, foldersToAsk, normalizeRelPath, fileAllowed, writeAllowed, skipEntry, matchGlob, pullUrlAllowed,
@@ -426,4 +427,13 @@ test('共享任务：只在共享的那个网站上做生成要用的动作，�
   denied(() => checkShareCommand('navigate', { url: 'javascript:alert(1)' }, share));
   denied(() => checkShareCommand('tabs', { action: 'list' }, share));
   denied(() => checkShareCommand('tabs', { action: 'new', url: 'https://accounts.google.com/' }, share));
+});
+
+test('cleanShares keeps only what the 服务共享 section shows', () => {
+  assert.deepEqual(cleanShares(null), []);
+  const [a] = cleanShares([{ id: 'a1', title: 'Google Flow', caps: ['image.generate'], enabled: false, orgs: ['team'],
+    usedToday: 3, dailyMax: 10, hours: [9, 18], here: true, secret: 'x' }, 'junk']);
+  assert.deepEqual(a, { id: 'a1', title: 'Google Flow', caps: ['image.generate'], enabled: false, orgs: ['team'], usedToday: 3, dailyMax: 10, hours: [9, 18], here: true });
+  assert.equal(cleanShares([{ hours: [9, 99], dailyMax: -1 }])[0].hours, null);
+  assert.equal(cleanShares(Array(30).fill({})).length, 20);
 });

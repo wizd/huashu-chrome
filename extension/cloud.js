@@ -28,6 +28,7 @@ const TASKS = 'cloudTasks';          // storage.local：任务（批准状态、
 const NOTES = 'siteNotes';           // storage.local：站点经验笔记 {site: {text, at, job}}，侧栏可看可删
 const LOG = 'cloudLog';              // storage.local：审计日志，侧栏可看
 const STATUS = 'cloudStatus';        // storage.session：连接状态，侧栏订阅
+const SHARES = 'cloudShares';       // storage.session：服务器说这个账号共享了什么（服务共享段落）
 const CLAIM = 'cloudClaim';          // storage.session：配对第一步拿到的账号，等用户确认
 const LOG_CAP = 200;
 const PING_MS = 20000;
@@ -184,6 +185,7 @@ async function unpair() {
   for (const t of Object.values(tasks)) await closeTaskTabs(t, { force: true });
   await keyDel().catch(() => {});
   await chrome.storage.local.remove([CFG, TASKS]);
+  await chrome.storage.session.remove(SHARES).catch(() => {});
   deps?.setCloudLive([]);
   await setStatus('off');
   await log({ ev: 'unpaired', origin: cfg?.origin || '' });
@@ -246,6 +248,7 @@ export async function connect() {
           if (m.type === 'ping') { if (sock.readyState === 1) sock.send(JSON.stringify({ type: 'pong' })); return; }
           if (m.type === 'pong') return;
           if (m.type === 'config_ok') { configAcks.get(m.id)?.('saved'); return; }
+          if (m.type === 'shares') { await chrome.storage.session.set({ [SHARES]: policy.cleanShares(m.shares) }); return; }
           if (m.type === 'challenge') {
             try {
               const sig = await sign(helloText(cfg.origin, cfg.deviceId, String(m.nonce || '')));
@@ -1482,7 +1485,9 @@ async function panelState() {
     getCfg(), chrome.storage.session.get(STATUS), chrome.storage.session.get(CLAIM), getTasks(), chrome.storage.local.get([LOG, DESK_ERR]),
   ]);
   const { [NOTES]: notes = {} } = await chrome.storage.local.get(NOTES);
+  const { [SHARES]: shares = null } = await chrome.storage.session.get(SHARES);
   return {
+    shares,
     cfg: cfg && { origin: cfg.origin, account: cfg.account, name: deviceName(cfg), sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, shareOk: !!cfg.shareOk, allowEval: evalOn(cfg), paused: cfg.paused, pairedAt: cfg.pairedAt },
     status: status || { state: 'off' },
     claim: claimed && claimed.expiresAt > Date.now() ? { origin: claimed.origin, account: claimed.account, name: deviceName(cfg) } : null,

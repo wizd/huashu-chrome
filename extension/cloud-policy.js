@@ -402,6 +402,22 @@ export function shareOf(job) {
   return { app, for: who, site: sites[0] };
 }
 
+// 服务器推来的「这个账号共享了什么」，只用来显示：字段收窄、截短，最多 20 条。
+export function cleanShares(v) {
+  if (!Array.isArray(v)) return [];
+  const str = (x, n) => String(x ?? '').slice(0, n);
+  const int = (x) => (Number.isInteger(x) && x >= 0 ? x : null);
+  return v.slice(0, 20).filter((a) => a && typeof a === 'object').map((a) => ({
+    id: str(a.id, 64), title: str(a.title, 60) || '共享',
+    caps: (Array.isArray(a.caps) ? a.caps : []).slice(0, 8).map((c) => str(c, 40)),
+    enabled: a.enabled !== false,
+    orgs: (Array.isArray(a.orgs) ? a.orgs : []).slice(0, 20).map((o) => str(o, 40)),
+    usedToday: int(a.usedToday) ?? 0, dailyMax: int(a.dailyMax),
+    hours: Array.isArray(a.hours) && a.hours.length === 2 && a.hours.every((h) => int(h) != null && h <= 24) ? [a.hours[0], a.hours[1]] : null,
+    here: a.here !== false,
+  }));
+}
+
 // 共享任务的一条命令：不在名单上的一律拒绝；能力包只能是那个网站的；开标签页只能开在那个网站。
 export function checkShareCommand(cmd, params, share) {
   if (!SHARE_CMDS.has(cmd)) throw err('CLOUD_DENIED', `替别人生成的任务不能用 ${cmd}`);

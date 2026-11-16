@@ -61,6 +61,7 @@
   .cmd { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
   code { font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--soft);
          padding: 4px 7px; border-radius: 6px; word-break: break-all; flex: 1; }
+  a.btn { display: inline-block; font-size: 12px; border-radius: 7px; padding: 5px 10px; text-decoration: none; background: var(--soft); color: var(--ink); }
   button.btn { font: inherit; font-size: 12px; border: 0; border-radius: 7px; padding: 5px 10px; cursor: pointer;
                background: var(--accent); color: #fff; flex: none; }
   button.btn.ghost { background: var(--soft); color: var(--ink); }
@@ -202,10 +203,6 @@
         <input type="checkbox" class="toggle" id="cloudAuto" />
       </label>
       <label class="sw-row">
-        <span class="txt">允许替组织成员生成<div class="sub">你在网页上共享了 Google Flow 时打开：组织里的人的生图、生视频直接在这里做，花你的 Flow credits，只能访问 flow.google.com。关着就每次问你</div></span>
-        <input type="checkbox" class="toggle" id="cloudShare" />
-      </label>
-      <label class="sw-row">
         <span class="txt">允许云端执行脚本（eval）<div class="sub">AI 能在它开的页面里直接跑代码，又快又准；代码能做你在这个网站上能做的一切</div></span>
         <input type="checkbox" class="toggle" id="cloudEval" />
       </label>
@@ -224,6 +221,17 @@
       </details>
       <div class="row"><button class="btn ghost" id="cloudReconn">重连</button><button class="btn ghost" id="cloudUnpair">断开并忘记这个服务器</button></div>
     </div>
+  </section>
+
+  <!-- 3b. 服务共享：这个账号共享给组织的服务，只在共享了或开关开着时出现 -->
+  <section id="shareSec" hidden>
+    <h2>服务共享</h2>
+    <div id="shareList"></div>
+    <label class="sw-row">
+      <span class="txt">允许替组织成员生成<div class="sub">打开后，组织里的人用你共享的服务时直接在这个浏览器里做，不再每次问你。只能访问共享的网站（flow.google.com），花你的 Flow credits</div></span>
+      <input type="checkbox" class="toggle" id="cloudShare" />
+    </label>
+    <div class="row"><a class="btn ghost" id="shareManage" target="_blank" rel="noopener">在网页上管理共享</a></div>
   </section>
 
   <!-- 4. 设置 -->

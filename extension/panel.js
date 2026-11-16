@@ -390,8 +390,8 @@ const CAP_NAMES = { 'image.generate': '生图', 'video.generate': '生视频' };
 function renderShares(s) {
   const list = s.shares;
   const running = (s.tasks || []).filter((t) => t.share && (t.state === 'pending' || t.state === 'approved'));
-  // 没共享、开关也关着、手上也没活：整段不占地方
-  $('shareSec').hidden = !s.cfg || (Array.isArray(list) && !list.length && !s.cfg.shareOk && !running.length);
+  // 连着服务器就一直显示：按「开关关着」来藏，关掉开关的那一刻整段就没了，再也打不开
+  $('shareSec').hidden = !s.cfg;
   $('cloudShare').checked = !!s.cfg?.shareOk;
   const box = $('shareList');
   box.textContent = '';

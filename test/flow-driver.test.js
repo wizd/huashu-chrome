@@ -14,14 +14,15 @@ const quick = { sleep: async () => {} };
 const fail = (code, message = code) => Object.assign(new Error(message), { code });
 
 // 假扩展：记下每条命令，按 page 的状态回报，和 opus-video-maker 里的 fakeExt 演的是同一出
-function fakeLink({ loggedIn = true, project = null, approval = true, refusal = null, blocker = null, media = PNG, chunk = 50, fetchFails = false, url = MEDIA, oldPack = false, oops = 0, ask = null, stall = null } = {}) {
+function fakeLink({ loggedIn = true, project = null, approval = true, refusal = null, blocker = null, media = PNG, chunk = 50, fetchFails = false, url = MEDIA, oldPack = false, oops = 0, ask = null, stall = null, credits = null } = {}) {
   const page = { blockLeft: blocker?.times || 0, loggedIn, project, prompt: '', ingredients: [], uploaded: [], approved: false, submitted: false, panel: false, editing: false, menu: false, got: false, oopsLeft: oops, oopsShown: 0, answer: null, replies: [], sent: [], tabs: 0 };
   const log = [];
   const state = () => ({
     loggedIn: page.loggedIn, project: page.project, promptChars: page.prompt.length,
     canStart: !!page.project && page.prompt.length > 0, ingredients: page.ingredients, options: page.panel ? page.uploaded.length : 0, editing: page.editing,
     marks: { back: page.editing, prompt: !!page.project, start: !!page.project, 'new-session': !!page.project, add: !!page.project,
-      'open-project': !page.project, 'new-project': !page.project, 'uploads-tab': page.panel, 'close-account': false },
+      'open-project': !page.project, 'new-project': !page.project, 'uploads-tab': page.panel, account: !!credits && !page.account, 'close-account': !!page.account },
+    credits: page.account ? credits : null,
   });
   const packs = {
     'flow.state': state,
@@ -83,7 +84,7 @@ function fakeLink({ loggedIn = true, project = null, approval = true, refusal = 
       if (cmd === 'key') { page.panel = false; if (blocker && !blocker.dismiss && !blocker.stuck) page.blockLeft = Math.max(0, page.blockLeft - 1); return {}; }
       if (cmd === 'click') {
         const what = params.selector.match(/"(.+)"/)[1];
-        assert.equal(params.real === true, (['start', 'approve', 'retry', 'result', 'download-media', 'download-option'].includes(what) || /^choice-\d$/.test(what)), `real on ${what}`);
+        assert.equal(params.real === true, (['start', 'approve', 'account', 'retry', 'result', 'download-media', 'download-option'].includes(what) || /^choice-\d$/.test(what)), `real on ${what}`);
         if (what === 'dismiss') { if (!blocker.stuck) page.blockLeft = Math.max(0, page.blockLeft - 1); return {}; }
         if (blocker?.loading && what === blocker.on && page.blockLeft > 0) { page.blockLeft--; throw fail('NOT_INTERACTABLE'); }
         if (blocker && what === blocker.on && page.blockLeft > 0) throw fail('NOT_INTERACTABLE');
@@ -93,6 +94,8 @@ function fakeLink({ loggedIn = true, project = null, approval = true, refusal = 
         if (what === 'option') page.ingredients.push(`ing${page.ingredients.length + 1}`);
         if (what === 'start') { if (page.submitted) page.replies.push(page.prompt); page.prompt = ''; page.submitted = true; }
         if (what === 'approve') page.approved = true;
+        if (what === 'account') page.account = true;
+        if (what === 'close-account') page.account = false;
         if (what === 'result') page.editing = true;
         if (what === 'download-media') page.menu = page.editing;
         if (what === 'download-option') { page.got = page.menu; page.menu = false; }
@@ -129,6 +132,16 @@ test('Flow 驱动：开项目、挂参考图、提交、确认一次、取回结
   link.log.length = 0;
   await d.generate(run, { kind: 'image', prompt: 'b', timeoutMs: 60000 });
   assert.equal(link.log.includes('tabs'), false);
+});
+
+test('Flow 驱动：出结果后打开账户面板读剩余 credits，再关上；读不到是 null', async () => {
+  const left = { left: 565, unit: 'credits', resetsAt: 1794924120000, resetsText: 'Resets Nov 18 at 11:22 PM' };
+  const link = fakeLink({ credits: left });
+  const out = await gen(link, {});
+  assert.deepEqual(out.credits, left);
+  assert.equal(link.page.account, false);
+  assert.ok(link.log.includes('click account') && link.log.includes('click close-account'));
+  assert.equal((await gen(fakeLink(), {})).credits, null);
 });
 
 test('Flow 驱动：给了 project 就进那个项目', async () => {

@@ -181,6 +181,29 @@
     const tail = (document.querySelector("main")?.innerText || "").slice(-2e3);
     return tail.match(REFUSAL)?.[0] || null;
   };
+  var MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+  function resetAt(text) {
+    const m = /Resets\s+([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?(?:\s+at\s+(\d{1,2}):(\d{2})\s*([AP]M)?)?/i.exec(text);
+    if (!m) return null;
+    const mon = MONTHS.indexOf(m[1].toLowerCase());
+    if (mon < 0) return null;
+    let h = Number(m[4] || 0);
+    if (m[6]) h = h % 12 + (/p/i.test(m[6]) ? 12 : 0);
+    const at = (y2) => new Date(y2, mon, Number(m[2]), h, Number(m[5] || 0)).getTime();
+    const y = (/* @__PURE__ */ new Date()).getFullYear();
+    if (m[3]) return at(Number(m[3]));
+    return at(y) < Date.now() - 864e5 ? at(y + 1) : at(y);
+  }
+  function credits() {
+    const panel = byName("Close account panel")?.closest('[role="dialog"], aside, section') || null;
+    const text = (panel || document.body).innerText || "";
+    const m = /([\d,.]+)\s+(?:Google\s+)?Flow\s+credits?/i.exec(text) || panel && /([\d,.]+)\s+credits?/i.exec(text);
+    if (!m) return null;
+    const left = Number(m[1].replace(/[,.]/g, ""));
+    if (!Number.isFinite(left)) return null;
+    const reset = /Resets[^\n]*/i.exec(text)?.[0] || null;
+    return { left, unit: "credits", resetsAt: reset ? resetAt(reset) : null, resetsText: reset };
+  }
   var ACTIONS = {
     // 状态 + 标记。云端点 [data-vcorp-flow="<名字>"]，标记每次调用都重打一遍
     "flow.state": () => {
@@ -194,6 +217,7 @@
         add: mark("add", byName("Add ingredients to the prompt box")),
         "open-project": mark("open-project", byName("Open project")),
         "new-project": mark("new-project", byName("New project")),
+        account: mark("account", byName("Account details")),
         "close-account": mark("close-account", byName("Close account panel")),
         "uploads-tab": mark("uploads-tab", ov ? byText("Uploads", ov) : null),
         approve: mark("approve", approveEl()),
@@ -213,6 +237,8 @@
         ingredients: ingredients(),
         options: ov ? ov.querySelectorAll('button[role="option"]').length : 0,
         refusal: refusal(),
+        // 只在账户面板开着时有：{ left, unit, resetsAt, resetsText }
+        credits: byName("Close account panel") ? credits() : null,
         marks
       };
     },
@@ -395,7 +421,7 @@
     }
   };
   (window.__vcorpLoads ||= {}).flow = {
-    version: "1.2.0+355900",
+    version: "1.3.0+95d81e",
     async ready() {
       if (location.hostname !== "flow.google.com") return { ok: false, reason: "\u4E0D\u5728 flow.google.com \u4E0A" };
       return { ok: true };

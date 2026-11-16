@@ -222,6 +222,33 @@ const refusal = () => {
   return tail.match(REFUSAL)?.[0] || null;
 };
 
+// 账户面板（点 Account details 打开）里的额度：「565 Google Flow credits」「Resets Nov 18 at 11:22 PM」。
+// 面板没开时 null。重置时间按这个浏览器的时区解析成毫秒（面板上的时间就是它的本地时间），
+// 不写年份：取今后一年内的那一天。
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+function resetAt(text) {
+  const m = /Resets\s+([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?(?:\s+at\s+(\d{1,2}):(\d{2})\s*([AP]M)?)?/i.exec(text);
+  if (!m) return null;
+  const mon = MONTHS.indexOf(m[1].toLowerCase());
+  if (mon < 0) return null;
+  let h = Number(m[4] || 0);
+  if (m[6]) h = (h % 12) + (/p/i.test(m[6]) ? 12 : 0);
+  const at = (y) => new Date(y, mon, Number(m[2]), h, Number(m[5] || 0)).getTime();
+  const y = new Date().getFullYear();
+  if (m[3]) return at(Number(m[3]));
+  return at(y) < Date.now() - 86400000 ? at(y + 1) : at(y);
+}
+function credits() {
+  const panel = byName('Close account panel')?.closest('[role="dialog"], aside, section') || null;
+  const text = (panel || document.body).innerText || '';
+  const m = /([\d,.]+)\s+(?:Google\s+)?Flow\s+credits?/i.exec(text) || (panel && /([\d,.]+)\s+credits?/i.exec(text));
+  if (!m) return null;
+  const left = Number(m[1].replace(/[,.]/g, ''));
+  if (!Number.isFinite(left)) return null;
+  const reset = /Resets[^\n]*/i.exec(text)?.[0] || null;
+  return { left, unit: 'credits', resetsAt: reset ? resetAt(reset) : null, resetsText: reset };
+}
+
 // ---------- actions ----------
 
 const ACTIONS = {
@@ -237,6 +264,7 @@ const ACTIONS = {
       add: mark('add', byName('Add ingredients to the prompt box')),
       'open-project': mark('open-project', byName('Open project')),
       'new-project': mark('new-project', byName('New project')),
+      account: mark('account', byName('Account details')),
       'close-account': mark('close-account', byName('Close account panel')),
       'uploads-tab': mark('uploads-tab', ov ? byText('Uploads', ov) : null),
       approve: mark('approve', approveEl()),
@@ -256,6 +284,8 @@ const ACTIONS = {
       ingredients: ingredients(),
       options: ov ? ov.querySelectorAll('button[role="option"]').length : 0,
       refusal: refusal(),
+      // 只在账户面板开着时有：{ left, unit, resetsAt, resetsText }
+      credits: byName('Close account panel') ? credits() : null,
       marks,
     };
   },

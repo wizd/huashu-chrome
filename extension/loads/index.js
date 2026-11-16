@@ -246,7 +246,7 @@ export const LOADS = {
     "name": "flow",
     "title": "Google Flow 生图生视频",
     "description": "在用户自己登录的 Google Flow（flow.google.com）项目页里读状态、标出要点的按钮、认出生成结果（提交后页面上新出现的图片、视频，不依赖 Flow 的接口名和链接格式），并把它的字节交给服务器：图片用页面自己的 fetch，视频用 Flow 自己的「Download media」（留下它生成的文件，不存到用户磁盘）。只读：填写、点击、上传由云端的 fill/click/upload 命令做（它们会自动改用真实事件），这里不代点任何东西。生成用的是用户自己的 Flow 额度。",
-    "version": "1.2.0+355900",
+    "version": "1.3.0+95d81e",
     "hosts": [
       "flow.google.com"
     ],
@@ -283,8 +283,8 @@ export const LOADS = {
         "quota": "media"
       }
     },
-    "sha256": "2c9a52d3ed788239db248223bfcdcac50c5e3e210fb60985e43386b38724cfec",
-    "bytes": 21939
+    "sha256": "dfacf6821be74f71d260fa26fc4c6d25b1326d2fff3bccfa176aea6a26d16705",
+    "bytes": 23432
   },
   "media": {
     "name": "media",

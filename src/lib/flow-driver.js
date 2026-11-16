@@ -27,6 +27,8 @@ const EXT = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' }
 // run.fresh：这次运行新建自己的 Flow 项目，之后都回到这个项目（run.project）。opus-video-maker 替组织
 // 成员生成时靠它把别人的提示词和结果隔在主人自己的项目之外；没有这个常量的旧版本不支持。
 export const FRESH_PROJECT = true;
+// generate() 的结果带 credits：{ left, unit, resetsAt, resetsText } 或 null（opus-video-maker 拿它选共享的 Flow）。
+export const READS_CREDITS = true;
 
 export const flowError = (status, message, code) => Object.assign(new Error(message), { status, ...(code ? { code } : {}) });
 
@@ -105,7 +107,7 @@ export function createFlowDriver({ link, fetchFn = globalThis.fetch, sleep = (ms
   const QUIET_MS = 20000;
   const MAX_REPLIES = 2;
   // Flow 不认这些按钮上的合成点击，扩展也不会自己对提交类按钮改用真实事件（重试的提交可能跑两次）：明说要真实点击
-  const REAL_CLICK = new Set(['start', 'approve', 'retry', 'result', 'download-media', 'download-option',
+  const REAL_CLICK = new Set(['start', 'approve', 'account','retry', 'result', 'download-media', 'download-option',
     'choice-0', 'choice-1', 'choice-2', 'choice-3', 'choice-4', 'choice-5']);
   const describe = (b) => {
     const by = b?.by;
@@ -341,6 +343,23 @@ export function createFlowDriver({ link, fetchFn = globalThis.fetch, sleep = (ms
     }
   }
 
+  // 账号还剩多少 credits、什么时候重置：打开账户面板读一眼再关上。读不到（旧能力包、面板改版、
+  // 点不开）就是 null，不影响这次生成。返回 { left, unit, resetsAt, resetsText }。
+  async function credits(run) {
+    try {
+      let s = await state(run);
+      if (!s.credits && s.marks?.account) {
+        await click(run, 'account', { optional: true });
+        s = await waitState(run, (x) => x.credits || x.marks?.['close-account'], 8000, 500);
+        if (!s.credits && s.marks?.['close-account']) s = await waitState(run, (x) => x.credits, 4000, 500);
+      }
+      if (s.marks?.['close-account']) await click(run, 'close-account', { optional: true });
+      return s.credits || null;
+    } catch {
+      return null;
+    }
+  }
+
   // run：{ tabId?, project? }，同一个 run 的多次生成共用一个标签页。
   // req：{ kind: 'image'|'video', prompt（完整的 Flow 提示词）, refs: [{bytes, mime}], timeoutMs, want: {model, seconds} }
   // 返回 { mime, bytes, width, height, key, url }
@@ -395,7 +414,8 @@ export function createFlowDriver({ link, fetchFn = globalThis.fetch, sleep = (ms
       if (r?.done) {
         log(`Flow 已出结果${r.width ? `（${r.width}×${r.height}）` : ''}，取回中`);
         const media = await download(run, r, kind, deadline - now(), log);
-        return { ...media, width: r.width ?? null, height: r.height ?? null, key: r.key, url: r.url || null, project: opened?.project || null };
+        const left = await credits(run);
+        return { ...media, width: r.width ?? null, height: r.height ?? null, key: r.key, url: r.url || null, project: opened?.project || null, credits: left };
       }
       if (r?.refusal) throw flowError(422, `Flow 没有生成：${r.refusal}`, 'FLOW_REFUSED');
       // Flow 自己的报错（Something went wrong）：点一次它的 Try again，再报错就停，不干等到超时
@@ -435,7 +455,7 @@ export function createFlowDriver({ link, fetchFn = globalThis.fetch, sleep = (ms
     }
   }
 
-  return { generate, ready };
+  return { generate, ready, credits };
 }
 
 // ---------- 站点函数（sites/flow.google.com/generate_*）共用的那一段 ----------

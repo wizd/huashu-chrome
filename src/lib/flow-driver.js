@@ -24,6 +24,10 @@ const IMAGE_MAX = 32 * 1024 * 1024;
 const VIDEO_MAX = 120 * 1024 * 1024;
 const EXT = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' };
 
+// run.fresh：这次运行新建自己的 Flow 项目，之后都回到这个项目（run.project）。opus-video-maker 替组织
+// 成员生成时靠它把别人的提示词和结果隔在主人自己的项目之外；没有这个常量的旧版本不支持。
+export const FRESH_PROJECT = true;
+
 export const flowError = (status, message, code) => Object.assign(new Error(message), { status, ...(code ? { code } : {}) });
 
 // 浏览器报的「没有浏览器能做这件事」：调用方据此停下，不要重试
@@ -177,6 +181,19 @@ export function createFlowDriver({ link, fetchFn = globalThis.fetch, sleep = (ms
       await cmd(run, 'load', { name: 'flow' }, { timeoutMs: 60000 });
       s = await waitState(run, (x) => x.project === run.project && x.marks?.prompt, 30000);
       if (s.project !== run.project) throw flowError(502, `打不开 Flow 项目 ${run.project}`, 'NO_PROJECT');
+    }
+    if (run.fresh && !run.project) {
+      // 替别人生成（run.fresh）：新建一个项目，别进账号主人自己的项目。Flow 自己跳进了上次的项目就先回首页。
+      if (s.project) {
+        await cmd(run, 'navigate', { url: FLOW_HOME }, { timeoutMs: 60000 });
+        await cmd(run, 'load', { name: 'flow' }, { timeoutMs: 60000 });
+      }
+      s = await waitState(run, (x) => x.marks?.['new-project'] && !x.project, 20000);
+      if (!s.marks?.['new-project'] || s.project) throw flowError(502, 'Flow 首页上找不到新建项目', 'NO_PROJECT');
+      await click(run, 'new-project');
+      s = await waitState(run, (x) => x.project && x.marks?.prompt, 30000);
+      if (!s.project) throw flowError(502, '没能新建 Flow 项目', 'NO_PROJECT');
+      run.project = s.project;
     }
     if (!s.project) {
       s = await waitState(run, (x) => x.marks?.['open-project'] || x.marks?.['new-project'] || x.project, 15000);

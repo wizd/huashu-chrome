@@ -382,6 +382,35 @@ export const EVAL_MAX = 200000;
 // 一个网站的经验笔记最长这么多字：够写清流程和坑，又不会撑爆模型的上下文
 export const NOTES_MAX = 8000;
 
+// 共享任务：配对的服务器替组织里的另一个人用这个浏览器生成（opus-video-maker 的共享 Flow）。
+// 信封上带 share:{app, for}。它只能在共享的那个网站上做生成要用的那几种动作——不读本机文件、
+// 不碰桌面、不跑脚本、不申请别的网站，用户「允许替组织成员生成」的开关也只放行这种任务。
+export const SHARE_SITES = ['flow.google.com'];
+const SHARE_CMDS = new Set(['tabs', 'navigate', 'click', 'fill', 'key', 'load', 'call', 'upload']);
+const SHARE_PACKS = { 'flow.google.com': 'flow' };
+
+// 信封 → { app, for, site } 或 null（不是共享任务）。是共享任务但不合规矩就抛 CLOUD_DENIED。
+export function shareOf(job) {
+  if (!job?.share) return null;
+  const s = job.share;
+  const app = String(s.app || '').slice(0, 64);
+  const who = String(s.for || '').slice(0, 40);
+  const { sites } = cleanSites(job.sites);
+  if (!app || !who || sites.length !== 1 || !SHARE_SITES.includes(sites[0])) {
+    throw err('CLOUD_DENIED', '共享任务只能用一个共享的网站');
+  }
+  return { app, for: who, site: sites[0] };
+}
+
+// 共享任务的一条命令：不在名单上的一律拒绝；能力包只能是那个网站的；开标签页只能开在那个网站。
+export function checkShareCommand(cmd, params, share) {
+  if (!SHARE_CMDS.has(cmd)) throw err('CLOUD_DENIED', `替别人生成的任务不能用 ${cmd}`);
+  const p = params && typeof params === 'object' ? params : {};
+  if ((cmd === 'load' || cmd === 'call') && p.name !== SHARE_PACKS[share.site]) throw err('CLOUD_DENIED', '替别人生成的任务只能用这个网站自己的能力包');
+  if (cmd === 'tabs' && p.action !== 'new') throw err('CLOUD_DENIED', '替别人生成的任务只能新开标签页');
+  if ((cmd === 'tabs' || cmd === 'navigate') && !urlAllowed(p.url, [share.site])) throw err('CLOUD_DENIED', `不在共享的网站上：${hostOf(p.url) || p.url}`);
+}
+
 export function checkCommand(cmd, params, { hosts, origin, allowEval = false }) {
   if (cmd === 'eval') {
     if (!allowEval) throw err('CLOUD_DENIED', '用户在扩展侧栏关掉了「允许云端执行脚本」，eval 用不了；改用 snapshot / click / fill');

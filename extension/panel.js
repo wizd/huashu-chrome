@@ -398,6 +398,7 @@ function renderCloud(s) {
     ? s.status.message : `账号「${s.cfg.account || ''}」`;
   $('cloudAuto').checked = !!s.cfg.auto;
   $('cloudAutoConfirm').checked = !!s.cfg.autoConfirm;
+  $('cloudShare').checked = !!s.cfg.shareOk;
   $('cloudEval').checked = s.cfg.allowEval !== false;
   $('cloudPause').checked = !!s.cfg.paused;
 
@@ -514,6 +515,7 @@ $('deviceName').onkeydown = (e) => { if (e.key === 'Enter') $('deviceNameSave').
 $('cloudAuto').onchange = (e) => cloudCall('setAuto', { auto: e.target.checked });
 $('cloudEval').onchange = (e) => cloudCall('setAllowEval', { allowEval: e.target.checked });
 $('cloudAutoConfirm').onchange = (e) => cloudCall('setAutoConfirm', { autoConfirm: e.target.checked });
+$('cloudShare').onchange = (e) => cloudCall('setShareOk', { shareOk: e.target.checked });
 $('cloudPause').onchange = (e) => cloudCall('setPaused', { paused: e.target.checked });
 $('cloudReconn').onclick = () => cloudCall('reconnect');
 $('cloudUnpair').onclick = () => {

@@ -139,6 +139,23 @@ test('Flow 驱动：给了 project 就进那个项目', async () => {
   assert.ok(link.log.includes('navigate'));
 });
 
+test('Flow 驱动：run.fresh 新建自己的项目，不进主人上次的项目；之后一直用它', async () => {
+  const link = fakeLink({ project: 'p0', approval: false });
+  const d = createFlowDriver({ link, ...quick });
+  const run = { fresh: true };
+  const out = await d.generate(run, { kind: 'image', prompt: 'x', timeoutMs: 60000 });
+  assert.equal(out.project, 'p1');
+  assert.equal(run.project, 'p1');
+  const seq = link.log.filter((s) => !/flow\.state|flow\.option/.test(s));
+  assert.deepEqual(seq.slice(0, 5), ['tabs', 'load', 'navigate', 'load', 'click new-project']);
+  assert.equal(seq.includes('click open-project'), false);
+  link.log.length = 0;
+  link.page.project = 'p0';   // 有人在这个标签页里点去了别的项目
+  await d.generate(run, { kind: 'image', prompt: 'y', timeoutMs: 60000 });
+  assert.equal(link.page.project, 'p1');
+  assert.equal(link.log.includes('click new-project'), false);
+});
+
 test('Flow 驱动：没登录、被拒、交来的不是图，都停下', async () => {
   const now = (() => { let t = 0; return () => (t += 5000); })();
   await assert.rejects(gen(fakeLink({ loggedIn: false }), {}, { now }), (e) => e.status === 409 && e.code === 'NOT_LOGGED_IN');

@@ -257,7 +257,7 @@ export async function connect() {
               sock.send(JSON.stringify({
                 type: 'hello', v: 1, deviceId: cfg.deviceId, sig,
                 version: chrome.runtime.getManifest().version, name: deviceName(cfg), ...identity(),
-                sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg),
+                sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), shareOk: !!cfg.shareOk,
                 folders: mounted,
                 // 带着哪些能力包：服务器据此告诉用户这个浏览器能做什么（比如 flow = 生图生视频）
                 loads: Object.values(LOADS).map((l) => ({ name: l.name, title: l.title })),
@@ -332,7 +332,7 @@ export async function ensureCloud() {
 // 这期间改的设置由 welcome 那里补发。
 const send = (m) => { try { if (welcomed && ws?.readyState === 1) ws.send(JSON.stringify(m)); } catch { /* 发送时已经断开 */ } };
 
-const configMessage = (cfg, mounted) => ({ type: 'config', name: deviceName(cfg), sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), folders: mounted });
+const configMessage = (cfg, mounted) => ({ type: 'config', name: deviceName(cfg), sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), shareOk: !!cfg.shareOk, folders: mounted });
 // 「允许云端执行脚本」：没设过就是开（先有能力，再收紧）。用户在侧栏关掉才是关。
 const evalOn = (cfg) => cfg?.allowEval !== false;
 
@@ -386,6 +386,20 @@ async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
     let task = tasks[jobId];
     if (task?.state === 'approved' && Date.now() - task.lastAt > policy.TASK_IDLE_MS) task = null;   // 闲置太久，重新问
     if (task && task.v === TASK_V) return task;
+    // 替组织成员生成：只认共享的网站；放不放行只看「允许替组织成员生成」，和自动允许新任务无关
+    const share = policy.shareOf(job);
+    if (share) {
+      const ok = !!cfg.shareOk;
+      task = {
+        v: TASK_V, jobId, title, sites: [share.site], use: [], ask: [], refused: [], purpose: '', share,
+        folders: [], folderRefused: [], folderAsk: [], folderBytes: 0,
+        tabs: [], cur: null, count: 0, state: ok ? 'approved' : 'pending', createdAt: Date.now(), lastAt: Date.now(),
+      };
+      freshAuto = ok;
+      tasks[jobId] = task;
+      await setTasks(tasks);
+      return task;
+    }
     const { sites } = policy.cleanSites(job?.sites);
     // 只读本地文件夹的任务可以还没有网站。文件夹在 requestFolders 里另算。
     if (!sites.length && !allowEmpty) return { state: 'nosites' };
@@ -402,7 +416,7 @@ async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
   });
 
   if (freshAuto) {
-    await log({ ev: 'approved', job: jobId, msg: '自动放行' });
+    await log({ ev: 'approved', job: jobId, msg: t.share ? `替 ${t.share.for} 生成，自动放行` : '自动放行' });
     await pushLive();
   }
   if (t.state === 'nosites') throw err('NO_SITES', '先用 sites 申请要访问的网站（如 sites {"add":["zhipin.com"],"reason":"找兼职"}），或用 folders 申请本地文件夹、apps 申请桌面应用。用户批准后才能继续。');
@@ -411,7 +425,7 @@ async function taskFor(job, cfg, reason = '', { allowEmpty = false } = {}) {
 
   // 这条任务还挂着。开关若已经打开（包括刚打开、存储里已经是开的），按允许处理，不再弹窗。
   const live = await getCfg();
-  if (cfg.auto || live?.auto) {
+  if (t.share ? (cfg.shareOk || live?.shareOk) : (cfg.auto || live?.auto)) {
     await decide(jobId, true, { auto: true });
     const granted = (await getTasks())[jobId];
     if (granted?.state === 'approved') return granted;
@@ -842,7 +856,7 @@ async function openMount(folderId = '') {
 async function reportFolders() {
   const mounted = await folders.names().catch(() => []);
   const cfg = await getCfg();
-  if (cfg && ws?.readyState === 1) send({ type: 'config', sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), folders: mounted });
+  if (cfg && ws?.readyState === 1) send({ type: 'config', sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), shareOk: !!cfg.shareOk, folders: mounted });
   await chrome.storage.session.set({ folderTick: Date.now() }).catch(() => {});
 }
 
@@ -1293,8 +1307,9 @@ async function exec(m) {
   if (!updated) throw err('CLOUD_DENIED', '这个任务已经结束');
   if (updated.count > policy.TASK_CMD_CAP) throw err('CLOUD_DENIED', `一个任务最多 ${policy.TASK_CMD_CAP} 条命令，已经用完`);
 
-  const hosts = hostsOf(updated, cfg);
-  const p = policy.checkCommand(m.cmd, m.params, { hosts, origin: cfg.origin, allowEval: evalOn(cfg) });
+  if (updated.share) policy.checkShareCommand(m.cmd, m.params, updated.share);
+  const hosts = updated.share ? [updated.share.site] : hostsOf(updated, cfg);
+  const p = policy.checkCommand(m.cmd, m.params, { hosts, origin: cfg.origin, allowEval: evalOn(cfg) && !updated.share });
   if (m.cmd === 'sites') return requestSites(updated, p, cfg);
   if (m.cmd === 'folders') return requestFolders(updated, p, cfg);
   if (m.cmd === 'apps') return requestApps(updated, p, cfg);
@@ -1468,7 +1483,7 @@ async function panelState() {
   ]);
   const { [NOTES]: notes = {} } = await chrome.storage.local.get(NOTES);
   return {
-    cfg: cfg && { origin: cfg.origin, account: cfg.account, name: deviceName(cfg), sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, allowEval: evalOn(cfg), paused: cfg.paused, pairedAt: cfg.pairedAt },
+    cfg: cfg && { origin: cfg.origin, account: cfg.account, name: deviceName(cfg), sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, shareOk: !!cfg.shareOk, allowEval: evalOn(cfg), paused: cfg.paused, pairedAt: cfg.pairedAt },
     status: status || { state: 'off' },
     claim: claimed && claimed.expiresAt > Date.now() ? { origin: claimed.origin, account: claimed.account, name: deviceName(cfg) } : null,
     tasks: Object.values(tasks).sort((a, b) => b.lastAt - a.lastAt).map(({ desk: _desk, ...t }) => t),
@@ -1532,6 +1547,24 @@ async function onPanel(m) {
     case 'setAllowEval': {
       await patchCfg({ allowEval: !!m.allowEval });
       await log({ ev: m.allowEval ? 'eval_on' : 'eval_off' });
+      return panelState();
+    }
+    case 'setShareOk': {
+      await patchCfg({ shareOk: !!m.shareOk });
+      await log({ ev: m.shareOk ? 'share_on' : 'share_off' });
+      const tasks = Object.values(await getTasks()).filter((t) => t.share);
+      // 打开：挂着的共享任务放行。关掉：正在跑的共享任务一律停下，服务器换别人或改用代码画面。
+      for (const t of tasks) {
+        if (m.shareOk && t.state === 'pending') await decide(t.jobId, true, { auto: true });
+        if (!m.shareOk && t.state === 'pending') await decide(t.jobId, false);
+        if (!m.shareOk && t.state === 'approved') {
+          // 记成拒绝而不是删掉：同一个任务的下一条命令直接被拒，不会再弹窗问
+          await updateTask(t.jobId, (x) => { x.state = 'denied'; });
+          await closeTaskTabs(t, { force: true });
+        }
+      }
+      await pushLive();
+      await reportFolders();
       return panelState();
     }
     case 'setAutoConfirm': {

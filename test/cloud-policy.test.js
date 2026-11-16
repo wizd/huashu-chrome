@@ -11,6 +11,7 @@ import {
   normalizeSite, cleanSites, cleanAllowList, SITES_MAX, taskHosts, sitesToAsk,
   cleanFolderName, cleanFolderNames, foldersToAsk, normalizeRelPath, fileAllowed, writeAllowed, skipEntry, matchGlob, pullUrlAllowed,
   FS_EXTS, FS_DEPTH_MAX, FS_FOLDERS_MAX, mediaBody, PULL_CHUNK_MAX,
+  shareOf, checkShareCommand,
 } from '../extension/cloud-policy.js';
 
 const ORIGIN = 'https://maker.vcorp.ai';
@@ -401,4 +402,28 @@ test('call 的 pull 槽：只能是配对服务器的 /api/ext/pull/，不带就
   assert.equal(checkCommand('call', { name: 'capture', action: 'capture.status' }, ctx).upload, undefined);
   denied(() => checkCommand('call', { name: 'capture', action: 'capture.pull', upload: { url: `https://evil.example/api/ext/pull/${'a'.repeat(32)}` } }, ctx));
   denied(() => checkCommand('call', { name: 'capture', action: 'capture.pull', upload: { url: `${ORIGIN}/api/jobs/1` } }, ctx));
+});
+
+test('共享任务：只在共享的那个网站上做生成要用的动作，别的一律拒绝', () => {
+  assert.equal(shareOf({ id: 'j', sites: ['flow.google.com'] }), null);
+  const share = shareOf({ id: 'j', sites: ['flow.google.com'], share: { app: 'a1', for: 'bob' } });
+  assert.deepEqual(share, { app: 'a1', for: 'bob', site: 'flow.google.com' });
+  // 共享任务不能多带网站，也不能是共享名单之外的网站
+  denied(() => shareOf({ sites: ['flow.google.com', 'mail.google.com'], share: { app: 'a1', for: 'bob' } }));
+  denied(() => shareOf({ sites: ['mail.google.com'], share: { app: 'a1', for: 'bob' } }));
+  denied(() => shareOf({ sites: ['flow.google.com'], share: { app: '', for: 'bob' } }));
+
+  for (const [cmd, p] of [['click', { selector: 'x' }], ['fill', {}], ['key', {}], ['upload', {}], ['load', { name: 'flow' }], ['call', { name: 'flow', action: 'flow.state' }],
+    ['tabs', { action: 'new', url: 'https://flow.google.com/' }], ['navigate', { url: 'https://flow.google.com/project/p1' }]]) {
+    checkShareCommand(cmd, p, share);
+  }
+  for (const cmd of ['eval', 'fs_read', 'fs_list', 'fs_write', 'desktop', 'shell', 'file', 'folders', 'apps', 'sites', 'media_pull', 'notes', 'snapshot', 'ask', 'phone']) {
+    denied(() => checkShareCommand(cmd, {}, share));
+  }
+  denied(() => checkShareCommand('load', { name: 'capture' }, share));
+  denied(() => checkShareCommand('call', { name: 'media', action: 'x' }, share));
+  denied(() => checkShareCommand('navigate', { url: 'https://mail.google.com/' }, share));
+  denied(() => checkShareCommand('navigate', { url: 'javascript:alert(1)' }, share));
+  denied(() => checkShareCommand('tabs', { action: 'list' }, share));
+  denied(() => checkShareCommand('tabs', { action: 'new', url: 'https://accounts.google.com/' }, share));
 });

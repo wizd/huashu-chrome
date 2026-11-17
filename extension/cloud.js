@@ -31,6 +31,8 @@ const LOG = 'cloudLog';              // storage.local：审计日志，侧栏可
 const STATUS = 'cloudStatus';        // storage.session：连接状态，侧栏订阅
 const SHARES = 'cloudShares';       // storage.session：服务器说这个账号共享了什么（服务共享段落）
 const CLAIM = 'cloudClaim';          // storage.session：配对第一步拿到的账号，等用户确认
+const NOTICES = 'cloudNotices';      // storage.local：通知列表（任务做完了、编排进度、权限请求），侧栏可看可清
+const NOTICE_AT = 'cloudNoticeAt';   // storage.local：服务器推来的最后一条通知的时间，重连时让它补发之后的
 const LOG_CAP = 200;
 const PING_MS = 20000;
 const DEAD_MS = 65000;
@@ -168,6 +170,8 @@ async function confirmClaim(rawName) {
     sites: policy.cleanAllowList(old?.sites), auto: false, autoConfirm: false, paused: false,
   });
   await chrome.storage.session.remove(CLAIM);
+  // 换了账号或服务器：旧的通知不是这个账号的。从现在起断线期间错过的才补发
+  await chrome.storage.local.set({ [NOTICES]: [], [NOTICE_AT]: Date.now() });
   await log({ ev: 'paired', account: r.account || c.account, origin: c.origin });
   clearTimeout(retryTimer); retryTimer = null;
   retryDelay = 0;
@@ -185,7 +189,7 @@ async function unpair() {
   const { [TASKS]: tasks = {} } = await chrome.storage.local.get(TASKS);
   for (const t of Object.values(tasks)) await closeTaskTabs(t, { force: true });
   await keyDel().catch(() => {});
-  await chrome.storage.local.remove([CFG, TASKS]);
+  await chrome.storage.local.remove([CFG, TASKS, NOTICES, NOTICE_AT]);
   await chrome.storage.session.remove(SHARES).catch(() => {});
   deps?.setCloudLive([]);
   await setStatus('off');
@@ -258,11 +262,14 @@ export async function connect() {
               // 名下的设备（目前只有同机的桌面）。签名只盖浏览器自己：桌面经这条已认证的连接中继，
               // 服务器能见到的桌面只有这个浏览器报上来的
               const child = await desktopChild();
+              const { [NOTICE_AT]: noticeSince = 0 } = await chrome.storage.local.get(NOTICE_AT);
               sock.send(JSON.stringify({
                 type: 'hello', v: 1, deviceId: cfg.deviceId, sig,
                 version: chrome.runtime.getManifest().version, name: deviceName(cfg), ...identity(),
                 sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), shareOk: !!cfg.shareOk,
                 folders: mounted,
+                // 手里最后一条通知的时间：断线期间的由服务器补发（它只留最近一天的）
+                noticeSince,
                 // 带着哪些能力包：服务器据此告诉用户这个浏览器能做什么（比如 flow = 生图生视频）
                 loads: Object.values(LOADS).map((l) => ({ name: l.name, title: l.title })),
                 devices: child ? [{ ...child, parent: cfg.deviceId }] : [],
@@ -294,6 +301,7 @@ export async function connect() {
             send({ type: 'res', id: m.id, ok: true, data });
             return;
           }
+          if (m.type === 'notice') { await onNotices(m.items); return; }
           if (m.type === 'task_ack') { askWaits.get(m.id)?.ack(); return; }
           if (m.type === 'task_res') { askWaits.get(m.id)?.done(m); return; }
           if (m.type === 'job_end') { await endTask(String(m.jobId || ''), 'server'); }
@@ -405,6 +413,88 @@ export async function askTarget() {
   return cfg?.deviceId ? { origin: cfg.origin, account: cfg.account || '', paused: !!cfg.paused } : null;
 }
 
+// ---------- 通知 ----------
+//
+// 一个地方看到所有和 maker 有关的事：服务器推来的（任务做完了、失败了、编排走到第几步、有事等你），
+// 和本机要你点头的权限请求（新任务、追加的网站、文件夹、应用、桌面动作）。
+// 都存进 NOTICES，侧栏「通知」一栏列出来；桌面弹不弹看用户的开关（权限请求一律弹——不弹任务就卡住）。
+// 规矩（收窄、合并、点开去哪）在 cloud-policy.js。
+
+let noteLock = Promise.resolve();
+function noteSerial(fn) {
+  const run = noteLock.then(fn, fn);
+  noteLock = run.catch(() => {});
+  return run;
+}
+const getNotices = async () => (await chrome.storage.local.get(NOTICES))[NOTICES] || [];
+const editNotices = (fn) => noteSerial(async () => {
+  const next = fn(await getNotices());
+  if (next) await chrome.storage.local.set({ [NOTICES]: next });
+}).catch(() => {});
+
+const POPUP_MAX = 3;   // 重连时一口气补发很多条：只弹一条汇总，不刷屏
+
+async function onNotices(raw) {
+  const items = policy.cleanNotices(raw);
+  if (!items.length) return;
+  const cfg = await getCfg();
+  if (!cfg?.deviceId) return;
+  let fresh = [];
+  await noteSerial(async () => {
+    const merged = policy.mergeNotices(await getNotices(), items);
+    fresh = merged.fresh;
+    const { [NOTICE_AT]: since = 0 } = await chrome.storage.local.get(NOTICE_AT);
+    await chrome.storage.local.set({ [NOTICES]: merged.list, [NOTICE_AT]: Math.max(since, ...items.map((n) => n.at)) });
+  });
+  const show = fresh.filter((n) => policy.popupWanted(n.kind, cfg));
+  if (show.length > POPUP_MAX) {
+    chrome.notifications?.create('hc-notes', {
+      type: 'basic', iconUrl: 'icons/icon128.png', priority: 1,
+      title: `${policy.hostOf(cfg.origin)}：离开期间有 ${show.length} 条新通知`,
+      message: show.slice(0, 4).map((n) => `${n.head}${n.text ? ` ${n.text}` : ''}`).join('\n'),
+    }, () => void chrome.runtime.lastError);
+    return;
+  }
+  for (const n of show) {
+    chrome.notifications?.create(`hc-note:${n.id}`, {
+      type: 'basic', iconUrl: 'icons/icon128.png',
+      // 等你处理的留在屏幕上，别的自己消失
+      priority: n.kind === 'needs' ? 2 : n.kind === 'progress' ? 0 : 1, requireInteraction: n.kind === 'needs',
+      title: n.head, message: n.text || policy.hostOf(cfg.origin), contextMessage: policy.hostOf(cfg.origin),
+    }, () => void chrome.runtime.lastError);
+  }
+}
+
+// 权限请求：桌面通知照旧弹（带「允许/拒绝」按钮），同时记进通知列表
+function raise(id, opts, done) {
+  chrome.notifications?.create(id, opts, done);
+  void editNotices((list) => policy.mergeNotices(list, [{ id, at: Date.now(), kind: 'needs', head: String(opts.title || '').slice(0, 80), text: String(opts.message || '').replace(/\s+/g, ' ').slice(0, 300), local: true }]).list);
+}
+// 处理完了（点了头、拒绝了、超时了、任务结束了）：桌面通知收掉，列表里那条算已读
+function settle(id) {
+  chrome.notifications?.clear(id, () => void chrome.runtime.lastError);
+  void editNotices((list) => (list.some((n) => n.id === id && !n.read) ? list.map((n) => (n.id === id ? { ...n, read: true } : n)) : null));
+}
+
+// 点开一条：标成已读，去它的页面。地址是这里拿任务号拼的，不用服务器给的。
+async function openNotice(id) {
+  const cfg = await getCfg();
+  const n = (await getNotices()).find((x) => x.id === id);
+  chrome.notifications?.clear(`hc-note:${id}`, () => void chrome.runtime.lastError);
+  if (!n) return;
+  await editNotices((list) => list.map((x) => (x.id === id ? { ...x, read: true } : x)));
+  const url = policy.noticeUrl(cfg?.origin, n);
+  if (url) await openTab(url);
+}
+
+// 用户自己点的，所以开到前台
+async function openTab(url) {
+  try {
+    const tab = await chrome.tabs.create({ url, active: true });
+    if (tab?.windowId != null) await chrome.windows.update(tab.windowId, { focused: true });
+  } catch { /* 没有窗口可开 */ }
+}
+
 // ---------- 任务 ----------
 
 const getTasks = async () => (await chrome.storage.local.get(TASKS))[TASKS] || {};
@@ -508,7 +598,7 @@ function waitFor(key) {
 
 function notifyPending(t, cfg) {
   const names = [...(t.ask || []), ...(t.use || [])].join('、');
-  chrome.notifications?.create(`hc-cloud:${t.jobId}`, {
+  raise(`hc-cloud:${t.jobId}`, {
     type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
     title: `${policy.hostOf(cfg.origin)} 请求在你的浏览器里操作这些网站`,
     message: `${t.title ? `「${t.title}」` : '一个任务'} → ${names}${t.purpose ? `\n用途：${t.purpose}` : ''}`,
@@ -518,7 +608,7 @@ function notifyPending(t, cfg) {
 
 // 进行中的任务又要新站点：单独问一次，只问这几个。
 function notifySites(t, cfg) {
-  chrome.notifications?.create(`hc-cloud-sites:${t.jobId}`, {
+  raise(`hc-cloud-sites:${t.jobId}`, {
     type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
     title: `${policy.hostOf(cfg.origin)} 的任务还想访问新的网站`,
     message: `${t.title ? `「${t.title}」` : '任务'} → ${(t.ask || []).join('、')}${t.askWhy ? `\n用途：${t.askWhy}` : ''}`,
@@ -553,7 +643,7 @@ async function requestSites(task, p, cfg) {
       x.ask = [];
       x.askWhy = '';
     });
-    chrome.notifications?.clear(`hc-cloud-sites:${task.jobId}`, () => void chrome.runtime.lastError);
+    settle(`hc-cloud-sites:${task.jobId}`);
     if (allow) await allowSites(split.ask);
     await log({ ev: allow ? 'sites_on' : allow === false ? 'sites_off' : 'sites_timeout', job: task.jobId, msg: split.ask.join(',') });
   }
@@ -573,7 +663,7 @@ async function requestSites(task, p, cfg) {
 }
 
 function notifyFolders(t, cfg) {
-  chrome.notifications?.create(`hc-cloud-folders:${t.jobId}`, {
+  raise(`hc-cloud-folders:${t.jobId}`, {
     type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
     title: `${policy.hostOf(cfg.origin)} 的任务想读取你的本地文件夹`,
     message: `${t.title ? `「${t.title}」` : '任务'} → ${(t.folderAsk || []).join('、')}${t.folderAskWhy ? `\n用途：${t.folderAskWhy}` : ''}`,
@@ -615,7 +705,7 @@ async function requestFolders(task, p, cfg) {
       x.folderAsk = [];
       x.folderAskWhy = '';
     });
-    chrome.notifications?.clear(`hc-cloud-folders:${task.jobId}`, () => void chrome.runtime.lastError);
+    settle(`hc-cloud-folders:${task.jobId}`);
     await log({ ev: allow ? 'folders_on' : allow === false ? 'folders_off' : 'folders_timeout', job: task.jobId, msg: split.ask.join(',') });
   }
   const now = (await getTasks())[task.jobId] || task;
@@ -635,12 +725,12 @@ async function requestFolders(task, p, cfg) {
 }
 
 function decideFolders(jobId, allow) {
-  chrome.notifications?.clear(`hc-cloud-folders:${jobId}`, () => void chrome.runtime.lastError);
+  settle(`hc-cloud-folders:${jobId}`);
   for (const fn of waiters.get(`folders:${jobId}`) || []) fn(!!allow);
 }
 
 async function notifyLocked(entry, message = `「${entry.name}」的读取权限失效了。点这里打开窗口，再点「恢复访问」。`) {
-  chrome.notifications?.create(`hc-folder:${entry.id}`, {
+  raise(`hc-folder:${entry.id}`, {
     type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
     title: '本地文件夹需要重新允许',
     message,
@@ -913,7 +1003,7 @@ async function reportFolders() {
 }
 
 function decideSites(jobId, allow) {
-  chrome.notifications?.clear(`hc-cloud-sites:${jobId}`, () => void chrome.runtime.lastError);
+  settle(`hc-cloud-sites:${jobId}`);
   for (const fn of waiters.get(`sites:${jobId}`) || []) fn(!!allow);
 }
 
@@ -944,7 +1034,7 @@ async function decide(jobId, allow, { auto = false } = {}) {
     await setTasks(tasks);
     return true;
   });
-  chrome.notifications?.clear(`hc-cloud:${jobId}`, () => void chrome.runtime.lastError);
+  settle(`hc-cloud:${jobId}`);
   if (changed && allow && !auto) await allowSites(granted);
   if (changed) {
     await log({ ev: allow ? 'approved' : 'denied', job: jobId, ...(auto && allow ? { msg: '自动放行' } : {}) });
@@ -968,9 +1058,9 @@ async function endTask(jobId, by) {
   for (const fn of waiters.get(jobId) || []) fn(false);
   for (const fn of waiters.get(`sites:${jobId}`) || []) fn(false);
   for (const fn of waiters.get(`folders:${jobId}`) || []) fn(false);
-  chrome.notifications?.clear(`hc-cloud:${jobId}`, () => void chrome.runtime.lastError);
-  chrome.notifications?.clear(`hc-cloud-sites:${jobId}`, () => void chrome.runtime.lastError);
-  chrome.notifications?.clear(`hc-cloud-folders:${jobId}`, () => void chrome.runtime.lastError);
+  settle(`hc-cloud:${jobId}`);
+  settle(`hc-cloud-sites:${jobId}`);
+  settle(`hc-cloud-folders:${jobId}`);
   await closeTaskTabs(t, { force: by === 'user' });
   await pushLive();
   await log({ ev: 'ended', job: jobId, by });
@@ -1094,7 +1184,7 @@ async function devicesCmd(cfg) {
 }
 
 function notifyApps(t, cfg) {
-  chrome.notifications?.create(`hc-cloud-apps:${t.jobId}`, {
+  raise(`hc-cloud-apps:${t.jobId}`, {
     type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
     title: `${policy.hostOf(cfg.origin)} 的任务想操作你电脑上的应用`,
     message: `${t.title ? `「${t.title}」` : '任务'} → ${(t.appAsk || []).join('、')}${t.appAskWhy ? `\n用途：${t.appAskWhy}` : ''}`,
@@ -1122,7 +1212,7 @@ async function requestApps(task, p, cfg) {
       x.appAsk = [];
       x.appAskWhy = '';
     });
-    chrome.notifications?.clear(`hc-cloud-apps:${task.jobId}`, () => void chrome.runtime.lastError);
+    settle(`hc-cloud-apps:${task.jobId}`);
     await log({ ev: allow ? 'apps_on' : allow === false ? 'apps_off' : 'apps_timeout', job: task.jobId, msg: split.ask.join(',') });
   }
   const now = (await getTasks())[task.jobId] || task;
@@ -1139,7 +1229,7 @@ async function requestApps(task, p, cfg) {
 }
 
 function decideApps(jobId, allow) {
-  chrome.notifications?.clear(`hc-cloud-apps:${jobId}`, () => void chrome.runtime.lastError);
+  settle(`hc-cloud-apps:${jobId}`);
   for (const fn of waiters.get(`apps:${jobId}`) || []) fn(!!allow);
 }
 
@@ -1153,7 +1243,7 @@ async function confirmDesk(chk, task, cfg) {
     return;
   }
   await updateTask(jobId, (x) => { x.deskAsk = what; });
-  chrome.notifications?.create(`hc-cloud-desk:${jobId}`, {
+  raise(`hc-cloud-desk:${jobId}`, {
     type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
     title: `${policy.hostOf(cfg.origin)} 的任务要在你的电脑上做一件对外的事`,
     message: what,
@@ -1161,7 +1251,7 @@ async function confirmDesk(chk, task, cfg) {
   }, () => void chrome.runtime.lastError);
   const allow = await waitFor(`desk:${jobId}`);
   await updateTask(jobId, (x) => { x.deskAsk = ''; });
-  chrome.notifications?.clear(`hc-cloud-desk:${jobId}`, () => void chrome.runtime.lastError);
+  settle(`hc-cloud-desk:${jobId}`);
   await log({ ev: allow ? 'desk_confirm' : 'desk_declined', job: jobId, msg: what });
   if (!allow) {
     throw err('CONFIRM_DECLINED', allow === null
@@ -1171,7 +1261,7 @@ async function confirmDesk(chk, task, cfg) {
 }
 
 function decideDesk(jobId, allow) {
-  chrome.notifications?.clear(`hc-cloud-desk:${jobId}`, () => void chrome.runtime.lastError);
+  settle(`hc-cloud-desk:${jobId}`);
   for (const fn of waiters.get(`desk:${jobId}`) || []) fn(!!allow);
 }
 
@@ -1537,13 +1627,14 @@ async function panelState() {
   const { [SHARES]: shares = null } = await chrome.storage.session.get(SHARES);
   return {
     shares,
-    cfg: cfg && { origin: cfg.origin, account: cfg.account, name: deviceName(cfg), sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, shareOk: !!cfg.shareOk, allowEval: evalOn(cfg), paused: cfg.paused, pairedAt: cfg.pairedAt },
+    cfg: cfg && { origin: cfg.origin, account: cfg.account, name: deviceName(cfg), sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, shareOk: !!cfg.shareOk, allowEval: evalOn(cfg), paused: cfg.paused, pairedAt: cfg.pairedAt, notify: cfg.notify !== false, notifyProgress: cfg.notifyProgress !== false },
     status: status || { state: 'off' },
     claim: claimed && claimed.expiresAt > Date.now() ? { origin: claimed.origin, account: claimed.account, name: deviceName(cfg) } : null,
     tasks: Object.values(tasks).sort((a, b) => b.lastAt - a.lastAt).map(({ desk: _desk, ...t }) => t),
     folders: await folders.listFolders().catch(() => []),
     desktop: await deskInfo().then((d) => (d && chrome.runtime.sendNativeMessage ? d : deskErr ? { error: deskErr } : null)),
     log: list.slice(-40).reverse(),
+    notices: (await getNotices()).slice(0, 40).map((n) => ({ ...n, url: !!policy.noticeUrl(cfg?.origin, n) })),
     notes: Object.entries(notes).sort(([a], [b]) => a.localeCompare(b)).map(([site, n]) => ({ site, text: n.text, at: n.at })),
     defaultOrigin: policy.DEFAULT_ORIGIN,
   };
@@ -1642,6 +1733,11 @@ async function onPanel(m) {
       if (m.paused) { disconnect(); await setStatus('paused', '已暂停：云端命令一律不接'); } else void connect();
       return panelState();
     }
+    case 'setNotify': await patchCfg({ notify: !!m.notify }); return panelState();
+    case 'setNotifyProgress': await patchCfg({ notifyProgress: !!m.notifyProgress }); return panelState();
+    case 'noticeOpen': await openNotice(String(m.id || '')); return panelState();
+    case 'noticesRead': await editNotices((list) => list.map((n) => ({ ...n, read: true }))); return panelState();
+    case 'noticesClear': await editNotices(() => []); return panelState();
     case 'decide': await decide(String(m.jobId), !!m.allow); return panelState();
     case 'decideSites': decideSites(String(m.jobId), !!m.allow); return panelState();
     case 'decideFolders': decideFolders(String(m.jobId), !!m.allow); return panelState();
@@ -1683,6 +1779,11 @@ export function initCloud(d) {
   });
   chrome.notifications?.onClicked.addListener((id) => {
     if (id.startsWith('hc-folder:')) void openMount(id.slice('hc-folder:'.length));
+    else if (id.startsWith('hc-note:')) void openNotice(id.slice('hc-note:'.length));
+    else if (id === 'hc-notes') {
+      chrome.notifications.clear(id, () => void chrome.runtime.lastError);
+      void getCfg().then((cfg) => cfg?.origin && openTab(cfg.origin));
+    }
   });
   chrome.windows?.onRemoved.addListener((id) => { if (id === mountWin) mountWin = null; });
 

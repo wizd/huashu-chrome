@@ -422,8 +422,42 @@ function renderShares(s) {
   if (s.cfg) manage.href = `${s.cfg.origin}/orgs`;
 }
 
+// 通知：服务器推来的和本机的权限请求在同一栏。文字是服务器给的，一律 textContent。
+const NOTICE_DOT = { done: 'ok', failed: 'bad', needs: 'warn', progress: '' };
+function renderNotices(s) {
+  const rows = s.notices || [];
+  const unread = rows.filter((n) => !n.read).length;
+  $('noticeSec').hidden = !s.cfg;
+  $('noticeCount').textContent = unread ? `${unread} 条未读` : '';
+  $('noticeBtns').hidden = !rows.length;
+  $('noticeRead').disabled = !unread;
+  $('noticePopup').checked = s.cfg?.notify !== false;
+  $('noticeProgress').checked = s.cfg?.notifyProgress !== false;
+  $('noticeProgress').disabled = s.cfg?.notify === false;
+  const box = $('noticeList');
+  const top = box.scrollTop;
+  box.textContent = '';
+  if (!rows.length) box.appendChild(el('div', 'empty', '还没有。任务做完了、编排有进度、有事等你，都会出现在这里。'));
+  for (const n of rows) {
+    const row = el('button', n.read ? null : 'unread');
+    row.type = 'button';
+    row.title = n.url ? '打开这个任务' : n.local ? '权限请求：在上面的「需要你处理」里点' : '';
+    const body = el('span', 'body');
+    body.appendChild(el('div', 'head', n.head));
+    if (n.text) body.appendChild(el('div', 'sub', n.text));
+    row.append(el('span', `dot ${NOTICE_DOT[n.kind] ?? ''}`), body, el('span', 'ago', relTime(n.at)));
+    row.onclick = () => {
+      if (n.local && !$('alert').hidden) $('alert').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      cloudCall('noticeOpen', { id: n.id });
+    };
+    box.appendChild(row);
+  }
+  box.scrollTop = top;
+}
+
 function renderCloud(s) {
   renderFolders(s);
+  renderNotices(s);
   renderDesktop(s);
   $('asks').textContent = '';
   const on = !!s.cfg;
@@ -569,6 +603,10 @@ $('cloudEval').onchange = (e) => cloudCall('setAllowEval', { allowEval: e.target
 $('cloudAutoConfirm').onchange = (e) => cloudCall('setAutoConfirm', { autoConfirm: e.target.checked });
 $('cloudShare').onchange = (e) => cloudCall('setShareOk', { shareOk: e.target.checked });
 $('cloudPause').onchange = (e) => cloudCall('setPaused', { paused: e.target.checked });
+$('noticePopup').onchange = (e) => cloudCall('setNotify', { notify: e.target.checked });
+$('noticeProgress').onchange = (e) => cloudCall('setNotifyProgress', { notifyProgress: e.target.checked });
+$('noticeRead').onclick = () => cloudCall('noticesRead');
+$('noticeClear').onclick = () => cloudCall('noticesClear');
 $('cloudReconn').onclick = () => cloudCall('reconnect');
 $('cloudUnpair').onclick = () => {
   if (confirm('断开后这个服务器再也不能在本浏览器里发布，它开的标签页会被关掉。要再用得重新配对。')) cloudCall('unpair');
@@ -592,7 +630,7 @@ $('deskOff').onclick = async () => {
 
 chrome.storage.onChanged.addListener((changes, area) => {
   const keys0 = Object.keys(changes);
-  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudLog', 'cloudStatus', 'cloudClaim', 'folderTick', 'cloudDesktop', 'cloudDesktopError', 'cloudShares'].includes(k))) void cloudCall('state');
+  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudNotices', 'cloudLog', 'cloudStatus', 'cloudClaim', 'folderTick', 'cloudDesktop', 'cloudDesktopError', 'cloudShares'].includes(k))) void cloudCall('state');
   if (area !== 'session') return;
   const keys = Object.keys(changes);
   if (keys.includes(`panel:${tabId}`) || keys.includes('liveSids')) renderPage();

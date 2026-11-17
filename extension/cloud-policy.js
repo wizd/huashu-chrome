@@ -617,3 +617,59 @@ export function redactOffList(url) {
 
 // 结果瘦身：截图以外的大块数据不往回传。上限防止一份异常大的快照把通道堵死。
 export const RESULT_MAX = 3 * 1024 * 1024;
+
+// ---------- 通知 ----------
+//
+// 服务器推来的「你的任务怎么样了」：做完了、失败了、编排走到第几步、有事等你。只用来显示和弹桌面通知，
+// 所以和 cleanShares 一样：字段收窄、截短。服务器给的地址一概不用——点开去哪一页，
+// 由这里拿任务号拼在配对的那台服务器上（noticeUrl）。
+export const NOTICE_KINDS = ['done', 'failed', 'needs', 'progress'];
+export const NOTICES_MAX = 100;   // 侧栏里留多少条
+const NOTICE_BATCH = 50;          // 一条消息最多带多少条
+
+const oneLine = (v, max) => String(v ?? '').replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+const refOf = (v) => (/^[A-Za-z0-9_-]{1,64}$/.test(String(v ?? '')) ? String(v) : '');
+
+export function cleanNotices(v) {
+  if (!Array.isArray(v)) return [];
+  const out = [];
+  for (const n of v.slice(0, NOTICE_BATCH)) {
+    if (!n || typeof n !== 'object' || !NOTICE_KINDS.includes(n.kind)) continue;
+    const id = String(n.id ?? '');
+    const head = oneLine(n.head, 80);
+    if (!/^[\w:.-]{1,120}$/.test(id) || !Number.isFinite(n.at) || n.at <= 0 || !head) continue;
+    const item = { id, at: n.at, kind: n.kind, head, text: oneLine(n.text, 300) };
+    if (refOf(n.job)) item.job = refOf(n.job);
+    if (refOf(n.chain)) item.chain = refOf(n.chain);
+    out.push(item);
+  }
+  return out;
+}
+
+// 新来的并进已有的：同一个 id 是同一件事的新说法（编排做完了 → 汇报写好了），替换并重新算未读。
+// 一模一样又送来一遍的（重连时服务器补发）不算新的。返回 { list（新的在前）, fresh（这次真正新的） }。
+export function mergeNotices(list, items, cap = NOTICES_MAX) {
+  const have = new Map((Array.isArray(list) ? list : []).map((n) => [n.id, n]));
+  const fresh = [];
+  for (const n of items) {
+    const old = have.get(n.id);
+    if (old && old.at === n.at && old.head === n.head && old.text === n.text) continue;
+    have.set(n.id, { ...n, read: false });
+    fresh.push(n);
+  }
+  return { list: [...have.values()].sort((a, b) => b.at - a.at).slice(0, cap), fresh };
+}
+
+// 点一条通知去哪：编排的页面，或者任务自己的页面。本机的权限请求（local）没有地址，在侧栏里处理。
+export function noticeUrl(origin, n) {
+  if (!origin || !n || n.local) return '';
+  if (refOf(n.chain)) return `${origin}/#chain-${refOf(n.chain)}`;
+  if (refOf(n.job)) return `${origin}/advanced#${refOf(n.job)}`;
+  return '';
+}
+
+// 要不要弹到桌面上：总开关默认开；「进度」可以单独关掉，只留做完、失败和等你处理的
+export function popupWanted(kind, cfg) {
+  if (cfg?.notify === false) return false;
+  return kind !== 'progress' || cfg?.notifyProgress !== false;
+}

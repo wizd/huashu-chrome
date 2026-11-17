@@ -7,7 +7,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  cleanShares,
+  cleanShares, cleanNotices, mergeNotices, noticeUrl, popupWanted, NOTICES_MAX,
   checkCommand, urlAllowed, initialTask, normalizeOrigin, mediaAllowed, mediaFetchMs, MEDIA_MAX, CLOUD_CMDS,
   normalizeSite, cleanSites, cleanAllowList, SITES_MAX, taskHosts, sitesToAsk,
   cleanFolderName, cleanFolderNames, foldersToAsk, normalizeRelPath, fileAllowed, writeAllowed, skipEntry, matchGlob, pullUrlAllowed,
@@ -436,4 +436,50 @@ test('cleanShares keeps only what the 服务共享 section shows', () => {
   assert.deepEqual(a, { id: 'a1', title: 'Google Flow', caps: ['image.generate'], enabled: false, orgs: ['team'], usedToday: 3, dailyMax: 10, hours: [9, 18], here: true });
   assert.equal(cleanShares([{ hours: [9, 99], dailyMax: -1 }])[0].hours, null);
   assert.equal(cleanShares(Array(30).fill({})).length, 20);
+});
+
+test('cleanNotices keeps only what the 通知 list shows, and never an address from the server', () => {
+  assert.deepEqual(cleanNotices(null), []);
+  const [n] = cleanNotices([{ id: 'c:c1:end:5', at: 5, kind: 'done', head: ' 编排\n做完了 ', text: 'x'.repeat(999), chain: 'c1', job: '../x', url: 'https://evil.example/', local: true }, 'junk']);
+  assert.deepEqual(n, { id: 'c:c1:end:5', at: 5, kind: 'done', head: '编排 做完了', text: 'x'.repeat(300), chain: 'c1' });
+  for (const bad of [{ id: 'a', at: 1, kind: 'ad', head: 'h' }, { id: 'a b', at: 1, kind: 'done', head: 'h' }, { id: 'a', at: 'now', kind: 'done', head: 'h' }, { id: 'a', at: 1, kind: 'done', head: ' ' }]) {
+    assert.deepEqual(cleanNotices([bad]), []);
+  }
+  assert.equal(cleanNotices(Array.from({ length: 80 }, (_, i) => ({ id: `n${i}`, at: i + 1, kind: 'progress', head: 'h' }))).length, 50);
+});
+
+test('mergeNotices: newest first, a repeat is not new, the same id said again replaces and is unread again', () => {
+  const a = { id: 'a', at: 10, kind: 'done', head: '编排做完了', text: '' };
+  const b = { id: 'b', at: 20, kind: 'failed', head: '任务失败了', text: '' };
+  let r = mergeNotices([], [a, b]);
+  assert.deepEqual(r.list.map((n) => [n.id, n.read]), [['b', false], ['a', false]]);
+  assert.equal(r.fresh.length, 2);
+  const read = r.list.map((n) => ({ ...n, read: true }));
+  r = mergeNotices(read, [a]);
+  assert.equal(r.fresh.length, 0);
+  assert.equal(r.list.find((n) => n.id === 'a').read, true);
+  r = mergeNotices(read, [{ ...a, at: 30, head: '汇报写好了' }]);
+  assert.deepEqual(r.fresh.map((n) => n.head), ['汇报写好了']);
+  assert.deepEqual(r.list.map((n) => [n.id, n.read]), [['a', false], ['b', true]]);
+  const many = Array.from({ length: NOTICES_MAX + 20 }, (_, i) => ({ id: `n${i}`, at: i + 1, kind: 'progress', head: 'h', text: '' }));
+  const capped = mergeNotices(mergeNotices([], many.slice(0, 50)).list, many.slice(50)).list;
+  assert.equal(capped.length, NOTICES_MAX);
+  assert.equal(capped[0].id, `n${NOTICES_MAX + 19}`);
+});
+
+test('noticeUrl opens the chain or the task on the paired server only', () => {
+  assert.equal(noticeUrl(ORIGIN, { chain: 'c1', job: 'j1' }), `${ORIGIN}/#chain-c1`);
+  assert.equal(noticeUrl(ORIGIN, { job: '20261117-abcd1234' }), `${ORIGIN}/advanced#20261117-abcd1234`);
+  assert.equal(noticeUrl(ORIGIN, { job: 'x/../../y' }), '');
+  assert.equal(noticeUrl(ORIGIN, { chain: 'c1', local: true }), '');
+  assert.equal(noticeUrl('', { chain: 'c1' }), '');
+  assert.equal(noticeUrl(ORIGIN, {}), '');
+});
+
+test('popupWanted: on by default, progress can be left out, off means off', () => {
+  assert.equal(popupWanted('done', {}), true);
+  assert.equal(popupWanted('progress', {}), true);
+  assert.equal(popupWanted('progress', { notifyProgress: false }), false);
+  assert.equal(popupWanted('needs', { notifyProgress: false }), true);
+  assert.equal(popupWanted('failed', { notify: false }), false);
 });

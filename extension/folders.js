@@ -46,6 +46,18 @@ async function idbOp(mode, fn) {
 }
 
 const all = () => idbOp('readonly', (s) => s.getAll());
+
+// queryPermission 在 service worker 里有时永远不返回（实测：一个挂过的文件夹，扩展重载后就卡住了）。
+// 它一卡，侧栏的整个状态请求跟着卡，配对、连接全都显示不出来。所以最多等 PERM_WAIT_MS，
+// 超时按 prompt 算：侧栏给出「恢复访问」，任务拿到「重新点一次允许」，用户点一下就好。
+export const PERM_WAIT_MS = 2000;
+export function queryPermissionWithin(handle, mode, ms = PERM_WAIT_MS) {
+  let timer;
+  return Promise.race([
+    Promise.resolve().then(() => handle.queryPermission({ mode })),
+    new Promise((resolve) => { timer = setTimeout(() => resolve('prompt'), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
 const get = (id) => idbOp('readonly', (s) => s.get(id));
 
 function newId() {
@@ -78,7 +90,7 @@ export async function listFolders() {
   const out = [];
   for (const row of rows.sort((a, b) => a.addedAt - b.addedAt)) {
     let permission = 'unknown';
-    try { permission = await row.handle.queryPermission({ mode: modeOf(row) }); } catch { /* 句柄坏了，下面照样列出来让用户移除 */ }
+    try { permission = await queryPermissionWithin(row.handle, modeOf(row)); } catch { /* 句柄坏了，下面照样列出来让用户移除 */ }
     out.push({ id: row.id, name: row.name, addedAt: row.addedAt, permission, write: !!row.write });
   }
   return out;
@@ -151,7 +163,7 @@ async function resolve(root, rel, kind) {
 }
 
 async function permissionOf(handle, mode = 'read') {
-  try { return await handle.queryPermission({ mode }); }
+  try { return await queryPermissionWithin(handle, mode); }
   catch (e) { throw mapFsError(e); }
 }
 
@@ -233,7 +245,7 @@ export async function countTop(id) {
   const row = await get(String(id || ''));
   if (!row?.handle) return { state: 'missing' };
   let permission;
-  try { permission = await row.handle.queryPermission({ mode: 'read' }); } catch { permission = 'denied'; }
+  try { permission = await queryPermissionWithin(row.handle, 'read'); } catch { permission = 'denied'; }
   if (permission !== 'granted') return { state: 'locked' };
   let files = 0;
   let readable = 0;

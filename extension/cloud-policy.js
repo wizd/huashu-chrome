@@ -103,7 +103,10 @@ export function cleanSites(list) {
 // act 里允许出现的步骤
 const ACT_STEPS = new Set(['click', 'type', 'fill', 'select', 'key', 'scroll', 'wait', 'navigate', 'read', 'assert', 'if', 'repeat']);
 
-export const TASK_CMD_CAP = 1500;        // 一个任务最多这么多条命令，防失控循环把账号刷进风控
+// 命令额度，防失控循环把账号刷进风控。按网站分开算：一个平台卡死在循环里，只用完它自己的额度，
+// 同一个任务里别的平台照常做（一次发十几个平台的任务就是这么用完的）。总数兜底。
+export const TASK_CMD_CAP = 24000;       // 一个任务所有命令加起来
+export const SITE_CMD_CAP = 1200;        // 一个任务里落在同一个网站上的命令
 export const TASK_IDLE_MS = 3 * 3600e3;  // 批准过的任务闲置 3 小时作废，下次要重新点头
 export const MEDIA_MAX = 2 * 1024 ** 3;  // 素材上限，与 maker 那侧的上传上限一致
 // 页面取一份素材最多等多久：按 1MB/s 估，封顶 7 分钟，留在服务器 8 分钟的命令超时之内。
@@ -150,6 +153,24 @@ export function hostOf(url) {
 }
 
 export const hostMatches = (host, root) => host === root || host.endsWith('.' + root);
+
+// 一条命令算在哪个网站上：落在任务网站里的，算进最短的那个根域（子域、登录跳转都归同一家）；
+// 名单外的按主机名。没有主机名（空白页、不碰页面的命令）不算任何网站，只计总数。
+export function cmdSite(host, roots) {
+  if (!host) return '';
+  let best = '';
+  for (const r of roots || []) if (hostMatches(host, r) && (!best || r.length < best.length)) best = r;
+  return best || host;
+}
+
+// 计数已经加上这一条之后再查：超了就拒。
+export function cmdBudget(task, site) {
+  if (task.count > TASK_CMD_CAP) return `一个任务最多 ${TASK_CMD_CAP} 条命令，已经用完`;
+  if (site && (task.siteCount?.[site] || 0) > SITE_CMD_CAP) {
+    return `这个任务在 ${site} 上最多 ${SITE_CMD_CAP} 条命令，已经用完。只是这个网站停了：在报告里写明，别的网站接着做`;
+  }
+  return '';
+}
 
 // 允许名单：用户点过「允许」的根域。读存储时也过一遍，坏数据不进白名单。
 export function cleanAllowList(list) {

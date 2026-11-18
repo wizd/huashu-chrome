@@ -1432,6 +1432,18 @@ async function notesCmd(p, task) {
   };
 }
 
+// 这条命令会落在哪个主机上：开新页看目标地址，页面命令看它要操作的那个本任务标签页。
+// 不碰页面的命令（站点、文件夹、桌面、经验笔记……）回空，只计总数。
+const NO_PAGE = new Set(['sites', 'folders', 'apps', 'desktop', 'shell', 'file', 'fs_list', 'fs_read', 'fs_write', 'media_pull', 'notes']);
+async function cmdHost(m, task) {
+  if (NO_PAGE.has(m.cmd)) return '';
+  if (m.cmd === 'tabs') return m.params?.action === 'new' ? policy.hostOf(m.params?.url) : '';
+  const tid = Number(m.tabId ?? m.params?.tabId ?? task.cur);
+  if (!tid || !task.tabs?.includes(tid)) return '';
+  const tab = await chrome.tabs.get(tid).catch(() => null);
+  return tab ? policy.hostOf(tab.pendingUrl || tab.url) : '';
+}
+
 async function exec(m) {
   const cfg = await getCfg();
   if (!cfg?.deviceId) throw err('CLOUD_UNPAIRED', '这个浏览器没有配对');
@@ -1445,9 +1457,15 @@ async function exec(m) {
   const reason = ['sites', 'folders', 'apps'].includes(m.cmd) ? String(m.params?.reason || '').slice(0, 200) : '';
   const task = await taskFor(m.job, cfg, reason, { allowEmpty: ['folders', 'apps', 'desktop', 'shell', 'file'].includes(m.cmd) });
   const jobId = task.jobId;
-  const updated = await updateTask(jobId, (t) => { t.count += 1; t.lastAt = Date.now(); });
+  const site = policy.cmdSite(await cmdHost(m, task), task.share ? [task.share.site] : hostsOf(task, cfg));
+  const updated = await updateTask(jobId, (t) => {
+    t.count += 1;
+    if (site) t.siteCount = { ...t.siteCount, [site]: (t.siteCount?.[site] || 0) + 1 };
+    t.lastAt = Date.now();
+  });
   if (!updated) throw err('CLOUD_DENIED', '这个任务已经结束');
-  if (updated.count > policy.TASK_CMD_CAP) throw err('CLOUD_DENIED', `一个任务最多 ${policy.TASK_CMD_CAP} 条命令，已经用完`);
+  const over = policy.cmdBudget(updated, site);
+  if (over) throw err('CLOUD_DENIED', over);
 
   if (updated.share) policy.checkShareCommand(m.cmd, m.params, updated.share);
   const hosts = updated.share ? [updated.share.site] : hostsOf(updated, cfg);

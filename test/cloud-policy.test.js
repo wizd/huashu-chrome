@@ -12,7 +12,7 @@ import {
   normalizeSite, cleanSites, cleanAllowList, SITES_MAX, taskHosts, sitesToAsk,
   cleanFolderName, cleanFolderNames, foldersToAsk, normalizeRelPath, fileAllowed, writeAllowed, skipEntry, matchGlob, pullUrlAllowed,
   FS_EXTS, FS_DEPTH_MAX, FS_FOLDERS_MAX, mediaBody, PULL_CHUNK_MAX,
-  shareOf, checkShareCommand,
+  shareOf, checkShareCommand, cmdSite, cmdBudget, TASK_CMD_CAP, SITE_CMD_CAP,
 } from '../extension/cloud-policy.js';
 
 const ORIGIN = 'https://maker.vcorp.ai';
@@ -482,4 +482,16 @@ test('popupWanted: on by default, progress can be left out, off means off', () =
   assert.equal(popupWanted('progress', { notifyProgress: false }), false);
   assert.equal(popupWanted('needs', { notifyProgress: false }), true);
   assert.equal(popupWanted('failed', { notify: false }), false);
+});
+
+test('命令额度按网站分开算：子域归同一家，一家用完不连累别家，总数兜底', () => {
+  assert.equal(cmdSite('creator.douyin.com', hosts), 'douyin.com');
+  assert.equal(cmdSite('channels.weixin.qq.com', hosts), 'channels.weixin.qq.com');
+  assert.equal(cmdSite('evil.example', hosts), 'evil.example');
+  assert.equal(cmdSite('', hosts), '');
+  const task = { count: 5000, siteCount: { 'douyin.com': SITE_CMD_CAP + 1, 'xiaohongshu.com': SITE_CMD_CAP } };
+  assert.match(cmdBudget(task, 'douyin.com'), /douyin\.com.*别的网站接着做/);
+  assert.equal(cmdBudget(task, 'xiaohongshu.com'), '');
+  assert.equal(cmdBudget(task, ''), '');
+  assert.match(cmdBudget({ count: TASK_CMD_CAP + 1, siteCount: {} }, ''), /最多 24000 条/);
 });

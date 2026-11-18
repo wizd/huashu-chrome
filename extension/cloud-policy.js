@@ -106,7 +106,7 @@ const ACT_STEPS = new Set(['click', 'type', 'fill', 'select', 'key', 'scroll', '
 // 命令额度，防失控循环把账号刷进风控。按网站分开算：一个平台卡死在循环里，只用完它自己的额度，
 // 同一个任务里别的平台照常做（一次发十几个平台的任务就是这么用完的）。总数兜底。
 export const TASK_CMD_CAP = 24000;       // 一个任务所有命令加起来
-export const SITE_CMD_CAP = 1200;        // 一个任务里落在同一个网站上的命令
+export const SITE_CMD_CAP = 5000;        // 一个任务里落在同一个网站上的命令
 export const TASK_IDLE_MS = 3 * 3600e3;  // 批准过的任务闲置 3 小时作废，下次要重新点头
 export const MEDIA_MAX = 2 * 1024 ** 3;  // 素材上限，与 maker 那侧的上传上限一致
 // 页面取一份素材最多等多久：按 1MB/s 估，封顶 7 分钟，留在服务器 8 分钟的命令超时之内。

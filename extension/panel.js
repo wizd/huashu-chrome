@@ -10,6 +10,10 @@
 
 import { compat, compatNote, cmpVersion } from './compat.js';
 import { setWrite } from './folders.js';
+import { L, LANG, LANG_KEY, setupPage } from './i18n.js';
+
+// 先定语言再渲染：下面的常量表也在用 L()
+await setupPage();
 
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
@@ -34,10 +38,10 @@ $('connJump').onclick = (e) => {
 
 const relTime = (t) => {
   const s = Math.max(0, Math.round((Date.now() - t) / 1000));
-  if (s < 5) return '刚刚';
-  if (s < 60) return `${s}秒前`;
-  if (s < 3600) return `${Math.floor(s / 60)}分前`;
-  return `${Math.floor(s / 3600)}时前`;
+  if (s < 5) return L('刚刚', 'just now');
+  if (s < 60) return L(`${s}秒前`, `${s}s ago`);
+  if (s < 3600) return L(`${Math.floor(s / 60)}分前`, `${Math.floor(s / 60)}m ago`);
+  return L(`${Math.floor(s / 3600)}时前`, `${Math.floor(s / 3600)}h ago`);
 };
 
 let winId = null, tabId = null, actTimer = null;
@@ -58,7 +62,7 @@ async function renderPage() {
 
   box.textContent = '';
   if (!owners.length) {
-    box.appendChild(el('div', 'empty', '这一页没有 agent 在操作。下面列着它们各自在哪一页，点一下就能切过去。'));
+    box.appendChild(el('div', 'empty', L('这一页没有 agent 在操作。下面列着它们各自在哪一页，点一下就能切过去。', 'No agent is working on this page. The list below shows which page each one is on; click to switch there.')));
     return;
   }
 
@@ -72,7 +76,7 @@ async function renderPage() {
 
     if (snap.tabLabel) {
       const b = el('div', 'blk');
-      b.append(el('div', 'lab', '本页'), el('div', null, snap.tabLabel));
+      b.append(el('div', 'lab', L('本页', 'Page')), el('div', null, snap.tabLabel));
       wrap.appendChild(b);
     }
     const intent = snap.intents?.[o.sid];
@@ -80,14 +84,14 @@ async function renderPage() {
       const b = el('div', 'blk');
       const q = el('div', 'intent', intent.text);
       q.appendChild(el('span', 'ago', relTime(intent.t)));
-      b.append(el('div', 'lab', '准备做'), q);
+      b.append(el('div', 'lab', L('准备做', 'About to')), q);
       wrap.appendChild(b);
     }
     if (snap.plan?.length) {
       const p = snap.plan;
       const b = el('div', 'blk');
-      b.append(el('div', 'lab', '接下来'),
-        el('div', null, p.slice(0, 4).join(' → ') + (p.length > 4 ? ` →（还有 ${p.length - 4} 步）` : '')));
+      b.append(el('div', 'lab', L('接下来', 'Next up')),
+        el('div', null, p.slice(0, 4).join(' → ') + (p.length > 4 ? L(` →（还有 ${p.length - 4} 步）`, ` → (${p.length - 4} more)`) : '')));
       wrap.appendChild(b);
     }
     if (snap.act && snap.sid === o.sid && Date.now() - snap.actAt < ACT_MS) {
@@ -95,7 +99,7 @@ async function renderPage() {
       const n = el('div', 'now');
       const pl = el('span', 'pulse'); pl.style.background = o.color;
       n.append(pl, el('span', null, snap.act));
-      b.append(el('div', 'lab', '正在做'), n);
+      b.append(el('div', 'lab', L('正在做', 'Doing now')), n);
       wrap.appendChild(b);
       clearTimeout(actTimer);
       actTimer = setTimeout(renderPage, ACT_MS - (Date.now() - snap.actAt) + 50);
@@ -109,7 +113,7 @@ async function renderPage() {
         row.append(el('span', 'ago', relTime(r.t)), el('span', null, r.text));
         tl.appendChild(row);
       }
-      b.append(el('div', 'lab', '时间线'), tl);
+      b.append(el('div', 'lab', L('时间线', 'Timeline')), tl);
       wrap.appendChild(b);
     }
     box.appendChild(wrap);
@@ -125,13 +129,13 @@ async function renderSessions() {
   box.textContent = '';
   const rows = r?.sessions || [];
   if (!rows.length) {
-    box.appendChild(el('div', 'empty', '还没有 agent 在线。在 Claude Code、Codex 这类工具里让它用 vcorp-chrome 做件事，这里就会出现。'));
+    box.appendChild(el('div', 'empty', L('还没有 agent 在线。在 Claude Code、Codex 这类工具里让它用 vcorp-chrome 做件事，这里就会出现。', 'No agents online yet. Ask Claude Code, Codex or a similar tool to do something with vcorp-chrome and it will show up here.')));
     return rows;
   }
   for (const s of rows) {
     const b = el('button');
     const sw = el('span', 'dot'); sw.style.background = s.color;
-    b.append(sw, el('span', 'who', s.label), el('span', 'page', s.title ? `· ${s.title}` : '· 还没打开页面'));
+    b.append(sw, el('span', 'who', s.label), el('span', 'page', s.title ? `· ${s.title}` : L('· 还没打开页面', '· no page open yet')));
     if (s.tabId) b.onclick = () => send({ __hcPopup: 'focusTab', tabId: s.tabId });
     else b.disabled = true;
     box.appendChild(b);
@@ -153,10 +157,10 @@ function light(state, name, sub, cmd) {
   if (cmd) {
     const c = el('div', 'cmd');
     const code = el('code', null, cmd);
-    const btn = el('button', 'btn ghost', '复制');
+    const btn = el('button', 'btn ghost', L('复制', 'Copy'));
     btn.onclick = async () => {
-      try { await navigator.clipboard.writeText(cmd); btn.textContent = '已复制'; } catch { btn.textContent = '请手动复制'; }
-      setTimeout(() => { btn.textContent = '复制'; }, 1600);
+      try { await navigator.clipboard.writeText(cmd); btn.textContent = L('已复制', 'Copied'); } catch { btn.textContent = L('请手动复制', 'Copy manually'); }
+      setTimeout(() => { btn.textContent = L('复制', 'Copy'); }, 1600);
     };
     c.append(code, btn);
     txt.appendChild(c);
@@ -169,32 +173,35 @@ async function renderConn(sessionCount) {
   const r = (await send({ __hcPopup: 'status' })) || {};
   const box = $('lights');
   box.textContent = '';
-  box.appendChild(light('ok', `浏览器扩展 v${MINE}`, '已装好，正在运行'));
+  box.appendChild(light('ok', L(`浏览器扩展 v${MINE}`, `Browser extension v${MINE}`), L('已装好，正在运行', 'Installed and running')));
 
-  let pill = ['bad', '未连接'];
+  let pill = ['bad', L('未连接', 'Not connected')];
   if (r.connected) {
     const level = compat({ ext: MINE, cli: r.bridge });
-    const note = compatNote(level, { ext: MINE, cli: r.bridge });
+    const note = compatNote(level, { ext: MINE, cli: r.bridge }, LANG);
     const needCli = level === 'cli-old' || (level === 'protocol' && cmpVersion(MINE, r.bridge) > 0);
-    box.appendChild(light(note ? 'warn' : 'ok', `本地端 v${r.bridge || '?'}`, note || '已连接', needCli ? 'npx -y vcorp-chrome@latest install' : null));
-    pill = note ? ['warn', '已连接（有更新）'] : ['ok', '已连接'];
+    box.appendChild(light(note ? 'warn' : 'ok', L(`本地端 v${r.bridge || '?'}`, `Local bridge v${r.bridge || '?'}`), note || L('已连接', 'Connected'), needCli ? 'npx -y vcorp-chrome@latest install' : null));
+    pill = note ? ['warn', L('已连接（有更新）', 'Connected (update available)')] : ['ok', L('已连接', 'Connected')];
   } else {
     const never = !r.lastRx;
-    box.appendChild(light('bad', '本地端未连接',
-      never ? '还没装本地端，或者装了但还没有 agent 用过它（本地端由 agent 第一次调用时拉起）。在终端里跑这一行，它会自动配好你电脑上的 agent：'
-        : `上次收到心跳是 ${relTime(r.lastRx)}。先点下面的「重连」；不行再在终端跑：`,
+    box.appendChild(light('bad', L('本地端未连接', 'Local bridge not connected'),
+      never ? L('还没装本地端，或者装了但还没有 agent 用过它（本地端由 agent 第一次调用时拉起）。在终端里跑这一行，它会自动配好你电脑上的 agent：',
+          'The local bridge is not installed yet, or no agent has used it yet (an agent starts it on first use). Run this in a terminal; it sets up the agents on your computer:')
+        : L(`上次收到心跳是 ${relTime(r.lastRx)}。先点下面的「重连」；不行再在终端跑：`, `Last heartbeat ${relTime(r.lastRx)}. Click "Reconnect" below first; if that fails, run in a terminal:`),
       never ? 'npx -y vcorp-chrome@latest install' : 'npx vcorp-chrome doctor'));
-    if (r.offscreenError) box.appendChild(light('warn', '后台文档建不起来', r.offscreenError));
+    if (r.offscreenError) box.appendChild(light('warn', L('后台文档建不起来', 'Could not create the offscreen document'), r.offscreenError));
   }
   $('reconnRow').hidden = !!r.connected;
 
   // 没连着桥时，名单里只剩云端任务——本机 agent 不是「没有」，是看不见，话要说准
-  const localUnknown = '本机 agent 要等本地端连上才看得到';
+  const localUnknown = L('本机 agent 要等本地端连上才看得到', 'Local agents become visible once the local bridge connects');
   box.appendChild(sessionCount
-    ? light('ok', `${sessionCount} 个 agent 在线`, r.connected ? '每个 agent 用自己的颜色，页面描边和标签组同色' : `这里只算云端任务；${localUnknown}`)
+    ? light('ok', L(`${sessionCount} 个 agent 在线`, `${sessionCount} agent${sessionCount === 1 ? '' : 's'} online`),
+      r.connected ? L('每个 agent 用自己的颜色，页面描边和标签组同色', 'Each agent has its own color, matching its page outline and tab group')
+        : L(`这里只算云端任务；${localUnknown}`, `Cloud tasks only; ${localUnknown}`))
     : r.connected
-      ? light('', '暂无 agent 在线', '在你的 agent 里说一句「用 vcorp-chrome 打开……」就会出现在这里')
-      : light('', '本机 agent 状态未知', localUnknown));
+      ? light('', L('暂无 agent 在线', 'No agents online'), L('在你的 agent 里说一句「用 vcorp-chrome 打开……」就会出现在这里', 'Tell your agent "use vcorp-chrome to open …" and it will appear here'))
+      : light('', L('本机 agent 状态未知', 'Local agent status unknown'), localUnknown));
 
   localPill = pill;
   paintPill();
@@ -207,11 +214,11 @@ let localPill = null;
 let cloudOnline = false;
 function paintPill() {
   if (!localPill) return;
-  const pill = localPill[0] === 'bad' && cloudOnline ? ['ok', '已连接'] : localPill;
+  const pill = localPill[0] === 'bad' && cloudOnline ? ['ok', L('已连接', 'Connected')] : localPill;
   $('pilldot').className = `dot ${pill[0]}`;
   $('pilltxt').textContent = pill[1];
   // 断了或有更新时，跳转链接改成「去修复」，修法在下面的连接区
-  $('connJump').textContent = pill[0] === 'ok' ? '连接详情' : '去修复';
+  $('connJump').textContent = pill[0] === 'ok' ? L('连接详情', 'Connection details') : L('去修复', 'Fix it');
   $('connJump').className = `jump${pill[0] === 'bad' ? ' bad' : ''}`;
 }
 
@@ -222,10 +229,10 @@ async function refreshAll() {
 
 $('reconn').onclick = async () => {
   $('reconn').disabled = true;
-  $('reconn').textContent = '连接中…';
+  $('reconn').textContent = L('连接中…', 'Connecting…');
   await send({ __hcPopup: 'connect' });
   $('reconn').disabled = false;
-  $('reconn').textContent = '重连';
+  $('reconn').textContent = L('重连', 'Reconnect');
   refreshAll();
 };
 
@@ -236,10 +243,14 @@ $('guide').onclick = (e) => {
   chrome.tabs.create({ url: chrome.runtime.getURL('welcome.html') });
 };
 
-chrome.storage.local.get(['l2Disabled', 'askIconDisabled'], ({ l2Disabled, askIconDisabled }) => {
+chrome.storage.local.get(['l2Disabled', 'askIconDisabled', LANG_KEY], ({ l2Disabled, askIconDisabled, [LANG_KEY]: lang }) => {
+  $('lang').value = lang === 'zh' || lang === 'en' ? lang : 'auto';
   $('l2').checked = !l2Disabled;
   $('askIcon').checked = !askIconDisabled;
 });
+
+// 改了就落盘；i18n.js 听到 storage 变化会把打开着的扩展页面都刷新一遍
+$('lang').onchange = (e) => chrome.storage.local.set({ [LANG_KEY]: e.target.value });
 
 $('askIcon').onchange = async (e) => {
   await chrome.storage.local.set({ askIconDisabled: !e.target.checked });
@@ -270,19 +281,19 @@ $('mark').onchange = async (e) => {
 const cloudCall = async (op, extra = {}) => {
   const r = await send({ __hcCloud: op, ...extra });
   $('cloudErr').hidden = !!r?.ok;
-  if (!r?.ok) $('cloudErr').textContent = r?.error || '扩展没有响应，稍后再试';
+  if (!r?.ok) $('cloudErr').textContent = r?.error || L('扩展没有响应，稍后再试', 'The extension did not respond; try again later');
   if (r?.state) renderCloud(r.state);
   return r;
 };
 
 const CLOUD_STATE = {
-  online: ['ok', '已连接'],
-  connecting: ['warn', '连接中'],
-  paused: ['warn', '已暂停'],
-  error: ['bad', '连接失败'],
-  off: ['', '未连接'],
+  online: ['ok', L('已连接', 'Connected')],
+  connecting: ['warn', L('连接中', 'Connecting')],
+  paused: ['warn', L('已暂停', 'Paused')],
+  error: ['bad', L('连接失败', 'Connection failed')],
+  off: ['', L('未连接', 'Not connected')],
 };
-const LOG_TEXT = {
+const LOG_TEXT = LANG === 'zh' ? {
   paired: '配对', unpaired: '解除配对', renamed: '改名为', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
   sites_on: '允许了新网站', sites_off: '拒绝了新网站', sites_timeout: '新网站没回应',
   folders_on: '允许了本地文件夹', folders_auto: '自动放行本地文件夹', folders_off: '拒绝了本地文件夹', folders_timeout: '本地文件夹没回应',
@@ -293,9 +304,23 @@ const LOG_TEXT = {
   notes_saved: '记下网站经验', notes_deleted: '删除网站经验',
   eval_on: '允许云端执行脚本', eval_off: '禁止云端执行脚本', confirm_on: '打开对外动作免确认', confirm_off: '关闭对外动作免确认', ask_auto: '免确认放行', confirm_task: '本任务内都同意',
   paused: '暂停', resumed: '恢复', asked: '交给 maker：',
+} : {
+  paired: 'Paired', unpaired: 'Unpaired', renamed: 'Renamed to', approved: 'Approved task', denied: 'Denied task', ended: 'Task ended',
+  sites_on: 'Allowed new sites', sites_off: 'Denied new sites', sites_timeout: 'No answer on new sites',
+  folders_on: 'Allowed local folders', folders_auto: 'Auto-allowed local folders', folders_off: 'Denied local folders', folders_timeout: 'No answer on local folders',
+  apps_on: 'Allowed desktop apps', apps_off: 'Denied desktop apps', apps_timeout: 'No answer on desktop apps',
+  desk_confirm: 'Approved desktop action', desk_declined: 'Declined desktop action', desktop_on: 'Enabled desktop control', desktop_off: 'Disabled desktop control',
+  desktop_reload: 'Reloaded extension to enable desktop control', desktop_fail: 'Desktop control failed to enable:',
+  site_on: 'Site added to allow list', site_off: 'Site removed from allow list', auto_on: 'Turned on auto-approve', auto_off: 'Turned off auto-approve',
+  notes_saved: 'Saved site notes', notes_deleted: 'Deleted site notes',
+  eval_on: 'Allowed cloud scripts', eval_off: 'Blocked cloud scripts', confirm_on: 'Turned on skip-confirmation', confirm_off: 'Turned off skip-confirmation', ask_auto: 'Let through without asking', confirm_task: 'Approved for the rest of this task',
+  paused: 'Paused', resumed: 'Resumed', asked: 'Handed to maker:',
 };
 
-const PERM_WORD = { granted: '可读', prompt: '需要恢复访问', denied: '已拒绝', unknown: '打不开' };
+const PERM_WORD = {
+  granted: L('可读', 'Readable'), prompt: L('需要恢复访问', 'Access needs restoring'),
+  denied: L('已拒绝', 'Denied'), unknown: L('打不开', 'Unavailable'),
+};
 
 function renderFolders(s) {
   const box = $('folderList');
@@ -303,37 +328,39 @@ function renderFolders(s) {
   box.textContent = '';
   const rows = s.folders || [];
   if (!rows.length) {
-    box.appendChild(el('div', 'empty', '还没有。添加后，任务要读的时候会再问你一次。'));
+    box.appendChild(el('div', 'empty', L('还没有。添加后，任务要读的时候会再问你一次。', 'None yet. Once added, you will be asked again when a task wants to read it.')));
     return;
   }
   for (const f of rows) {
     const row = el('div', 'sw-row');
     const text = el('span', 'txt');
-    const word = f.permission === 'granted' && f.write ? '可读写' : PERM_WORD[f.permission] || PERM_WORD.unknown;
+    const word = f.permission === 'granted' && f.write ? L('可读写', 'Read & write') : PERM_WORD[f.permission] || PERM_WORD.unknown;
     text.append(el('div', null, f.name), el('div', 'sub', word));
     row.appendChild(text);
     if (f.permission !== 'granted') {
-      const restore = el('button', 'btn', '恢复访问');
+      const restore = el('button', 'btn', L('恢复访问', 'Restore access'));
       restore.onclick = () => cloudCall('openMount', { folderId: f.id });
       row.appendChild(restore);
     } else {
       // requestPermission 要用户手势，侧栏是扩展页面，这一下点击就够
-      const flip = el('button', 'btn ghost', f.write ? '改为只读' : '允许写入');
-      flip.title = f.write ? '任务不能再往里存文件' : '让任务可以把做好的文件（下载的视频、报告）存进来';
+      const flip = el('button', 'btn ghost', f.write ? L('改为只读', 'Make read-only') : L('允许写入', 'Allow writing'));
+      flip.title = f.write ? L('任务不能再往里存文件', 'Tasks will no longer save files here')
+        : L('让任务可以把做好的文件（下载的视频、报告）存进来', 'Let tasks save finished files (downloaded videos, reports) here');
       flip.onclick = async () => {
         flip.disabled = true;
         try {
           const state = await setWrite(f.id, !f.write);
-          if (state !== 'granted') alert('没有允许写入，这个文件夹仍是只读。');
+          if (state !== 'granted') alert(L('没有允许写入，这个文件夹仍是只读。', 'Writing was not allowed; this folder stays read-only.'));
         } catch (e) { alert(e.message || String(e)); }
         await cloudCall('foldersChanged');
         flip.disabled = false;
       };
       row.appendChild(flip);
     }
-    const del = el('button', 'btn ghost', '移除');
+    const del = el('button', 'btn ghost', L('移除', 'Remove'));
     del.onclick = () => {
-      if (confirm(`移除「${f.name}」？已经批准的任务也不能再读它。文件夹本身不会被删除。`)) cloudCall('removeFolder', { id: f.id });
+      if (confirm(L(`移除「${f.name}」？已经批准的任务也不能再读它。文件夹本身不会被删除。`,
+        `Remove "${f.name}"? Already-approved tasks can no longer read it either. The folder itself is not deleted.`))) cloudCall('removeFolder', { id: f.id });
     };
     row.appendChild(del);
     box.appendChild(row);
@@ -345,8 +372,9 @@ function renderDesktop(s) {
   $('deskOn').hidden = !!d.device;
   $('deskOff').hidden = !d.device;
   $('deskState').textContent = d.device
-    ? `已启用 · ${d.device.id}${d.ready === false ? ' · agent-desktop 用不了，终端里运行 npx vcorp-chrome desktop status 看原因' : ''}`
-    : d.error || '未启用';
+    ? L(`已启用 · ${d.device.id}${d.ready === false ? ' · agent-desktop 用不了，终端里运行 npx vcorp-chrome desktop status 看原因' : ''}`,
+      `Enabled · ${d.device.id}${d.ready === false ? ' · agent-desktop is unavailable; run npx vcorp-chrome desktop status in a terminal to see why' : ''}`)
+    : d.error || L('未启用', 'Not enabled');
 }
 
 // 一条待批准的申请，放进顶上的「需要你处理」
@@ -369,7 +397,7 @@ function syncAlert() {
   const n = $('asks').childElementCount + ($('cloudClaim').hidden ? 0 : 1);
   $('alert').hidden = !n;
   $('needPill').hidden = !n;
-  $('needPill').textContent = `${n} 项待处理`;
+  $('needPill').textContent = L(`${n} 项待处理`, `${n} pending`);
   document.title = n ? `(${n}) vcorp-chrome` : 'vcorp-chrome';
 }
 $('needPill').onclick = () => $('alert').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -378,14 +406,14 @@ function renderNotes(rows) {
   const box = $('cloudNotes');
   if (!box) return;
   box.textContent = '';
-  if (!rows.length) { box.appendChild(el('div', 'empty', '还没有。')); return; }
+  if (!rows.length) { box.appendChild(el('div', 'empty', L('还没有。', 'None yet.'))); return; }
   for (const n of rows) {
     const d = el('details', 'note');
-    const sum = el('summary', null, `${n.site} · ${n.text.length} 字 · ${new Date(n.at).toLocaleDateString()}`);
+    const sum = el('summary', null, `${n.site} · ${L(`${n.text.length} 字`, `${n.text.length} chars`)} · ${new Date(n.at).toLocaleDateString()}`);
     const body = el('pre', 'log', n.text);
     body.style.whiteSpace = 'pre-wrap';
-    const del = el('button', 'btn ghost', '删除');
-    del.onclick = () => { if (confirm(`删除 ${n.site} 的经验笔记？`)) cloudCall('deleteNotes', { site: n.site }); };
+    const del = el('button', 'btn ghost', L('删除', 'Delete'));
+    del.onclick = () => { if (confirm(L(`删除 ${n.site} 的经验笔记？`, `Delete the notes for ${n.site}?`))) cloudCall('deleteNotes', { site: n.site }); };
     d.append(sum, body, del);
     box.appendChild(d);
   }
@@ -393,7 +421,8 @@ function renderNotes(rows) {
 
 // 服务共享：这个账号在网页上共享出去的服务，和「允许替组织成员生成」开关。
 // 列表由服务器推（opus-video-maker 新版才推）；没推过就是 null，只留开关。
-const CAP_NAMES = { 'image.generate': '生图', 'video.generate': '生视频' };
+const CAP_NAMES = { 'image.generate': L('生图', 'images'), 'video.generate': L('生视频', 'videos') };
+const SEP = L('、', ', ');
 function renderShares(s) {
   const list = s.shares;
   const running = (s.tasks || []).filter((t) => t.share && (t.state === 'pending' || t.state === 'approved'));
@@ -403,20 +432,23 @@ function renderShares(s) {
   const box = $('shareList');
   box.textContent = '';
   if (Array.isArray(list)) {
-    if (!list.length) box.appendChild(el('div', 'empty', '这个账号没有共享任何服务。'));
+    if (!list.length) box.appendChild(el('div', 'empty', L('这个账号没有共享任何服务。', 'This account shares no services.')));
     for (const a of list) {
       const row = el('div', 'task');
-      const head = el('div', 't', `${a.title} · ${a.caps.map((c) => CAP_NAMES[c] || c).join('、')}`);
-      if (!a.enabled) head.appendChild(el('span', 'muted', '（已暂停）'));
+      const head = el('div', 't', `${a.title} · ${a.caps.map((c) => CAP_NAMES[c] || c).join(SEP)}`);
+      if (!a.enabled) head.appendChild(el('span', 'muted', L('（已暂停）', ' (paused)')));
       row.appendChild(head);
-      const used = a.dailyMax == null ? `今天 ${a.usedToday} 次` : `今天 ${a.usedToday} / ${a.dailyMax} 次`;
-      const hours = a.hours ? `${a.hours[0]}:00–${a.hours[1]}:00` : '全天';
-      row.appendChild(el('div', 'sub', `共享给 ${a.orgs.join('、') || '（没有组织）'} · ${used} · ${hours}`));
-      if (!a.here) row.appendChild(el('div', 'sub', '指定了另一个浏览器，不在这里做'));
+      const used = a.dailyMax == null ? L(`今天 ${a.usedToday} 次`, `${a.usedToday} today`) : L(`今天 ${a.usedToday} / ${a.dailyMax} 次`, `${a.usedToday} / ${a.dailyMax} today`);
+      const hours = a.hours ? `${a.hours[0]}:00–${a.hours[1]}:00` : L('全天', 'all day');
+      const orgs = a.orgs.join(SEP) || L('（没有组织）', '(no organizations)');
+      row.appendChild(el('div', 'sub', `${L(`共享给 ${orgs}`, `Shared with ${orgs}`)} · ${used} · ${hours}`));
+      if (!a.here) row.appendChild(el('div', 'sub', L('指定了另一个浏览器，不在这里做', 'Assigned to another browser, not run here')));
       box.appendChild(row);
     }
   }
-  for (const t of running) box.appendChild(el('div', 'sub', `${t.state === 'pending' ? '等你批准' : '正在'}替 ${t.share.for} 生成`));
+  for (const t of running) box.appendChild(el('div', 'sub', t.state === 'pending'
+    ? L(`等你批准替 ${t.share.for} 生成`, `Waiting for your OK to generate for ${t.share.for}`)
+    : L(`正在替 ${t.share.for} 生成`, `Generating for ${t.share.for}`)));
   const manage = $('shareManage');
   manage.hidden = !s.cfg;
   if (s.cfg) manage.href = `${s.cfg.origin}/orgs`;
@@ -428,7 +460,7 @@ function renderNotices(s) {
   const rows = s.notices || [];
   const unread = rows.filter((n) => !n.read).length;
   $('noticeSec').hidden = !s.cfg;
-  $('noticeCount').textContent = unread ? `${unread} 条未读` : '';
+  $('noticeCount').textContent = unread ? L(`${unread} 条未读`, `${unread} unread`) : '';
   $('noticeBtns').hidden = !rows.length;
   $('noticeRead').disabled = !unread;
   $('noticePopup').checked = s.cfg?.notify !== false;
@@ -437,11 +469,11 @@ function renderNotices(s) {
   const box = $('noticeList');
   const top = box.scrollTop;
   box.textContent = '';
-  if (!rows.length) box.appendChild(el('div', 'empty', '还没有。任务做完了、编排有进度、有事等你，都会出现在这里。'));
+  if (!rows.length) box.appendChild(el('div', 'empty', L('还没有。任务做完了、编排有进度、有事等你，都会出现在这里。', 'Nothing yet. Finished tasks, progress and things that need you will show up here.')));
   for (const n of rows) {
     const row = el('button', n.read ? null : 'unread');
     row.type = 'button';
-    row.title = n.url ? '打开这个任务' : n.local ? '权限请求：在上面的「需要你处理」里点' : '';
+    row.title = n.url ? L('打开这个任务', 'Open this task') : n.local ? L('权限请求：在上面的「需要你处理」里点', 'Permission request: respond under "Needs your attention" above') : '';
     const body = el('span', 'body');
     body.appendChild(el('div', 'head', n.head));
     if (n.text) body.appendChild(el('div', 'sub', n.text));
@@ -467,7 +499,7 @@ function renderCloud(s) {
   if (!$('pairOrigin').value) $('pairOrigin').value = s.defaultOrigin;
   if (s.claim) {
     $('claimOrigin').textContent = new URL(s.claim.origin).host;
-    $('claimAccount').textContent = `「${s.claim.account || '（未命名）'}」`;
+    $('claimAccount').textContent = L(`「${s.claim.account || '（未命名）'}」`, `"${s.claim.account || '(unnamed)'}"`);
     if (!$('claimName').value) $('claimName').value = s.claim.name;
   }
   cloudOnline = on && s.status?.state === 'online';
@@ -481,7 +513,7 @@ function renderCloud(s) {
   $('cloudDot').className = `dot ${cls}`;
   $('cloudName').textContent = `${new URL(s.cfg.origin).host} · ${word}`;
   $('cloudSub').textContent = s.status?.state === 'error' || s.status?.state === 'paused'
-    ? s.status.message : `账号「${s.cfg.account || ''}」`;
+    ? s.status.message : L(`账号「${s.cfg.account || ''}」`, `Account "${s.cfg.account || ''}"`);
   $('cloudAuto').checked = !!s.cfg.auto;
   $('cloudAutoConfirm').checked = !!s.cfg.autoConfirm;
   renderShares(s);
@@ -493,11 +525,11 @@ function renderCloud(s) {
   // 允许名单：用户点过「允许」的网站，含子域。没有预设的平台。
   const sites = $('cloudSites');
   sites.textContent = '';
-  if (!s.cfg.sites.length) sites.appendChild(el('div', 'empty', '还没有。任务申请网站、你点了允许，就会出现在这里。'));
+  if (!s.cfg.sites.length) sites.appendChild(el('div', 'empty', L('还没有。任务申请网站、你点了允许，就会出现在这里。', 'None yet. Sites appear here once a task requests them and you allow it.')));
   for (const host of s.cfg.sites) {
     const row = el('div', 'site');
     row.appendChild(el('span', 'host', host));
-    const del = el('button', 'btn ghost', '移除');
+    const del = el('button', 'btn ghost', L('移除', 'Remove'));
     del.onclick = () => cloudCall('removeSite', { host });
     row.appendChild(del);
     sites.appendChild(row);
@@ -507,28 +539,30 @@ function renderCloud(s) {
   const tasks = $('cloudTasks');
   tasks.textContent = '';
   for (const t of s.tasks.filter((x) => x.state !== 'denied')) {
-    const title = t.title || `任务 ${t.jobId}`;
+    const title = t.title || L(`任务 ${t.jobId}`, `Task ${t.jobId}`);
+    const why = (w) => (w ? L(`。用途：${w}`, `. Purpose: ${w}`) : '');
+    const no = L('不允许', 'Deny');
     if (t.state === 'pending') {
       const lines = [];
-      if (t.ask?.length) lines.push(`请求访问这些网站：${t.ask.join('、')}（允许后加入允许名单）`);
-      if (t.use?.length) lines.push(`要用允许名单里的：${t.use.join('、')}`);
-      if (t.purpose) lines.push(`用途：${t.purpose}`);
-      askBox(`新任务：${title}`, lines, '允许', '拒绝', 'decide', t.jobId);
+      if (t.ask?.length) lines.push(L(`请求访问这些网站：${t.ask.join(SEP)}（允许后加入允许名单）`, `Requests these sites: ${t.ask.join(SEP)} (added to the allow list if you allow)`));
+      if (t.use?.length) lines.push(L(`要用允许名单里的：${t.use.join(SEP)}`, `Will use from the allow list: ${t.use.join(SEP)}`));
+      if (t.purpose) lines.push(L(`用途：${t.purpose}`, `Purpose: ${t.purpose}`));
+      askBox(L(`新任务：${title}`, `New task: ${title}`), lines, L('允许', 'Allow'), L('拒绝', 'Deny'), 'decide', t.jobId);
       continue;
     }
-    if (t.ask?.length) askBox(title, [`还想访问网站：${t.ask.join('、')}${t.askWhy ? `。用途：${t.askWhy}` : ''}`], '允许这些网站', '不允许', 'decideSites', t.jobId);
-    if (t.folderAsk?.length) askBox(title, [`还想读取本地文件夹：${t.folderAsk.join('、')}${t.folderAskWhy ? `。用途：${t.folderAskWhy}` : ''}`], '允许这些文件夹', '不允许', 'decideFolders', t.jobId);
-    if (t.appAsk?.length) askBox(title, [`还想操作桌面应用：${t.appAsk.join('、')}${t.appAskWhy ? `。用途：${t.appAskWhy}` : ''}`], '允许这些应用', '不允许', 'decideApps', t.jobId);
-    if (t.deskAsk) askBox(title, [`要在桌面上：${t.deskAsk}`], '同意', '不同意', 'decideDesk', t.jobId);
+    if (t.ask?.length) askBox(title, [L(`还想访问网站：${t.ask.join(SEP)}`, `Also wants these sites: ${t.ask.join(SEP)}`) + why(t.askWhy)], L('允许这些网站', 'Allow these sites'), no, 'decideSites', t.jobId);
+    if (t.folderAsk?.length) askBox(title, [L(`还想读取本地文件夹：${t.folderAsk.join(SEP)}`, `Also wants to read local folders: ${t.folderAsk.join(SEP)}`) + why(t.folderAskWhy)], L('允许这些文件夹', 'Allow these folders'), no, 'decideFolders', t.jobId);
+    if (t.appAsk?.length) askBox(title, [L(`还想操作桌面应用：${t.appAsk.join(SEP)}`, `Also wants to operate desktop apps: ${t.appAsk.join(SEP)}`) + why(t.appAskWhy)], L('允许这些应用', 'Allow these apps'), no, 'decideApps', t.jobId);
+    if (t.deskAsk) askBox(title, [L(`要在桌面上：${t.deskAsk}`, `On the desktop, wants to: ${t.deskAsk}`)], L('同意', 'Approve'), L('不同意', 'Decline'), 'decideDesk', t.jobId);
 
     const box = el('div', 'task');
     box.appendChild(el('div', 't', title));
-    const where = [...new Set([...(t.use || []), ...(t.sites || [])])].join('、') || '（还没有网站）';
-    box.appendChild(el('div', 'sub', `进行中 · ${where} · ${t.count} 条命令 · ${relTime(t.lastAt)}`));
-    if (t.folders?.length) box.appendChild(el('div', 'sub', `可读本地文件夹：${t.folders.join('、')}`));
-    if (t.apps?.length) box.appendChild(el('div', 'sub', `可操作桌面应用：${t.apps.join('、')}`));
+    const where = [...new Set([...(t.use || []), ...(t.sites || [])])].join(SEP) || L('（还没有网站）', '(no sites yet)');
+    box.appendChild(el('div', 'sub', L(`进行中 · ${where} · ${t.count} 条命令 · ${relTime(t.lastAt)}`, `Running · ${where} · ${t.count} commands · ${relTime(t.lastAt)}`)));
+    if (t.folders?.length) box.appendChild(el('div', 'sub', L(`可读本地文件夹：${t.folders.join(SEP)}`, `Can read local folders: ${t.folders.join(SEP)}`)));
+    if (t.apps?.length) box.appendChild(el('div', 'sub', L(`可操作桌面应用：${t.apps.join(SEP)}`, `Can operate desktop apps: ${t.apps.join(SEP)}`)));
     const row = el('div', 'row');
-    const stop = el('button', 'btn ghost', '收回（关掉它的标签页）');
+    const stop = el('button', 'btn ghost', L('收回（关掉它的标签页）', 'Revoke (close its tabs)'));
     stop.onclick = () => cloudCall('endTask', { jobId: t.jobId });
     row.appendChild(stop);
     box.appendChild(row);
@@ -538,12 +572,12 @@ function renderCloud(s) {
 
   const log = $('cloudLog');
   log.textContent = '';
-  if (!s.log.length) log.appendChild(el('div', null, '还没有记录'));
+  if (!s.log.length) log.appendChild(el('div', null, L('还没有记录', 'No activity yet')));
   for (const r of s.log) {
     const row = el('div');
     const text = r.ev === 'approved' && r.msg === '自动放行'
-      ? '自动放行了任务'
-      : r.ev ? `${LOG_TEXT[r.ev] || r.ev}${r.msg ? ` ${r.msg}` : ''}` : `${r.cmd}${r.ok ? '' : ` ✗ ${r.code}${r.msg ? `：${r.msg}` : ''}`}`;
+      ? L('自动放行了任务', 'Auto-approved the task')
+      : r.ev ? `${LOG_TEXT[r.ev] || r.ev}${r.msg ? ` ${r.msg}` : ''}` : `${r.cmd}${r.ok ? '' : ` ✗ ${r.code}${r.msg ? `${L('：', ': ')}${r.msg}` : ''}`}`;
     row.append(el('span', 'ago', relTime(r.t)), el('span', r.ok === false ? 'no' : null, `${text}${r.job ? ` · ${String(r.job).slice(-6)}` : ''}`));
     log.appendChild(row);
   }
@@ -575,7 +609,8 @@ function nameMsg(cls, text) {
 }
 function nameSaved(s) {
   namePending = null;
-  nameMsg('ok', `已保存，${new URL(s.cfg.origin).host} 的「执行设备」里现在显示「${s.cfg.name}」`);
+  const host = new URL(s.cfg.origin).host;
+  nameMsg('ok', L(`已保存，${host} 的「执行设备」里现在显示「${s.cfg.name}」`, `Saved. "Devices" on ${host} now shows "${s.cfg.name}"`));
   nameMsgTimer = setTimeout(() => nameMsg('', ''), 8000);
 }
 $('deviceNameSave').onclick = async () => {
@@ -583,18 +618,18 @@ $('deviceNameSave').onclick = async () => {
   $('deviceNameSave').disabled = true;
   $('deviceName').blur();
   namePending = null;
-  nameMsg('muted', '保存中…');
+  nameMsg('muted', L('保存中…', 'Saving…'));
   const r = await cloudCall('rename', { name });
   $('deviceNameSave').disabled = false;
-  if (!r?.ok) { nameMsg('bad', `没有保存：${r?.error || '扩展没有响应，稍后再试'}`); return; }
+  if (!r?.ok) { nameMsg('bad', L(`没有保存：${r?.error || '扩展没有响应，稍后再试'}`, `Not saved: ${r?.error || 'the extension did not respond; try again later'}`)); return; }
   const host = new URL(r.state.cfg.origin).host;
   if (r.state.rename === 'saved') nameSaved(r.state);
-  else if (r.state.rename === 'unconfirmed') nameMsg('warn', `已发给 ${host}，但没等到确认。请到它的「执行设备」里看一下名字对不对`);
+  else if (r.state.rename === 'unconfirmed') nameMsg('warn', L(`已发给 ${host}，但没等到确认。请到它的「执行设备」里看一下名字对不对`, `Sent to ${host} but no confirmation came back. Check the name under "Devices" there`));
   else {
     namePending = r.state.cfg.name;
     nameMsg('warn', r.state.status?.state === 'paused'
-      ? `已存到本机。云端已暂停，恢复后会更新到 ${host}`
-      : `已存到本机，还没连上 ${host}，连上后会自动更新`);
+      ? L(`已存到本机。云端已暂停，恢复后会更新到 ${host}`, `Saved locally. The cloud link is paused; ${host} updates when you resume`)
+      : L(`已存到本机，还没连上 ${host}，连上后会自动更新`, `Saved locally. Not connected to ${host} yet; it updates automatically once connected`));
   }
 };
 $('deviceName').onkeydown = (e) => { if (e.key === 'Enter') $('deviceNameSave').click(); };
@@ -609,14 +644,14 @@ $('noticeRead').onclick = () => cloudCall('noticesRead');
 $('noticeClear').onclick = () => cloudCall('noticesClear');
 $('cloudReconn').onclick = () => cloudCall('reconnect');
 $('cloudUnpair').onclick = () => {
-  if (confirm('断开后这个服务器再也不能在本浏览器里发布，它开的标签页会被关掉。要再用得重新配对。')) cloudCall('unpair');
+  if (confirm(L('断开后这个服务器再也不能在本浏览器里发布，它开的标签页会被关掉。要再用得重新配对。', 'After disconnecting, this server can no longer publish in this browser and the tabs it opened will close. You will need to pair again to use it.'))) cloudCall('unpair');
 };
 $('folderAdd').onclick = () => cloudCall('openMount');
 // 原生消息权限只能在用户手势里申请，所以在侧栏这里要，而不是在后台
 $('deskOn').onclick = async () => {
   const granted = await chrome.permissions.request({ permissions: ['nativeMessaging'] }).catch(() => false);
-  if (!granted) { $('deskState').textContent = '没有拿到权限，桌面能力保持关闭'; return; }
-  $('deskState').textContent = '启用中…第一次启用要重载扩展，侧栏若关掉了，重新打开即可';
+  if (!granted) { $('deskState').textContent = L('没有拿到权限，桌面能力保持关闭', 'Permission not granted; desktop control stays off'); return; }
+  $('deskState').textContent = L('启用中…第一次启用要重载扩展，侧栏若关掉了，重新打开即可', 'Enabling… The first time reloads the extension; if the side panel closes, just reopen it');
   const r = await cloudCall('desktopEnable');
   // 失败原因写在桌面这一栏，不要留着「启用中…」，也不用在顶上再报一遍
   if (r && !r.ok && r.error) { $('deskState').textContent = r.error; $('cloudErr').hidden = true; }

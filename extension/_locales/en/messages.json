@@ -1,0 +1,4 @@
+{
+  "extDescription": { "message": "Let AI agents drive the Chrome you are already logged into. A modified version of huashu-chrome by Huashu (MIT)." },
+  "cmdAskMaker": { "message": "Hand to maker: write one line about what the mouse points at (or the current page)" }
+}

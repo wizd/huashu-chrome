@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>vcorp-chrome 装好了</title>
+<title data-en="vcorp-chrome is installed">vcorp-chrome 装好了</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -48,52 +48,52 @@
   <div class="hero">
     <img src="icons/icon128.png" alt="" />
     <div>
-      <h1>扩展装好了，还差一步</h1>
-      <p>vcorp-chrome 让你的 AI agent 用这个浏览器干活，带着你已有的全部登录。它基于花叔的 huashu-chrome（MIT）修改。</p>
+      <h1 data-en="The extension is installed. One more step">扩展装好了，还差一步</h1>
+      <p data-en="vcorp-chrome lets your AI agent work in this browser with all the logins you already have. It is a modified version of huashu-chrome by Huashu (MIT).">vcorp-chrome 让你的 AI agent 用这个浏览器干活，带着你已有的全部登录。它基于花叔的 huashu-chrome（MIT）修改。</p>
     </div>
   </div>
 
   <ol>
     <li id="cloudStep">
       <span class="n">☁</span>
-      <h3>只是要让 maker.vcorp.ai 替你发布？不用终端</h3>
-      <div class="d">打开侧栏，在「云端发布」里填网页上给的配对码。任务要去哪些网站会先问你，允许过的列在侧栏里。下面第 2、3 步是给本机 AI agent 用的，可以跳过。
-        <div class="cmd"><button id="openPanel" style="padding:9px 14px">打开侧栏</button></div>
+      <h3 data-en="Just want maker.vcorp.ai to publish for you? No terminal needed">只是要让 maker.vcorp.ai 替你发布？不用终端</h3>
+      <div class="d"><span data-en="Open the side panel and enter the pairing code from the website under &quot;Cloud publishing&quot;. You are asked before a task visits any site, and allowed sites are listed in the side panel. Steps 2 and 3 below are for local AI agents and can be skipped.">打开侧栏，在「云端发布」里填网页上给的配对码。任务要去哪些网站会先问你，允许过的列在侧栏里。下面第 2、3 步是给本机 AI agent 用的，可以跳过。</span>
+        <div class="cmd"><button id="openPanel" style="padding:9px 14px" data-en="Open side panel">打开侧栏</button></div>
       </div>
     </li>
 
     <li class="done">
       <span class="n">✓</span>
-      <h3>浏览器扩展</h3>
-      <div class="d">已经装好了。</div>
+      <h3 data-en="Browser extension">浏览器扩展</h3>
+      <div class="d" data-en="Already installed.">已经装好了。</div>
     </li>
 
     <li id="step2">
       <span class="n">2</span>
-      <h3>在终端里跑一行，接上你的 agent</h3>
-      <div class="d">它会自动找到你电脑上装着的 AI agent，逐个配好。需要先装 <a href="https://nodejs.org" target="_blank" rel="noopener">Node.js</a>（20 以上）。
-        <div class="cmd"><code id="cmd">npx -y vcorp-chrome@latest install</code><button id="copy">复制</button></div>
-        <div class="live" id="live"><span class="dot"></span><span id="livetxt">等待本地端连上…（agent 第一次用它时会自动拉起）</span></div>
+      <h3 data-en="Run one line in a terminal to connect your agent">在终端里跑一行，接上你的 agent</h3>
+      <div class="d"><span data-en-html="It finds the AI agents installed on your computer and sets each one up. Requires &lt;a href=&quot;https://nodejs.org&quot; target=&quot;_blank&quot; rel=&quot;noopener&quot;&gt;Node.js&lt;/a&gt; 20 or later.">它会自动找到你电脑上装着的 AI agent，逐个配好。需要先装 <a href="https://nodejs.org" target="_blank" rel="noopener">Node.js</a>（20 以上）。</span>
+        <div class="cmd"><code id="cmd">npx -y vcorp-chrome@latest install</code><button id="copy" data-en="Copy">复制</button></div>
+        <div class="live" id="live"><span class="dot"></span><span id="livetxt" data-en="Waiting for the local bridge… (it starts the first time an agent uses it)">等待本地端连上…（agent 第一次用它时会自动拉起）</span></div>
       </div>
     </li>
 
     <li>
       <span class="n">3</span>
-      <h3>对你的 agent 说一句</h3>
-      <div class="d">重启 agent 后，试试这样说：
-        <div class="cmd"><code id="say">用 vcorp-chrome 打开小红书，看看我最近一篇笔记的数据</code><button id="copy2">复制</button></div>
+      <h3 data-en="Say something to your agent">对你的 agent 说一句</h3>
+      <div class="d"><span data-en="After restarting your agent, try saying:">重启 agent 后，试试这样说：</span>
+        <div class="cmd"><code id="say" data-en="Use vcorp-chrome to open my GitHub notifications and summarize what needs a reply">用 vcorp-chrome 打开小红书，看看我最近一篇笔记的数据</code><button id="copy2" data-en="Copy">复制</button></div>
       </div>
     </li>
 
     <li>
       <span class="n">4</span>
-      <h3>想看它在做什么，点工具栏的头像</h3>
-      <div class="d">侧栏会显示它正在操作哪一页、准备做什么、刚刚做了什么。建议把图标固定到工具栏：点地址栏右边的拼图图标，再点 vcorp-chrome 旁边的图钉。</div>
+      <h3 data-en="To see what it is doing, click the toolbar icon">想看它在做什么，点工具栏的头像</h3>
+      <div class="d" data-en="The side panel shows which page it is working on, what it is about to do and what it just did. Pin the icon to the toolbar: click the puzzle icon right of the address bar, then the pin next to vcorp-chrome.">侧栏会显示它正在操作哪一页、准备做什么、刚刚做了什么。建议把图标固定到工具栏：点地址栏右边的拼图图标，再点 vcorp-chrome 旁边的图钉。</div>
     </li>
   </ol>
 
-  <div class="foot">卡住了？在终端跑 <code style="padding:2px 6px">npx vcorp-chrome doctor</code>，它会告诉你卡在哪一步。</div>
+  <div class="foot" data-en-html="Stuck? Run &lt;code style=&quot;padding:2px 6px&quot;&gt;npx vcorp-chrome doctor&lt;/code&gt; in a terminal; it tells you which step is stuck.">卡住了？在终端跑 <code style="padding:2px 6px">npx vcorp-chrome doctor</code>，它会告诉你卡在哪一步。</div>
 </div>
 
-<script src="welcome.js"></script>
+<script type="module" src="welcome.js"></script>
 </html>

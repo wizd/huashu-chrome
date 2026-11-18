@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>交给 maker</title>
+<title data-en="Hand to maker">交给 maker</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -42,18 +42,18 @@
   button:disabled { opacity: .5; cursor: default; }
 </style>
 <main>
-  <header><img src="icons/icon48.png" alt="" /><h1>交给 maker</h1><span class="who" id="who"></span></header>
+  <header><img src="icons/icon48.png" alt="" /><h1 data-en="Hand to maker">交给 maker</h1><span class="who" id="who"></span></header>
   <div class="item" id="item" hidden>
     <div class="host" id="host"></div>
     <div class="what" id="what"></div>
     <div class="url" id="url"></div>
     <div class="excerpt" id="excerpt"></div>
   </div>
-  <textarea id="text" maxlength="2000" placeholder="针对这项内容，想让 maker 做什么？例：总结要点，写成一篇小红书笔记。" autofocus></textarea>
+  <textarea id="text" maxlength="2000" placeholder="针对这项内容，想让 maker 做什么？例：总结要点，写成一篇小红书笔记。" data-en-placeholder="What should maker do with this? e.g. Summarize the key points into a short post." autofocus></textarea>
   <div class="foot">
-    <span class="hint" id="hint">Enter 发送 · Shift+Enter 换行 · Esc 关闭</span>
+    <span class="hint" id="hint" data-en="Enter to send · Shift+Enter for new line · Esc to close">Enter 发送 · Shift+Enter 换行 · Esc 关闭</span>
     <span class="msg" id="msg" hidden></span>
-    <button type="button" id="send">交给 maker</button>
+    <button type="button" id="send" data-en="Hand to maker">交给 maker</button>
   </div>
 </main>
 <script type="module" src="ask-page.js"></script>

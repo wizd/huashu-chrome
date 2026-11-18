@@ -2,7 +2,8 @@
   "manifest_version": 3,
   "name": "vcorp-chrome",
   "version": "3.3.0",
-  "description": "让 AI agent 操控你已登录的 Chrome。基于花叔的 huashu-chrome（MIT）修改。",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq6xRqEwG4yTuHRG1Zah3j//T3B72XnazyZ+9fOCa5P4bBLPmNBN7YAGL5WnjtPVJefXT9r2Ol0qvNztayDG3dMjK6AZoWccgKa5rhxcvWgFUjanXtmBBQ0qgYwNhuEJSkdinLLtyUg6YmK7Mn72NWpfa/NfqNHdK5AHslvvtJ50iQAYmabl2Nd3vOJ9DxtLBt8a2DfoGPWizgEB3+gkqm2PB8LywwwoiGKd7acr1wZEWmWK9/s0YWdzIstjlvk5AO5XFn6EtEzW8tAAOwBka9239pcyj0kEogWctHLJn7p9VFru38r+I1USyGn6u9XQ68n9edWddxBYokETCqEMT9QIDAQAB",
   "minimum_chrome_version": "116",
   "background": {
@@ -29,7 +30,7 @@
   "commands": {
     "ask-maker": {
       "suggested_key": { "default": "Alt+M" },
-      "description": "交给 maker：针对鼠标指着的内容（或当前页面）写一句话"
+      "description": "__MSG_cmdAskMaker__"
     }
   },
   "optional_permissions": [

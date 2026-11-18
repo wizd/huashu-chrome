@@ -10,6 +10,7 @@
 
 import * as cdp from './cdp.js';
 import { compat, compatNote } from './compat.js';
+import { LANG } from './i18n.js';
 import { matchChallenge, hostOf, hostMatches, L2_ORIGINS_SEED } from './risk.js';
 import { CRED_URL, redactCreds } from './redact.js';
 import { identityOf, stripMarkPrefix } from './identity.js';
@@ -136,7 +137,7 @@ function noteBridgeVersion(v) {
   bridgeMismatch = (level === 'same' || level === 'patch') ? '' : v;
   const name = chrome.runtime.getManifest().name;
   chrome.action.setTitle({ title: bridgeMismatch
-    ? `${name}：${compatNote(level, { ext: mine, cli: v })}`
+    ? `${name}${LANG === 'zh' ? '：' : ': '}${compatNote(level, { ext: mine, cli: v }, LANG)}`
     : name });
   setBadge(true);
 }

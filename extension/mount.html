@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>挂载本地文件夹</title>
+<title data-en="Mount a local folder">挂载本地文件夹</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -39,27 +39,27 @@
 </style>
 <main>
   <div>
-    <h1>挂载本地文件夹</h1>
-    <p>选一个文件夹之后，配对的网站可以申请读取里面的文档。挂上就是把它分享给你的任务：开了「自动允许新任务」时按需直接读，没开时每次都会问你。默认只读；勾上「允许任务往里存文件」，任务才能把做好的文件（下载的视频、报告）存进去，已有的同名文件不会被悄悄覆盖。</p>
+    <h1 data-en="Mount a local folder">挂载本地文件夹</h1>
+    <p data-en="Once you pick a folder, paired sites can request to read the documents inside. Mounting shares it with your tasks: with &quot;Auto-approve new tasks&quot; on they read as needed, otherwise you are asked each time. Read-only by default; check &quot;Let tasks save files here&quot; so tasks can save finished files (downloaded videos, reports) into it. Existing files with the same name are never silently overwritten.">选一个文件夹之后，配对的网站可以申请读取里面的文档。挂上就是把它分享给你的任务：开了「自动允许新任务」时按需直接读，没开时每次都会问你。默认只读；勾上「允许任务往里存文件」，任务才能把做好的文件（下载的视频、报告）存进去，已有的同名文件不会被悄悄覆盖。</p>
   </div>
   <section>
     <div class="row" style="margin-top:0">
-      <button class="btn" id="pick" type="button">选择文件夹</button>
+      <button class="btn" id="pick" type="button" data-en="Choose folder">选择文件夹</button>
       <label class="sub" style="display:flex;align-items:center;gap:4px;cursor:pointer">
-        <input type="checkbox" id="write" /> 允许任务往里存文件
+        <input type="checkbox" id="write" /> <span data-en="Let tasks save files here">允许任务往里存文件</span>
       </label>
     </div>
     <div id="naming" hidden>
-      <p style="margin-top:8px">给它一个显示名。网站和任务看到的是这个名字，不是磁盘路径。</p>
+      <p style="margin-top:8px" data-en="Give it a display name. Sites and tasks see this name, not the disk path.">给它一个显示名。网站和任务看到的是这个名字，不是磁盘路径。</p>
       <div class="row">
         <input type="text" id="name" maxlength="40" autocomplete="off" spellcheck="false" />
-        <button class="btn" id="save" type="button">挂载</button>
-        <button class="btn ghost" id="cancel" type="button">取消</button>
+        <button class="btn" id="save" type="button" data-en="Mount">挂载</button>
+        <button class="btn ghost" id="cancel" type="button" data-en="Cancel">取消</button>
       </div>
     </div>
   </section>
   <section>
-    <div id="list"><div class="empty">读取中…</div></div>
+    <div id="list"><div class="empty" data-en="Loading…">读取中…</div></div>
   </section>
   <p class="msg" id="err" hidden></p>
 </main>

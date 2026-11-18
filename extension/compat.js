@@ -43,11 +43,22 @@ export function compat({ ext, cli, extProtocol = PROTOCOL, cliProtocol = PROTOCO
 
 export const UPDATE_EXT = '商店装的扩展 Chrome 会在几小时内自动更新；等不及就打开 chrome://extensions，开「开发者模式」后点「更新」。手动加载的扩展要去那一页点「重新加载」。';
 export const UPDATE_CLI = '在终端跑一次 npx -y vcorp-chrome@latest install，然后重启你的 agent。';
+const UPDATE_EXT_EN = 'Store installs update automatically within a few hours; to update now, open chrome://extensions, turn on Developer mode and click Update. For an unpacked extension, click Reload on that page.';
+const UPDATE_CLI_EN = 'Run npx -y vcorp-chrome@latest install once in a terminal, then restart your agent.';
 
 // 给人看的一句话。same / patch 返回空串——没事就别说话。
-export function compatNote(level, { ext, cli }) {
-  if (level === 'protocol') return `扩展 v${ext} 和本地端 v${cli} 的通信协议不兼容，命令可能失败。${cmpVersion(ext, cli) < 0 ? UPDATE_EXT : UPDATE_CLI}`;
-  if (level === 'ext-old') return `扩展 v${ext} 比本地端 v${cli} 旧，新功能可能还用不了。${UPDATE_EXT}`;
-  if (level === 'cli-old') return `本地端 v${cli} 比扩展 v${ext} 旧，有新功能没用上。${UPDATE_CLI}`;
+// lang：'zh'（默认，终端和老调用方）或 'en'（扩展页面按界面语言传进来）。
+export function compatNote(level, { ext, cli }, lang = 'zh') {
+  const en = lang === 'en';
+  const fix = cmpVersion(ext, cli) < 0 ? (en ? UPDATE_EXT_EN : UPDATE_EXT) : (en ? UPDATE_CLI_EN : UPDATE_CLI);
+  if (level === 'protocol') return en
+    ? `Extension v${ext} and local bridge v${cli} speak incompatible protocols; commands may fail. ${fix}`
+    : `扩展 v${ext} 和本地端 v${cli} 的通信协议不兼容，命令可能失败。${fix}`;
+  if (level === 'ext-old') return en
+    ? `Extension v${ext} is older than local bridge v${cli}; new features may not work yet. ${UPDATE_EXT_EN}`
+    : `扩展 v${ext} 比本地端 v${cli} 旧，新功能可能还用不了。${UPDATE_EXT}`;
+  if (level === 'cli-old') return en
+    ? `Local bridge v${cli} is older than extension v${ext}; some new features are unused. ${UPDATE_CLI_EN}`
+    : `本地端 v${cli} 比扩展 v${ext} 旧，有新功能没用上。${UPDATE_CLI}`;
   return '';
 }

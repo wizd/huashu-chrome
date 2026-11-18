@@ -1,11 +1,15 @@
 // 首装欢迎页：实时探测本地端，连上就变绿。
 // 从商店装好扩展的人，以前落地后什么引导都看不到——终端那条路的引导页他根本没见过。
 
+import { L, setupPage } from './i18n.js';
+
+await setupPage();
+
 const copy = (btnId, srcId) => {
   const btn = document.getElementById(btnId);
   btn.onclick = async () => {
-    try { await navigator.clipboard.writeText(document.getElementById(srcId).textContent); btn.textContent = '已复制'; } catch { btn.textContent = '请手动复制'; }
-    setTimeout(() => { btn.textContent = '复制'; }, 1600);
+    try { await navigator.clipboard.writeText(document.getElementById(srcId).textContent); btn.textContent = L('已复制', 'Copied'); } catch { btn.textContent = L('请手动复制', 'Copy manually'); }
+    setTimeout(() => { btn.textContent = L('复制', 'Copy'); }, 1600);
   };
 };
 copy('copy', 'cmd');
@@ -15,7 +19,7 @@ copy('copy2', 'say');
 document.getElementById('openPanel').onclick = async () => {
   const win = await chrome.windows.getCurrent();
   chrome.sidePanel.open({ windowId: win.id }).catch(() => {
-    document.getElementById('openPanel').textContent = '点工具栏上的 vcorp-chrome 图标';
+    document.getElementById('openPanel').textContent = L('点工具栏上的 vcorp-chrome 图标', 'Click the vcorp-chrome icon in the toolbar');
   });
 };
 
@@ -25,7 +29,7 @@ async function poll() {
     document.getElementById('step2').classList.add('done');
     document.querySelector('#step2 .n').textContent = '✓';
     document.getElementById('live').classList.add('ok');
-    document.getElementById('livetxt').textContent = `本地端已连上（v${r.bridge || '?'}）。可以去和 agent 说话了。`;
+    document.getElementById('livetxt').textContent = L(`本地端已连上（v${r.bridge || '?'}）。可以去和 agent 说话了。`, `Local bridge connected (v${r.bridge || '?'}). Go talk to your agent.`);
     return;
   }
   setTimeout(poll, 2000);

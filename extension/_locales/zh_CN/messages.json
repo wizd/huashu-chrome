@@ -1,0 +1,4 @@
+{
+  "extDescription": { "message": "让 AI agent 操控你已登录的 Chrome。基于花叔的 huashu-chrome（MIT）修改。" },
+  "cmdAskMaker": { "message": "交给 maker：针对鼠标指着的内容（或当前页面）写一句话" }
+}

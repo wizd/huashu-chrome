@@ -7,6 +7,7 @@
 
 import { menuContext, cleanContext, cleanText, fromComposer, fromPage, askablePage, describe, siteFor, siteMatches } from './ask-policy.js';
 import { startTask, askTarget } from './cloud.js';
+import { L, LANG_KEY, initLang } from './i18n.js';
 
 const PENDING = 'askPending';   // storage.session：{ id: { context, at } }，等用户写那句话
 const WIN = 'askWin';           // storage.session：输入窗口的 id（同时只开一个）
@@ -88,12 +89,17 @@ async function onComposer(m) {
 }
 
 export function initAsk() {
-  // SW 每次醒来都重建一遍：菜单项是持久的，但升级、换版本后以这一份为准
-  chrome.contextMenus.removeAll(() => {
+  // SW 每次醒来都重建一遍：菜单项是持久的，但升级、换版本后以这一份为准。
+  // 菜单文字跟着界面语言；侧栏里改了语言就再建一遍。
+  const buildMenu = () => initLang().then(() => chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
-      id: MENU_ID, title: '交给 maker', contexts: ['page', 'link', 'image', 'video', 'selection'],
+      id: MENU_ID, title: L('交给 maker', 'Hand to maker'), contexts: ['page', 'link', 'image', 'video', 'selection'],
       documentUrlPatterns: ['http://*/*', 'https://*/*'],
     }, () => void chrome.runtime.lastError);
+  }));
+  void buildMenu();
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && LANG_KEY in changes) void buildMenu();
   });
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === MENU_ID) void openComposer(menuContext(info, tab), tab).catch(() => {});

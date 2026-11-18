@@ -120,3 +120,20 @@ token 算法：`((id/1e15)*Math.PI).toString(36)` 去掉 `0` 和 `.`。
 旧CLI upload对MP4发application/octet-stream，回执「投入」而X不显示媒体、不发上传请求；MCP upload已支持path＋video/mp4，复用其BridgeClient/CDP直接读盘路径后出现Uploading/Processing/Ready并可定时。不要用「投入」回执替代附件Ready。路径见该项目上传视频.mjs，未修改CLI。
 
 act.select当前值再设同值会判无变化而停止后续批处理；先读value，仅发送变化字段。后台compose/schedule模态框有时超过30秒才完整出现；wait超时先eval读现场恢复，不重复重开有内容的composer。Draft.js编辑器innerText在空段处会多一换行，最终服务端status保留原文2换行，以服务端正文为准。
+
+## 规则摘要（AiToEarn 代码）
+
+以下据 AiToEarn 开源代码整理（2026-11），未在页面实测；与现场不符以现场为准，验证后改写。
+
+- 账号确认：左下账号按钮显示 `@handle`，主页是 `x.com/<handle>`，以 handle 为准。
+- 正文必填；按普通账号算 ≤280（AiToEarn 按 280 卡），会员账号可更长，以编辑器计数为准。
+- 媒体有四种组合，互斥：图 ≤4 张（jpg/png/webp，≤5MB，≤8192×8192）；或 1 段视频（mp4/mov，≤512MB，0.5–140 秒）；或 1 个 GIF；三者不能混用。
+- 投票：2–4 个选项，每项 1–25 字，时长 5 分钟–7 天（10080 分钟）。投票与媒体互斥。
+- 回复权限对应 composer 里的「谁可以回复」：所有人、你关注的人、仅提及的用户、订阅者、认证用户。
+- 媒体可加 ALT 替代文本（≤1000 字），图片可标记用户（≤10 人，仅限图片帖）。另有「AI 生成」和「付费合作」两个标记。
+- 帖子链接：`x.com/<handle>/status/<id>`，不知道 handle 时可用 `x.com/i/status/<id>`（也可写作 `/i/web/status/<id>`）。
+- 帖子发出后不能编辑；要改只能删除重发，删除前先确认。
+- 账号层数据：粉丝数、关注数、帖子数。单帖数据：回复、转帖、引用、喜欢、书签、浏览（impressions）。引用数在帖子详情页的「Quotes」入口里，`role=group` 那行的 aria-label 里不含引用数。
+- 互动功能：回复、删除自己的回复、喜欢和取消喜欢、书签和取消书签、转帖和撤销转帖、引用、关注和取关。
+- 评论来源：AiToEarn 用「`conversation_id:<id> is:reply`」搜索取回复，受上文「搜索只覆盖约 30 天」限制。旧帖的回复要在 status 详情页里滚动读取。
+- 批量做喜欢、转帖或关注容易触发风控。逐条执行，每条之间留间隔，单次批量要控制数量。

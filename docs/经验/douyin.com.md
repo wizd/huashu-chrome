@@ -16,3 +16,47 @@
 - 本轮补边和模糊背景版本仍出现「边框面积过大」，重新按目标比例构图后通过。仅能说明这些样本的结果，不能据此推断检测器算法或所有封面的结果。
 - 截图默认可能缩放，点击坐标优先来自当前元素的`getBoundingClientRect()`。异步刷新后重新获取snapshot，避免复用失效ref。
 - 审核中若没有编辑入口，查询当前审核状态，不连续重提，也不要把旧链接打开的空白表单当作原作品。
+
+## 据代码整理：发布限制、数据字段、互动（2026-11）
+
+以下据 AiToEarn 开源代码整理（2026-11），未在页面实测；与现场不符以现场为准，验证后改写。
+
+### 登录与账号确认
+
+- 抖音 App 扫码登录。作者主页是 `www.douyin.com/user/<sec_uid>`；确认账号认 `sec_uid`（URL 里那段），昵称可能重名。
+- 作者对象字段：`uid`、`sec_uid`、`nickname`、`avatar_thumb.url_list[0]`、`follow_status`（1=已关注）。
+
+### 发布限制（代码常量，页面计数器优先）
+
+- 标题 ≤30 字；描述 ≤1000 字，**标题+描述合计也按 1000 算**。短标题（选填）≤12 字。
+- 话题 ≤5 个，`#词` 写在描述里。
+- 视频：≤15 分钟、≤4GB（前端提示文案）；比例 9:16 / 16:9 / 1:1；mp4/avi/mkv/mov。
+  后端另写过 100MB，那是开放接口的上限，不适用于网页上传。
+- 图文：jpg/png/bmp，≤20MB/张；张数代码里有 12 和 9 两种写法，以页面为准。
+- 选项：封面取帧（毫秒时间点）、是否允许下载、可见性（公开 / 私密 / 好友可见）。
+- 作品链接 `www.douyin.com/video/<aweme_id>`；作品 ID 就是 `aweme_id`。
+
+### 作品数据字段（页面数据里叫什么）
+
+- 作品：`aweme_id`、`desc`（标题和描述同一字段）、`create_time`（秒）、
+  `statistics{digg_count, comment_count, share_count, collect_count, play_count}`、
+  `video{duration（毫秒）, cover.url_list, width, height}`、`user_digged`（1=我已赞）、`collect_stat`（1=我已收藏）。
+- 话题先读 `cha_list[].cha_name`，空则读 `text_extra[].hashtag_name`，再空才从 `desc` 里按 `#(\S+)` 解析。
+- 话题页：`www.douyin.com/jingxuan/search/<词>?type=general`。
+- 评论：`cid`、`text`、`digg_count`、`create_time`、`ip_label`、`user_digged`、`is_author_digged`（作者赞过）、
+  `reply_comment_total`、`user{nickname, uid, sec_uid}`；分页是 `cursor` + `has_more`，
+  「展开更多回复」是另一路分页。
+
+### 互动
+
+- 点赞、收藏、评论：AiToEarn **放弃了接口方案，改成打开作品页点按钮**，理由是接口容易被风控。照做：
+  到 `www.douyin.com/video/<id>` 点 UI。
+- 先读当前状态再点（`user_digged` / `collect_stat` 或按钮高亮），不要按反。
+- 评论只做一级；回复别人的评论代码里没实现，抖音这块没有现成经验。
+- 评论时可能要求**短信验证码**，代码里的标志是 `needHumanAssist`。遇到就停下交给用户，不要重试。
+- 私信：从作品页或作者主页进入私信，二者任选；没有更多细节。
+
+### 搜索与推荐流
+
+- 首页推荐按 `refresh_index` 递增分页，只能一屏屏往下刷，不能跳页；`has_more:1` 表示还有。
+- 推荐流条目已含完整统计和话题，不必逐个点开详情。

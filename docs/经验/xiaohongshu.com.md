@@ -117,3 +117,43 @@ it.querySelector('a.cover').getAttribute('href');
 - 本轮meshopt压缩模型依赖的解码器被CSP阻止。应按目标容器能力提前处理资源，并在匹配当前容器CSP的环境里自测，不能只以本地页面能打开为准。
 - 资源加载失败时记录实际错误；错误提示能辅助定位，但撤掉加载遮罩不等于资源已正确显示。
 - 包版本、模型加载、按钮交互都需核对。不要把包地址中的签名、应用ID或具体审核材料上传到共享经验。
+
+## 据代码整理：限制、链接、字段、互动（2026-11）
+
+以下据 AiToEarn 开源代码整理（2026-11），未在页面实测；与现场不符以现场为准，验证后改写。
+
+### 登录
+
+- 前台 `www` 和创作平台 `creator` 的登录态**分开判断**（代码里分 `home` / `creator` 两个字段），两边都要确认已登录。
+- 提示「账号已离线，请下载App进行操作」时，要用户在手机 App 上处理，网页上解决不了。
+
+### 发布限制（补充上文实测）
+
+- 话题 ≤5 个。正文 1000 字和标题 20 字已在上文。
+- 图片 jpg/png/bmp/webp，≤20MB/张；代码张数写 9，但上文实测为 18，**以实测为准**。
+- 视频 ≤20GB、≤4 小时（前端提示文案；后端 1GB/1h 是另一路的限制）；比例 9:16 / 3:4 / 1:1 / 16:9。
+- 「内容声明」选填：虚拟演绎，仅供娱乐 / 笔记含AI合成内容 / 内容包含营销广告。AI 生成的内容要勾第二项。
+- 发布后拿链接：AiToEarn 取的是发布结果里的分享链接，**不带 `xsec_token` 的链接会被判为坏链**。
+  能解析出笔记 ID 的形式：`/explore/<id>`、`/discovery/item/<id>`、`/user/profile/<uid>/<id>`；
+  `xhslink.com` 短链会 302 到这些地址。
+
+### 数据字段（详情 / 列表）
+
+- 笔记 `note_card`：`type`（`video` / `normal`）、`title`、`desc`、`time`、`last_update_time`、`ip_location`、
+  `interact_info{liked, liked_count, collected, collected_count, comment_count, share_count, followed}`
+  （计数全是**字符串**，可能是「1.2万」）、`image_list`、`tag_list`、`at_user_list`、
+  `user{user_id, nickname, avatar, xsec_token}`。
+- 首页推荐条目只有 `display_title`、封面、作者和 `liked_count`，**没有收藏数和话题**，要进详情页。
+  只取 `model_type==='note'` 的条目，其余是非笔记卡片。
+- 评论：`id`、`content`、`create_time`（毫秒）、`like_count`（字符串）、`liked`、`ip_location`、
+  `user_info{user_id, nickname, image, xsec_token}`、`show_tags` 含 `is_author` 表示作者本人、
+  `sub_comment_count`、`sub_comments`、`sub_comment_has_more`；
+  子评论带 `target_comment` 指明回复谁。一级评论用 `cursor` / `has_more` 分页。
+
+### 互动
+
+- AiToEarn 的点赞、收藏和一级评论都改成**打开 `/explore/<id>` 点按钮**，不再走接口。
+  回复评论（二级）仍保留接口方案；我们在评论下点「回复」即可。
+- 点之前先读 `interact_info.liked` / `collected`，避免误点成取消。
+- 首页推荐用游标翻页，只能顺序往下刷。
+- 风险信号：AiToEarn 主动**删掉了**「笔记详情抓取」功能。批量打开详情要放慢节奏，被要求滑块验证就停下。

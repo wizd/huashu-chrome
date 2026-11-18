@@ -2025,6 +2025,19 @@ function withTimeout(promise, ms, what) {
 
 const LOAD_WAIT_MS = 30000;
 
+// 开一个标签页。Chrome 还在跑但窗口全关了时（后台运行），tabs.create 报「No current window」：
+// 这时开一个新窗口来放它。不抢焦点（focus 为真时才到前台），也不最小化——最小化的窗口不渲染，
+// 页面上的按钮点不到。
+async function newTab(url, focus = false) {
+  try {
+    return await chrome.tabs.create({ url, active: focus });
+  } catch (e) {
+    if (!/no current window/i.test(String(e?.message || e))) throw e;
+    const win = await chrome.windows.create({ url, focused: focus, type: 'normal' });
+    return win.tabs?.[0] || (await chrome.tabs.query({ windowId: win.id }))[0];
+  }
+}
+
 // 小脑的 early 钩子（load.json 的 early）：要在页面自己的脚本之前装好，只能 document_start 注入。
 // 只为这一个标签页的这一次重载注册：注册 → 重载 → 等到钩子出现或页面加载完 → 注销。
 // 注册是按网站生效的，同站别的标签页恰好在这几秒里加载也会装上；钩子自己保证没人用时只透传、少量留存。
@@ -2828,7 +2841,7 @@ const HANDLERS = {
     // active:false —— agent 在后台干活，不把用户从他正在看的页面上拽走。
     // 需要抢焦点的场合（截图、让用户看着操作）由调用方显式传 focus:true。
     if (p.action === 'new') {
-      const tab = await chrome.tabs.create({ url: p.url || 'about:blank', active: !!p.focus });
+      const tab = await newTab(p.url || 'about:blank', !!p.focus);
       const label = String(p.label || '').slice(0, 40);
       if (label) await chrome.storage.local.set({ [labelKey(tab.id)]: label });
       await setActiveTabId(tab.id);   // 全局槽照旧更新：它是「最近受控 tab」的继承源

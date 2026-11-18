@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createFlowDriver, pickChoice, flowPrompt, pageLink, runSiteGeneration } from '../src/lib/flow-driver.js';
+import { createFlowDriver, pickChoice, creditShortfall, flowPrompt, pageLink, runSiteGeneration } from '../src/lib/flow-driver.js';
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
 const MP4 = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypmp42'), Buffer.alloc(200, 7)]);
@@ -238,6 +238,18 @@ test('pickChoice：先保要的模型，再保时长至少够', () => {
   assert.equal(pickChoice(veo, { model: 'Kling 2', seconds: 6 }), 0);
   assert.equal(pickChoice(['Make it 4 seconds', 'Make it 8 seconds'], { seconds: 6 }), 1);
   assert.equal(pickChoice(['Landscape', 'Portrait'], {}), 0);
+  // 花钱的选项不替用户选
+  assert.equal(pickChoice(['Upgrade subscription', 'Use a shorter 4s clip'], { seconds: 6 }), 1);
+});
+
+test('creditShortfall：读出 Flow 说的 credits 不够；只报价不算', () => {
+  const said = 'Generating this video requires 20 credits, but your account currently has 3 credits available. To proceed, please visit the Flow subscription page to upgrade your plan or top up your balance, then let me know once that\'s complete!';
+  assert.deepEqual(creditShortfall(said), { need: 20, left: 3 });
+  assert.ok(creditShortfall('You can upgrade your subscription tier or top up your credits on the Flow subscription page.'));
+  assert.ok(creditShortfall('Not enough credits'));
+  assert.equal(creditShortfall('This video will use 20 credits. Shall I go ahead?'), null);
+  assert.equal(creditShortfall('This requires 20 credits and you have 500 credits available.'), null);
+  assert.equal(creditShortfall('Which style do you want?'), null);
 });
 
 test('Flow 驱动：回答反问；答了不生效两次就停', async () => {
@@ -274,6 +286,19 @@ test('Flow 驱动：读对话——停住就在对话里回，问了就让它做
     await assert.rejects(go(d, 120000), (e) => e.code === 'TIMEOUT');
     assert.equal(d.page.replies.length, 0, JSON.stringify(stall));
   }
+});
+
+test('Flow 驱动：credits 不够就停，不回话、不点升级，报 409 NO_CREDITS', async () => {
+  const clock = () => { let t = 0; return () => (t += 5000); };
+  const go = (link) => gen(link, { prompt: 'a red fox', timeoutMs: 600000, want: { model: 'Omni 1.2 Flash', seconds: 6 } }, { now: clock() });
+  const said = 'Generating this video requires 20 credits, but your account currently has 3 credits available. To proceed, please upgrade your plan or top up your balance.';
+  const a = fakeLink({ project: 'p1', approval: false, stall: { text: said, ask: true, needs: Infinity } });
+  await assert.rejects(go(a), (e) => e.code === 'NO_CREDITS' && e.status === 409 && e.need === 20 && e.left === 3);
+  assert.equal(a.page.replies.length, 0);
+  const ask = { question: 'You do not have enough credits for this video. Would you like to:', options: ['Upgrade subscription', 'Top up credits'] };
+  const b = fakeLink({ project: 'p1', approval: false, ask });
+  await assert.rejects(go(b), (e) => e.code === 'NO_CREDITS');
+  assert.deepEqual(b.page.clicked ?? [], []);
 });
 
 test('Flow 驱动：页面取不到时直接下载，但只认普通 https 地址', async () => {

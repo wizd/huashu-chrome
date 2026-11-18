@@ -65,9 +65,28 @@ export function flowPrompt({ kind, prompt, model, aspect, seconds, resolution = 
 // Flow 的智能体有时反问（「Veo 3.1 - Fast 只能 8 秒：用 8 秒，还是换 Omni 做 6 秒？」）。
 // 选最接近要求的：先保模型，再保时长至少够（长了能剪，短了长不出来）。
 const squash = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+// Flow 的智能体说账号付不起这次生成：{ need, left }（可能是 null）或 null。
+// 只说「这次要用 20 credits」是确认，不算。
+export function creditShortfall(text) {
+  const s = String(text || '');
+  const need = s.match(/requires?\s+(\d+)\s+credits?/i);
+  const left = s.match(/(?:has|have)\s+(?:only\s+)?(\d+)\s+(?:\w+\s+)?credits?(?:\s+(?:available|left|remaining))?/i)
+    || s.match(/(\d+)\s+credits?\s+(?:available|left|remaining)/i);
+  const n = need ? Number(need[1]) : null;
+  const l = left ? Number(left[1]) : null;
+  if (n != null && l != null) return l < n ? { need: n, left: l } : null;
+  if (/not enough credits|out of credits|insufficient credits|no credits left/i.test(s)
+    || (/credits?/i.test(s) && /upgrade (?:your )?(?:subscription|plan|tier)|top up/i.test(s))) return { need: n, left: l };
+  return null;
+}
+
+// 花钱的选项（升级订阅、充值）绝不替用户选
+export const SPENDS_MONEY = /upgrade|top.?up|subscri|buy|purchase|billing|payment/i;
+
 export function pickChoice(options, want = {}) {
   const model = squash(want.model);
   const score = (o) => {
+    if (SPENDS_MONEY.test(String(o))) return -100;
     let n = 0;
     if (model && squash(o).includes(model)) n += 2;
     const secs = [...String(o).matchAll(/(\d+)\s*(?:-?\s*)?(?:s\b|sec|second)/gi)].map((m) => Number(m[1]));
@@ -423,6 +442,14 @@ export function createFlowDriver({ link, fetchFn = globalThis.fetch, sleep = (ms
         failures = r.failures || failures + 1;
         if (retried < 1 && r.retry) { retried++; log(`Flow 报错「${r.failed}」，点它的 Try again 重试一次`); await click(run, 'retry'); continue; }
         throw flowError(502, `Flow 报错：「${r.failed}」${retried ? '（已经点过一次 Try again）' : ''}。这是 Flow 那边临时出错，过几分钟可以再试一次。`, 'FLOW_ERROR');
+      }
+      // 账号的 credits 不够：不回话、不点升级，交给调用方换别的账号（409 NO_CREDITS）
+      const broke = creditShortfall(r?.talk?.text) || creditShortfall(r?.question)
+        || (r?.question && r.options?.length && r.options.every((o) => SPENDS_MONEY.test(String(o))) ? { need: null, left: null } : null);
+      if (broke) {
+        const said = String(r?.talk?.text || r?.question || '').replace(/\s+/g, ' ').slice(-300);
+        const what = broke.need != null && broke.left != null ? `要 ${broke.need}，剩 ${broke.left}` : '账号付不起这次生成';
+        throw Object.assign(flowError(409, `Flow credits 不够：${what}（Flow 说：「${said}」）`, 'NO_CREDITS'), { need: broke.need, left: broke.left });
       }
       if (r?.question && r.options?.length) {
         const key = `${r.question}|${r.options.join('|')}`;

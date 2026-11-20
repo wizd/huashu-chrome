@@ -19,7 +19,13 @@ function say(text, kind = 'bad') {
 function blockWith(text) {
   say(text);
   $('text').disabled = true;
-  $('send').disabled = true;
+  $('send').hidden = true;
+  showClose();
+}
+
+function showClose() {
+  $('close').hidden = false;
+  $('close').focus();
 }
 
 async function load() {
@@ -75,10 +81,12 @@ async function send() {
     a.addEventListener('click', () => setTimeout(() => window.close(), 200));
     msg.append(a);
   }
+  showClose();
   setTimeout(() => window.close(), 8000);
 }
 
 $('send').addEventListener('click', send);
+$('close').addEventListener('click', () => window.close());
 $('text').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void send(); }
 });

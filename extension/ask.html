@@ -38,7 +38,7 @@
   .msg.ok { color: var(--ok); }
   .msg a { color: inherit; font-weight: 600; }
   button { font: inherit; font-size: 12.5px; border: 0; border-radius: 8px; padding: 6px 16px; cursor: pointer;
-           background: var(--accent); color: #fff; }
+           background: var(--accent); color: #fff; flex-shrink: 0; }
   button:disabled { opacity: .5; cursor: default; }
 </style>
 <main>
@@ -54,6 +54,7 @@
     <span class="hint" id="hint" data-en="Enter to send · Shift+Enter for new line · Esc to close">Enter 发送 · Shift+Enter 换行 · Esc 关闭</span>
     <span class="msg" id="msg" hidden></span>
     <button type="button" id="send" data-en="Hand to maker">交给 maker</button>
+    <button type="button" id="close" data-en="Close" hidden>关闭</button>
   </div>
 </main>
 <script type="module" src="ask-page.js"></script>

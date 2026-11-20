@@ -522,18 +522,8 @@ function renderCloud(s) {
 
   renderNotes(s.notes || []);
 
-  // 允许名单：用户点过「允许」的网站，含子域。没有预设的平台。
-  const sites = $('cloudSites');
-  sites.textContent = '';
-  if (!s.cfg.sites.length) sites.appendChild(el('div', 'empty', L('还没有。任务申请网站、你点了允许，就会出现在这里。', 'None yet. Sites appear here once a task requests them and you allow it.')));
-  for (const host of s.cfg.sites) {
-    const row = el('div', 'site');
-    row.appendChild(el('span', 'host', host));
-    const del = el('button', 'btn ghost', L('移除', 'Remove'));
-    del.onclick = () => cloudCall('removeSite', { host });
-    row.appendChild(del);
-    sites.appendChild(row);
-  }
+  lastSites = s.cfg.sites;
+  renderSites();
 
   // 要用户点头的一律进顶上的「需要你处理」，这里只留进行中任务的状态
   const tasks = $('cloudTasks');
@@ -598,6 +588,41 @@ $('claimYes').onclick = async () => {
 };
 $('claimNo').onclick = () => { $('claimName').value = ''; cloudCall('cancelClaim'); };
 // 改名的结果就写在输入框下面，不弹窗；服务器确认写入才说「已保存」
+// 允许名单：用户点过「允许」的网站，含子域。没有预设的平台。
+// 用久了会有成百上千个：新加的排前面，默认只露几个，多了给搜索框。
+const SITES_FEW = 8, SITES_SEARCH = 10, SITES_PAGE = 50;
+let lastSites = [], sitesShown = SITES_FEW;
+function renderSites() {
+  const box = $('cloudSites'), q = $('cloudSitesQ');
+  const all = [...lastSites].reverse();
+  $('cloudSitesN').textContent = all.length ? L(`共 ${all.length} 个`, `${all.length} total`) : '';
+  q.hidden = all.length <= SITES_SEARCH;
+  const term = q.hidden ? '' : q.value.trim().toLowerCase();
+  const list = term ? all.filter((h) => h.includes(term)) : all;
+  box.textContent = '';
+  if (!all.length) return box.appendChild(el('div', 'empty', L('还没有。任务申请网站、你点了允许，就会出现在这里。', 'None yet. Sites appear here once a task requests them and you allow it.')));
+  if (!list.length) return box.appendChild(el('div', 'empty', L('没有匹配的网站', 'No matching sites')));
+  for (const host of list.slice(0, sitesShown)) {
+    const row = el('div', 'site');
+    row.appendChild(el('span', 'host', host));
+    const del = el('button', 'btn ghost', L('移除', 'Remove'));
+    del.onclick = () => cloudCall('removeSite', { host });
+    row.appendChild(del);
+    box.appendChild(row);
+  }
+  const rest = list.length - sitesShown;
+  if (rest > 0) {
+    const more = el('button', 'btn ghost more', L(`再显示 ${Math.min(rest, SITES_PAGE)} 个（还有 ${rest} 个）`, `Show ${Math.min(rest, SITES_PAGE)} more (${rest} left)`));
+    more.onclick = () => { sitesShown += SITES_PAGE; renderSites(); };
+    box.appendChild(more);
+  } else if (sitesShown > SITES_FEW && list.length > SITES_FEW) {
+    const less = el('button', 'btn ghost more', L('收起', 'Show fewer'));
+    less.onclick = () => { sitesShown = SITES_FEW; renderSites(); };
+    box.appendChild(less);
+  }
+}
+$('cloudSitesQ').addEventListener('input', () => { sitesShown = SITES_FEW; renderSites(); });
+
 let namePending = null;
 let nameMsgTimer = null;
 function nameMsg(cls, text) {

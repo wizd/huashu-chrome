@@ -92,6 +92,10 @@
   .sites .site { display: flex; gap: 8px; align-items: center; font-size: 12.5px; padding: 2px 0; }
   .sites .host { flex: 1; word-break: break-all; }
   .sites .btn { padding: 2px 8px; }
+  .sites .more { margin-top: 4px; align-self: flex-start; }
+  .sites-n { color: var(--mute); font-weight: normal; margin-left: 6px; }
+  .sites-q { width: 100%; font: inherit; font-size: 12.5px; padding: 5px 8px; margin-top: 4px; border-radius: 7px;
+             border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
   .task { border-top: 1px solid var(--line); padding: 8px 0 2px; margin-top: 6px; }
   .task .t { font-weight: 500; word-break: break-all; }
   .task .sub, .muted { color: var(--mute); font-size: 11.5px; }
@@ -227,7 +231,8 @@
       </label>
       <div class="msg" id="deviceNameMsg" role="status" aria-live="polite" hidden></div>
       <div id="cloudTasks"></div>
-      <div class="lab" style="margin-top:10px" data-en="Sites it may use">允许它使用的网站</div>
+      <div class="lab" style="margin-top:10px"><span data-en="Sites it may use">允许它使用的网站</span><span class="sites-n" id="cloudSitesN"></span></div>
+      <input type="search" class="sites-q" id="cloudSitesQ" placeholder="搜索网站" data-en-placeholder="Search sites" autocomplete="off" spellcheck="false" hidden />
       <div class="sites" id="cloudSites"></div>
       <label class="sw-row">
         <span class="txt"><span data-en="Pause">暂停</span><div class="sub" data-en="Accept no cloud commands at all until you turn this back on">云端的命令一条都不接，直到你再打开</div></span>

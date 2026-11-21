@@ -371,10 +371,12 @@ function renderDesktop(s) {
   const d = s.desktop || {};
   $('deskOn').hidden = !!d.device;
   $('deskOff').hidden = !d.device;
+  // 没启用、或启用了但 agent-desktop 用不了，都给出安装指南
+  $('deskGuide').hidden = !!d.device && d.ready !== false;
   $('deskState').textContent = d.device
-    ? L(`已启用 · ${d.device.id}${d.ready === false ? ' · agent-desktop 用不了，终端里运行 npx vcorp-chrome desktop status 看原因' : ''}`,
-      `Enabled · ${d.device.id}${d.ready === false ? ' · agent-desktop is unavailable; run npx vcorp-chrome desktop status in a terminal to see why' : ''}`)
-    : d.error || L('未启用', 'Not enabled');
+    ? L(`已启用 · ${d.device.id}${d.ready === false ? ' · agent-desktop 用不了，点「安装步骤」看常见问题' : ''}`,
+      `Enabled · ${d.device.id}${d.ready === false ? ' · agent-desktop is unavailable; click "Setup steps" for the FAQ' : ''}`)
+    : d.error || L('未启用。第一次用要先装桌面组件，点「安装步骤」。', 'Not enabled. The first time, install the desktop component: click "Setup steps".');
 }
 
 // 一条待批准的申请，放进顶上的「需要你处理」
@@ -681,6 +683,7 @@ $('deskOn').onclick = async () => {
   // 失败原因写在桌面这一栏，不要留着「启用中…」，也不用在顶上再报一遍
   if (r && !r.ok && r.error) { $('deskState').textContent = r.error; $('cloudErr').hidden = true; }
 };
+$('deskGuide').onclick = () => chrome.tabs.create({ url: chrome.runtime.getURL('desktop-setup.html') });
 $('deskOff').onclick = async () => {
   await cloudCall('desktopDisable');
   await chrome.permissions.remove({ permissions: ['nativeMessaging'] }).catch(() => {});

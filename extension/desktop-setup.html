@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title data-en="Turn on desktop control · vcorp-chrome">启用桌面能力 · vcorp-chrome</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f5f4; --card: #fff; --ink: #1c1917; --mute: #78716c; --line: rgba(0,0,0,.08);
+    --soft: rgba(0,0,0,.045); --ok: #16a34a; --accent: #ea580c; --bad: #dc2626; --warn: #d97706;
+    --win: #f3f3f3; --winbar: #fff; --winline: #d4d4d4; --winblue: #0067c0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141414; --card: #1e1e1e; --ink: #f2f2f2; --mute: #a1a1aa; --line: rgba(255,255,255,.09);
+            --soft: rgba(255,255,255,.06); --ok: #22c55e; --accent: #fb923c; --bad: #f87171; --warn: #fbbf24;
+            --win: #2b2b2b; --winbar: #202020; --winline: #444; --winblue: #4cc2ff; }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .page { max-width: 760px; margin: 0 auto; padding: 48px 16px 72px; }
+  .hero { display: flex; align-items: center; gap: 16px; margin-bottom: 20px; }
+  .hero img { width: 56px; height: 56px; border-radius: 50%; }
+  h1 { margin: 0; font-size: 24px; letter-spacing: .3px; }
+  .hero p { margin: 2px 0 0; color: var(--mute); }
+  h2 { font-size: 18px; margin: 36px 0 12px; }
+  a { color: var(--accent); }
+  kbd { font: 600 12.5px/1 ui-monospace, Menlo, monospace; border: 1px solid var(--line); border-bottom-width: 3px;
+        border-radius: 6px; padding: 3px 7px; background: var(--card); }
+  code { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--soft);
+         padding: 1px 6px; border-radius: 6px; }
+
+  /* 顶上的实时状态 */
+  .live { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; padding: 12px 16px;
+          border-radius: 12px; background: var(--card); border: 1px solid var(--line); margin-bottom: 14px;
+          box-shadow: 0 4px 16px rgba(0,0,0,.05); font-size: 14px; }
+  .live .dot { width: 10px; height: 10px; border-radius: 50%; background: #a8a29e; flex: none;
+               animation: wait 1.4s ease-in-out infinite; }
+  .live.ok { border-color: var(--ok); }
+  .live.ok .dot { background: var(--ok); animation: none; }
+  .live.ok #liveTxt { color: var(--ok); font-weight: 600; }
+  .live.half .dot { background: var(--warn); }
+  .live.bad .dot { background: var(--bad); animation: none; }
+  .live button { margin-left: auto; }
+  @keyframes wait { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  .lasterr { font-size: 13px; color: var(--mute); background: var(--soft); border-radius: 10px; padding: 8px 12px; margin-bottom: 14px; }
+  .lasterr b { color: var(--bad); font-weight: 600; }
+
+  .os { display: inline-flex; background: var(--soft); border-radius: 10px; padding: 3px; gap: 3px; margin: 4px 0 6px; }
+  .os button { background: transparent; color: var(--mute); padding: 6px 14px; }
+  .os button.on { background: var(--card); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+
+  ol.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+  ol.steps > li { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px;
+                  display: grid; grid-template-columns: 28px 1fr; gap: 4px 14px; }
+  .n { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 13px;
+       font-weight: 600; background: var(--soft); color: var(--mute); }
+  li.done .n { background: var(--ok); color: #fff; }
+  h3 { margin: 0; font-size: 16.5px; line-height: 26px; }
+  .d { grid-column: 2; color: var(--ink); font-size: 14.5px; }
+  .d p { margin: 6px 0; }
+  .d ul { margin: 6px 0; padding-left: 20px; }
+  .mute { color: var(--mute); }
+  .tip { margin-top: 10px; font-size: 13.5px; color: var(--mute); border-left: 3px solid var(--accent); padding: 2px 0 2px 10px; }
+  .cmd { display: flex; gap: 8px; margin: 10px 0 4px; align-items: stretch; }
+  .cmd code { flex: 1; padding: 9px 12px; border-radius: 9px; word-break: break-all; }
+  button { font: inherit; font-size: 13px; border: 0; border-radius: 9px; padding: 0 14px; cursor: pointer;
+           background: var(--accent); color: #fff; font-weight: 600; flex: none; }
+  button.ghost { background: var(--soft); color: var(--ink); }
+  .cmd button { min-width: 64px; }
+  .inline-btn { padding: 8px 14px; margin-top: 8px; }
+
+  /* ---- 配图：画出用户会看到的窗口 ---- */
+  .fig { margin: 12px 0 6px; display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+  .cap { font-size: 12.5px; color: var(--mute); margin-top: 6px; text-align: center; }
+  .shot { flex: 1 1 300px; min-width: 0; }
+  .win { border: 1px solid var(--winline); border-radius: 8px; overflow: hidden; background: var(--win);
+         box-shadow: 0 6px 22px rgba(0,0,0,.12); font: 13px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; color: var(--ink); }
+  .win .bar { background: var(--winbar); display: flex; align-items: center; gap: 8px; padding: 6px 10px;
+              font-size: 12px; border-bottom: 1px solid var(--winline); }
+  .win .bar .x { margin-left: auto; letter-spacing: 14px; color: var(--mute); }
+  .win .body { padding: 14px 16px; }
+  .field { border: 1px solid var(--winline); border-bottom: 2px solid var(--winblue); background: var(--winbar);
+           padding: 4px 8px; border-radius: 4px; min-width: 160px; display: inline-block; font-family: Consolas, monospace; }
+  .wbtns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .wbtn { border: 1px solid var(--winline); background: var(--winbar); border-radius: 4px; padding: 3px 18px; font-size: 12.5px; }
+  .wbtn.primary { background: var(--winblue); border-color: var(--winblue); color: #fff; }
+  .hl { outline: 3px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .pointer { color: var(--accent); font-weight: 700; font-size: 12.5px; }
+  .term { background: #0c0c0c; color: #cccccc; font: 12.5px/1.6 Consolas, "Cascadia Mono", ui-monospace, monospace;
+          padding: 12px 14px; white-space: pre-wrap; word-break: break-all; min-height: 90px; }
+  .term .p { color: #cccccc; }
+  .term .u { color: #fff; }
+  .term .g { color: #16c60c; }
+  .term .r { color: #e74856; }
+  .term .y { color: #f9f1a5; }
+  .term .c { color: #767676; }
+  .mac .term { background: #1e1e1e; }
+  .keys { display: flex; align-items: center; gap: 8px; font-size: 14px; flex: 0 0 auto; padding-top: 30px; }
+  .keys kbd { font-size: 15px; padding: 8px 12px; }
+  .nodeweb { background: var(--winbar); padding: 18px; text-align: center; }
+  .nodeweb .logo { font-weight: 800; font-size: 18px; color: #5fa04e; letter-spacing: .5px; }
+  .nodeweb .dl { display: inline-block; margin-top: 10px; background: #5fa04e; color: #fff; padding: 8px 16px; border-radius: 6px; font-weight: 600; }
+  .wiz { display: grid; grid-template-columns: 86px 1fr; min-height: 150px; }
+  .wiz .side { background: linear-gradient(#3c873a, #2e6b2c); }
+  .wiz .main { padding: 12px 14px; font-size: 12.5px; }
+  .wiz .main b { display: block; font-size: 13.5px; margin-bottom: 6px; }
+  .chk { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+  .chk i { width: 13px; height: 13px; border: 1px solid var(--mute); border-radius: 2px; display: inline-grid; place-items: center; font-style: normal; font-size: 10px; flex: none; }
+  .chk i.on { background: var(--winblue); border-color: var(--winblue); color: #fff; }
+  .panelmock { background: var(--card); }
+  .panelmock .sec { padding: 12px 14px; }
+  .panelmock .sec b { display: block; font-size: 13.5px; }
+  .panelmock .sub { color: var(--mute); font-size: 12px; margin: 2px 0 8px; }
+  .panelmock .pbtn { display: inline-block; background: var(--accent); color: #fff; border-radius: 8px; padding: 4px 12px; font-size: 12.5px; font-weight: 600; }
+  .ask { background: var(--winbar); padding: 12px 14px; font-size: 12.5px; }
+  .ask .wbtns { margin-top: 10px; }
+  .ok-line { color: var(--ok); font-weight: 600; }
+
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+          overflow: hidden; font-size: 13.5px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { background: var(--soft); font-weight: 600; }
+  tr:last-child td { border-bottom: 0; }
+  tr.flash td { animation: flash 1.6s ease-out; }
+  @keyframes flash { from { background: rgba(234,88,12,.18); } to { background: transparent; } }
+  td code { word-break: break-all; }
+  .foot { margin-top: 28px; color: var(--mute); font-size: 13px; }
+</style>
+
+<div class="page">
+  <div class="hero">
+    <img src="icons/icon128.png" alt="" />
+    <div>
+      <h1 data-en="Turn on desktop control on this computer">在这台电脑上启用桌面能力</h1>
+      <p data-en="Lets paired tasks operate desktop apps such as WeChat or Excel; you are asked about every app first. About 10 minutes, copy and paste only — no command-line knowledge needed.">启用后，配对的任务可以操作这台电脑上的应用（比如微信、Excel），每个应用都会先问你。全程大约 10 分钟，照着复制粘贴就行，不需要懂命令行。</p>
+    </div>
+  </div>
+
+  <div class="live" id="live">
+    <span class="dot"></span>
+    <span id="liveTxt" data-en="Checking the desktop component…">正在检测桌面组件…</span>
+    <button id="liveBtn" class="open-panel" hidden data-en="Open side panel">打开侧栏</button>
+  </div>
+  <div class="lasterr" id="lastErr" hidden><b data-en="What just happened:">刚才的情况：</b> <span id="lastErrTxt"></span></div>
+
+  <div class="os" role="tablist">
+    <button id="osWin" type="button">Windows</button>
+    <button id="osMac" type="button">macOS</button>
+  </div>
+
+  <!-- ================= Windows ================= -->
+  <section id="win">
+    <ol class="steps">
+      <li id="w1">
+        <span class="n">1</span>
+        <h3 data-en="Open Command Prompt">打开「命令提示符」</h3>
+        <div class="d">
+          <p data-en-html="Press &lt;kbd&gt;⊞ Win&lt;/kbd&gt; + &lt;kbd&gt;R&lt;/kbd&gt; on the keyboard. In the &quot;Run&quot; box that appears, type &lt;code&gt;cmd&lt;/code&gt; and press Enter. A black window opens — that is where the commands below go.">按键盘上的 <kbd>⊞ Win</kbd> + <kbd>R</kbd>，在弹出的「运行」框里输入 <code>cmd</code>，按回车。会打开一个黑色窗口，下面的命令都粘贴到这里。</p>
+          <div class="fig">
+            <div class="keys"><kbd>⊞ Win</kbd> + <kbd>R</kbd></div>
+            <div class="shot">
+              <div class="win">
+                <div class="bar"><span data-en="Run">运行</span><span class="x">✕</span></div>
+                <div class="body">
+                  <div class="mute" style="font-size:12px" data-en="Type the name of a program, folder, document or Internet resource, and Windows will open it for you.">Windows 将根据你所输入的名称，为你打开相应的程序、文件夹、文档或 Internet 资源。</div>
+                  <div style="margin-top:10px"><span data-en="Open:">打开(O)：</span> <span class="field hl">cmd</span></div>
+                  <div class="wbtns"><span class="wbtn primary" data-en="OK">确定</span><span class="wbtn" data-en="Cancel">取消</span></div>
+                </div>
+              </div>
+              <div class="cap" data-en="Type cmd and press Enter">输入 cmd，按回车</div>
+            </div>
+          </div>
+          <div class="tip" data-en-html="Paste into the black window with a &lt;b&gt;right-click&lt;/b&gt; (or Ctrl + V). Use this Command Prompt, &lt;b&gt;not PowerShell&lt;/b&gt;: on a fresh Windows, PowerShell refuses to run npx with &quot;running scripts is disabled on this system&quot;.">在黑色窗口里粘贴：<b>点右键</b>（或 Ctrl + V）。请用这个「命令提示符」，<b>不要用 PowerShell</b>：新装的 Windows 上 PowerShell 会以「禁止运行脚本」为由拒绝运行 npx。</div>
+        </div>
+      </li>
+
+      <li id="w2">
+        <span class="n">2</span>
+        <h3 data-en="Check whether Node.js is installed">看看装没装 Node.js</h3>
+        <div class="d">
+          <p data-en="The desktop component runs on Node.js. Paste this line and press Enter:">桌面组件靠 Node.js 运行。粘贴下面这行，按回车：</p>
+          <div class="cmd"><code id="cmdNode">node -v</code><button data-copy="cmdNode" data-en="Copy">复制</button></div>
+          <div class="fig">
+            <div class="shot">
+              <div class="win"><div class="bar">C:\Windows\system32\cmd.exe<span class="x">—▢✕</span></div>
+                <div class="term"><span class="p">C:\Users\you&gt;</span><span class="u">node -v</span>
+<span class="g">v22.12.0</span>
+
+<span class="p">C:\Users\you&gt;</span></div></div>
+              <div class="cap ok-line" data-en="Shows v20 or higher → skip to step 4">显示 v20 或更大的数字 → 直接跳到第 4 步</div>
+            </div>
+            <div class="shot">
+              <div class="win"><div class="bar">C:\Windows\system32\cmd.exe<span class="x">—▢✕</span></div>
+                <div class="term"><span class="p">C:\Users\you&gt;</span><span class="u">node -v</span>
+<span class="r">'node' is not recognized as an internal or external command,
+operable program or batch file.</span>
+
+<span class="p">C:\Users\you&gt;</span></div></div>
+              <div class="cap" data-en="Shows this (or 'not recognized as an internal or external command') → do step 3">显示这个（或「不是内部或外部命令」）→ 做第 3 步</div>
+            </div>
+          </div>
+        </div>
+      </li>
+
+      <li id="w3">
+        <span class="n">3</span>
+        <h3 data-en="Install Node.js (once)">安装 Node.js（只需一次）</h3>
+        <div class="d">
+          <ul>
+            <li data-en-html="Open &lt;a id=&quot;nodeLink&quot; href=&quot;https://nodejs.org/en/download&quot; target=&quot;_blank&quot; rel=&quot;noopener&quot;&gt;nodejs.org/download&lt;/a&gt; and download the &lt;b&gt;LTS&lt;/b&gt; &lt;b&gt;Windows Installer (.msi)&lt;/b&gt;.">打开 <a id="nodeLink" href="https://nodejs.org/zh-cn/download" target="_blank" rel="noopener">nodejs.org 下载页</a>，下载 <b>LTS</b> 版的 <b>Windows 安装程序（.msi）</b>。</li>
+            <li data-en-html="Double-click the downloaded file and keep clicking &lt;b&gt;Next&lt;/b&gt;. On the license page tick &quot;I accept&quot;. Leave every option at its default.">双击下载好的文件，一路点 <b>Next</b>。许可协议那页勾上「I accept」。所有选项保持默认。</li>
+            <li data-en-html="On the &lt;b&gt;Tools for Native Modules&lt;/b&gt; page, &lt;b&gt;leave the box unticked&lt;/b&gt; — it is not needed and takes a long time.">到 <b>Tools for Native Modules</b> 那页，<b>不要勾</b>那个框，用不上，勾了还要装很久。</li>
+            <li data-en-html="Click &lt;b&gt;Install&lt;/b&gt;. When Windows asks &quot;Do you want to allow this app to make changes&quot;, click &lt;b&gt;Yes&lt;/b&gt;. Then &lt;b&gt;Finish&lt;/b&gt;.">点 <b>Install</b>。Windows 问「你要允许此应用对你的设备进行更改吗」时点 <b>是</b>。最后点 <b>Finish</b>。</li>
+          </ul>
+          <div class="fig">
+            <div class="shot">
+              <div class="win"><div class="bar">nodejs.org<span class="x">—▢✕</span></div>
+                <div class="nodeweb"><div class="logo">node</div>
+                  <div class="mute" style="font-size:12px;margin-top:6px" data-en="Download Node.js® · LTS">下载 Node.js® · LTS</div>
+                  <div class="dl hl" data-en="Windows Installer (.msi)">Windows 安装程序 (.msi)</div></div></div>
+              <div class="cap" data-en="Pick the LTS .msi installer">选 LTS 的 .msi 安装程序</div>
+            </div>
+            <div class="shot">
+              <div class="win"><div class="bar">Node.js Setup<span class="x">—▢✕</span></div>
+                <div class="wiz"><div class="side"></div>
+                  <div class="main"><b>Tools for Native Modules</b>
+                    <div class="chk"><i></i><span>Automatically install the necessary tools…</span></div>
+                    <div class="pointer" data-en="↑ leave unticked">↑ 不要勾</div>
+                    <div class="wbtns"><span class="wbtn">Back</span><span class="wbtn primary hl">Next</span><span class="wbtn">Cancel</span></div>
+                  </div></div></div>
+              <div class="cap" data-en="Everything else: Next with defaults">其余各页：保持默认点 Next</div>
+            </div>
+          </div>
+          <div class="tip" data-en-html="&lt;b&gt;Afterwards, close the black window and open a new one as in step 1&lt;/b&gt; (a window opened before installing does not see Node.js). Run &lt;code&gt;node -v&lt;/code&gt; again to confirm you get a version number.">装完之后，<b>把黑色窗口关掉，按第 1 步重新开一个</b>（安装前打开的窗口找不到 Node.js）。再运行一次 <code>node -v</code>，确认能看到版本号。</div>
+          <p class="mute" style="font-size:13px" data-en-html="Comfortable with the command line? &lt;code&gt;winget install OpenJS.NodeJS.LTS&lt;/code&gt; does the same thing (answer Y if it asks to accept the source terms).">熟悉命令行的话，<code>winget install OpenJS.NodeJS.LTS</code> 也能装（第一次问是否同意源协议时输入 Y）。</p>
+        </div>
+      </li>
+
+      <li id="w4">
+        <span class="n">4</span>
+        <h3 data-en="Install the desktop component">安装桌面组件</h3>
+        <div class="d">
+          <p data-en="In the black window, paste this line and press Enter. The first run downloads for 1–2 minutes; wait until the prompt comes back.">在黑色窗口里粘贴下面这行，按回车。第一次要下载 1～2 分钟，等它跑完、重新出现提示符。</p>
+          <div class="cmd"><code id="cmdInstall">npx -y vcorp-chrome@latest desktop install</code><button data-copy="cmdInstall" data-en="Copy">复制</button></div>
+          <div class="fig">
+            <div class="shot">
+              <div class="win"><div class="bar">C:\Windows\system32\cmd.exe<span class="x">—▢✕</span></div>
+                <div class="term"><span class="p">C:\Users\you&gt;</span><span class="u">npx -y vcorp-chrome@latest desktop install</span>
+已登记原生消息宿主 ai.vcorp.desktop（只允许扩展 … 调用）
+  <span class="g">✅</span> HKCU\Software\Google\Chrome\NativeMessagingHosts\ai.vcorp.desktop
+  <span class="g">✅</span> HKCU\Software\Microsoft\Edge\NativeMessagingHosts\ai.vcorp.desktop
+
+回到扩展侧栏点「启用桌面能力」。
+  清单 C:\Users\you\.vcorp-chrome\desktop-host\ai.vcorp.desktop.json
+  <span class="g">✅</span> 宿主应答 · 设备 desktop-… · agent-desktop 可用
+
+<span class="p">C:\Users\you&gt;</span></div></div>
+              <div class="cap" data-en="Done when you see the ✅ lines">看到这几行 ✅ 就装好了</div>
+            </div>
+          </div>
+          <div class="tip" data-en-html="Lines starting with &lt;code&gt;npm warn&lt;/code&gt; can be ignored. If the last line says &lt;b&gt;agent-desktop is unavailable&lt;/b&gt;, see &lt;a href=&quot;#faq-sac&quot; class=&quot;faq-link&quot;&gt;this FAQ entry&lt;/a&gt;. As soon as the component works, the bar at the top of this page changes by itself.">以 <code>npm warn</code> 开头的行可以不管。如果最后一行是 <b>agent-desktop 用不了</b>，看<a href="#faq-sac" class="faq-link">这条常见问题</a>。组件一装好，本页顶上的状态条会自己变。</div>
+        </div>
+      </li>
+
+      <li id="w5">
+        <span class="n">5</span>
+        <h3 data-en="Enable it in the extension side panel">回扩展侧栏点「启用桌面能力」</h3>
+        <div class="d">
+          <ul>
+            <li data-en-html="Open the vcorp-chrome side panel and find &lt;b&gt;Desktop apps&lt;/b&gt;. Click &lt;b&gt;Enable desktop control&lt;/b&gt;.">打开 vcorp-chrome 侧栏，找到 <b>桌面应用</b>，点 <b>启用桌面能力</b>。</li>
+            <li data-en-html="When Chrome asks for permission, click &lt;b&gt;Allow&lt;/b&gt;.">Chrome 询问权限时，点 <b>允许</b>。</li>
+            <li data-en="The first time, the extension reloads and the side panel may close. Just open it again.">第一次启用时扩展会重载，侧栏可能会关掉，重新打开即可。</li>
+          </ul>
+          <button class="open-panel inline-btn" data-en="Open side panel">打开侧栏</button>
+          <div class="fig">
+            <div class="shot">
+              <div class="win"><div class="bar" data-en="vcorp-chrome side panel">vcorp-chrome 侧栏</div>
+                <div class="panelmock"><div class="sec"><b data-en="Desktop apps">桌面应用</b>
+                  <div class="sub" data-en="Not enabled">未启用</div>
+                  <span class="pbtn hl" data-en="Enable desktop control">启用桌面能力</span></div></div></div>
+              <div class="cap" data-en="① Click this button">① 点这个按钮</div>
+            </div>
+            <div class="shot">
+              <div class="win"><div class="bar">Chrome</div>
+                <div class="ask"><b data-en="vcorp-chrome wants to:">“vcorp-chrome”需要以下权限：</b>
+                  <div style="margin-top:6px" data-en="Communicate with cooperating native applications">与协作的本机应用通信</div>
+                  <div class="wbtns"><span class="wbtn primary hl" data-en="Allow">允许</span><span class="wbtn" data-en="Deny">拒绝</span></div></div></div>
+              <div class="cap" data-en="② Click Allow">② 点「允许」</div>
+            </div>
+          </div>
+        </div>
+      </li>
+
+      <li id="w6">
+        <span class="n">✓</span>
+        <h3 data-en="How you know it worked">怎么算成功</h3>
+        <div class="d" data-en-html="The side panel shows &lt;code&gt;Enabled · desktop-…&lt;/code&gt; with nothing like &quot;agent-desktop is unavailable&quot; after it, and the bar at the top of this page turns green. You can close this page.">侧栏显示 <code>已启用 · desktop-…</code>，后面没有「agent-desktop 用不了」，本页顶上的状态条变绿。这一页就可以关了。</div>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ================= macOS ================= -->
+  <section id="mac" class="mac" hidden>
+    <ol class="steps">
+      <li>
+        <span class="n">1</span>
+        <h3 data-en="Open Terminal and check Node.js">打开「终端」，看看装没装 Node.js</h3>
+        <div class="d">
+          <p data-en-html="Press &lt;kbd&gt;⌘ Command&lt;/kbd&gt; + &lt;kbd&gt;Space&lt;/kbd&gt;, type &lt;code&gt;Terminal&lt;/code&gt; and press Return. Then run:">按 <kbd>⌘ Command</kbd> + <kbd>空格</kbd>，输入 <code>终端</code> 或 <code>Terminal</code>，按回车。然后运行：</p>
+          <div class="cmd"><code id="cmdNodeMac">node -v</code><button data-copy="cmdNodeMac" data-en="Copy">复制</button></div>
+          <p data-en-html="Shows &lt;code&gt;v20&lt;/code&gt; or higher? Skip to step 3. Shows &lt;code&gt;command not found&lt;/code&gt;? Do step 2.">显示 <code>v20</code> 或更大的数字，跳到第 3 步；显示 <code>command not found</code>，做第 2 步。</p>
+        </div>
+      </li>
+      <li>
+        <span class="n">2</span>
+        <h3 data-en="Install Node.js (once)">安装 Node.js（只需一次）</h3>
+        <div class="d" data-en-html="Download the &lt;b&gt;LTS&lt;/b&gt; macOS installer (&lt;code&gt;.pkg&lt;/code&gt;) from &lt;a href=&quot;https://nodejs.org/en/download&quot; target=&quot;_blank&quot; rel=&quot;noopener&quot;&gt;nodejs.org&lt;/a&gt;, double-click it and keep clicking Continue. Then &lt;b&gt;quit Terminal and open it again&lt;/b&gt;, and check with &lt;code&gt;node -v&lt;/code&gt;.">从 <a href="https://nodejs.org/zh-cn/download" target="_blank" rel="noopener">nodejs.org</a> 下载 <b>LTS</b> 版的 macOS 安装包（<code>.pkg</code>），双击后一路点「继续」。装完<b>退出终端再重新打开</b>，用 <code>node -v</code> 确认一下。</div>
+      </li>
+      <li>
+        <span class="n">3</span>
+        <h3 data-en="Install the desktop component">安装桌面组件</h3>
+        <div class="d">
+          <div class="cmd"><code id="cmdInstallMac">npx -y vcorp-chrome@latest desktop install</code><button data-copy="cmdInstallMac" data-en="Copy">复制</button></div>
+          <div class="fig"><div class="shot"><div class="win"><div class="bar">Terminal</div>
+            <div class="term"><span class="p">~ %</span> <span class="u">npx -y vcorp-chrome@latest desktop install</span>
+已登记原生消息宿主 ai.vcorp.desktop（只允许扩展 … 调用）
+  <span class="g">✅</span> ~/Library/Application Support/Google/Chrome/NativeMessagingHosts
+
+回到扩展侧栏点「启用桌面能力」。</div></div></div></div>
+          <div class="tip" data-en="The check at the end may say agent-desktop is unavailable — that tests a Terminal launch. Continue; the side panel in step 5 is what counts.">输出末尾的检查可能显示「agent-desktop 用不了」，那是从终端启动测的，先继续，最终以第 5 步侧栏的显示为准。</div>
+        </div>
+      </li>
+      <li>
+        <span class="n">4</span>
+        <h3 data-en="Enable it in the extension side panel">回扩展侧栏点「启用桌面能力」</h3>
+        <div class="d">
+          <p data-en-html="Side panel → &lt;b&gt;Desktop apps&lt;/b&gt; → &lt;b&gt;Enable desktop control&lt;/b&gt; → &lt;b&gt;Allow&lt;/b&gt;. The first time the extension reloads; reopen the side panel if it closes.">侧栏 → <b>桌面应用</b> → <b>启用桌面能力</b> → <b>允许</b>。第一次会重载扩展，侧栏关了就重新打开。</p>
+          <button class="open-panel inline-btn" data-en="Open side panel">打开侧栏</button>
+        </div>
+      </li>
+      <li>
+        <span class="n">5</span>
+        <h3 data-en="Give Chrome the &quot;Accessibility&quot; permission">给 Chrome 授权「辅助功能」</h3>
+        <div class="d">
+          <p data-en-html="&lt;b&gt;System Settings → Privacy &amp;amp; Security → Accessibility&lt;/b&gt;: click &lt;b&gt;+&lt;/b&gt;, pick &lt;b&gt;Google Chrome&lt;/b&gt; in Applications and switch it on (also switch on &lt;code&gt;agent-desktop&lt;/code&gt; if it is listed). macOS credits the permission to Chrome because Chrome starts the component.">打开 <b>系统设置 → 隐私与安全性 → 辅助功能</b>，点列表下方的 <b>+</b>，在「应用程序」里选 <b>Google Chrome</b>，打开它旁边的开关（列表里有 <code>agent-desktop</code> 的话也打开）。桌面组件由 Chrome 启动，macOS 把权限算在 Chrome 头上。</p>
+          <p data-en-html="Then in the side panel click &lt;b&gt;Disable&lt;/b&gt; and &lt;b&gt;Enable desktop control&lt;/b&gt; again — permissions are only rechecked on enable.">然后回侧栏点 <b>停用</b>，再点一次 <b>启用桌面能力</b>：启用时才会重新检查权限。</p>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <h2 id="faq" data-en="Common problems">常见问题</h2>
+  <table>
+    <thead><tr><th style="width:36%" data-en="What you see">你看到的</th><th data-en="What to do">怎么办</th></tr></thead>
+    <tbody>
+      <tr><td data-en-html="&lt;code&gt;'npx' is not recognized as an internal or external command&lt;/code&gt; (same for node)">「<code>'npx' 不是内部或外部命令</code>」或 <code>'npx' is not recognized…</code>（node 同理）</td>
+          <td data-en="Node.js is not installed, or the black window was opened before installing it. Close the window and open a new one (step 1); if it still fails, redo step 3.">Node.js 没装，或者黑色窗口是装之前开的。关掉窗口重新开（第 1 步）；还不行就重做第 3 步。</td></tr>
+      <tr><td data-en-html="&lt;code&gt;running scripts is disabled on this system&lt;/code&gt;">「<code>在此系统上禁止运行脚本</code>」</td>
+          <td data-en-html="You are in PowerShell. Open Command Prompt as in step 1 instead, or type &lt;code&gt;npx.cmd&lt;/code&gt; in place of &lt;code&gt;npx&lt;/code&gt;.">你用的是 PowerShell。按第 1 步改用「命令提示符」，或者把命令里的 <code>npx</code> 换成 <code>npx.cmd</code>。</td></tr>
+      <tr><td><code>Ok to proceed? (y)</code></td>
+          <td data-en-html="Type &lt;code&gt;y&lt;/code&gt; and press Enter. (The command above has &lt;code&gt;-y&lt;/code&gt; so it should not ask.)">输入 <code>y</code> 回车。（上面的命令带了 <code>-y</code>，正常不会问。）</td></tr>
+      <tr><td data-en-html="Stuck for a long time, or &lt;code&gt;ETIMEDOUT&lt;/code&gt; / &lt;code&gt;ECONNRESET&lt;/code&gt; / &lt;code&gt;network&lt;/code&gt; errors">卡很久不动，或报 <code>ETIMEDOUT</code> / <code>ECONNRESET</code> / <code>network</code></td>
+          <td><span data-en="The npm registry is slow or unreachable from your network. Switch to a mirror, then run step 4 again:">从你的网络连 npm 太慢或连不上。换成国内镜像，再跑一次第 4 步：</span>
+            <div class="cmd"><code id="cmdMirror">npm config set registry https://registry.npmmirror.com</code><button data-copy="cmdMirror" data-en="Copy">复制</button></div></td></tr>
+      <tr><td><code>Specified native messaging host not found</code></td>
+          <td data-en="Step 4 was not done or did not succeed. Run the step 4 command, then click Enable in the side panel again.">第 4 步没做或没做成功。运行第 4 步的命令，再回侧栏点启用。</td></tr>
+      <tr><td><code>Access to the specified native messaging host is forbidden</code></td>
+          <td data-en-html="The desktop component is an old version. Run the step 4 command (keep &lt;code&gt;@latest&lt;/code&gt;).">桌面组件是旧版本。运行第 4 步的命令（一定要带 <code>@latest</code>）。</td></tr>
+      <tr><td data-en-html="&lt;code&gt;Failed to start native messaging host&lt;/code&gt; / &lt;code&gt;Native host has exited&lt;/code&gt;, or it used to work and suddenly stopped">「<code>Failed to start native messaging host</code>」「<code>Native host has exited</code>」，或原来好好的突然不行了</td>
+          <td data-en="Node.js was upgraded or the npx cache was cleaned. Run the step 4 command again, then Enable in the side panel.">升级过 Node.js，或者 npx 缓存被清理了。重新运行第 4 步的命令，再回侧栏启用。</td></tr>
+      <tr id="faq-sac"><td data-en="&quot;agent-desktop is unavailable&quot; (Windows 11)">「agent-desktop 用不了」（Windows 11）</td>
+          <td data-en-html="Most often Windows &lt;b&gt;Smart App Control&lt;/b&gt; is blocking it (it blocks unsigned programs on freshly installed Windows 11). Open &lt;b&gt;Windows Security → App &amp;amp; browser control → Smart App Control settings&lt;/b&gt; and choose &lt;b&gt;Off&lt;/b&gt; (recent Windows updates let you turn it back on later). If your antivirus quarantined &lt;code&gt;agent-desktop&lt;/code&gt;, restore it or trust it. Then run step 4 again and, in the side panel, click Disable and Enable.">最常见的是 Windows 的<b>智能应用控制</b>把它拦了（新装的 Windows 11 默认会拦没有签名的程序）。打开 <b>Windows 安全中心 → 应用和浏览器控制 → 智能应用控制设置</b>，选 <b>关闭</b>（较新的 Windows 更新后，关了以后还能再打开）。如果是杀毒软件把 <code>agent-desktop</code> 隔离了，把它恢复或加入信任。然后重跑第 4 步，再回侧栏点停用、启用。</td></tr>
+      <tr><td data-en-html="&lt;code&gt;No registered Chrome / Edge / Chromium profile directory found&lt;/code&gt;">「<code>没找到已安装的 Chrome / Edge / Chromium 配置目录</code>」</td>
+          <td data-en="(macOS / Linux) The browser has never been opened on this computer. Open Chrome once, then run step 4 again.">（macOS / Linux）这台电脑上还没打开过浏览器。打开一次 Chrome，再跑一次安装命令。</td></tr>
+      <tr><td data-en="&quot;Permission not granted; desktop control stays off&quot;">「没有拿到权限，桌面能力保持关闭」</td>
+          <td data-en="You clicked Deny on Chrome's permission prompt. Click Enable desktop control again and choose Allow.">Chrome 询问权限时点了拒绝。再点一次「启用桌面能力」，选允许。</td></tr>
+    </tbody>
+  </table>
+
+  <div class="foot" data-en-html="Still stuck? Run &lt;code&gt;npx vcorp-chrome desktop status&lt;/code&gt; in the black window and send the output to whoever helps you.">还是不行？在黑色窗口里运行 <code>npx vcorp-chrome desktop status</code>，把输出发给帮你的人。</div>
+</div>
+
+<script type="module" src="desktop-setup.js"></script>
+</html>

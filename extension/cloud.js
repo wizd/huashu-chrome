@@ -1126,7 +1126,7 @@ function hostCallOnce(msg) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendNativeMessage(HOST, msg, (r) => {
       const e = chrome.runtime.lastError;
-      if (e) reject(err('DEVICE_OFFLINE', `桌面宿主没有应答（${e.message}）。请用户在终端运行 npx vcorp-chrome desktop install。`));
+      if (e) reject(err('DEVICE_OFFLINE', `桌面宿主没有应答（${e.message}）。请用户在扩展侧栏「桌面应用」里点「安装步骤」，照着页面装好桌面组件（新电脑要先装 Node.js）。`));
       else if (!r || typeof r !== 'object') reject(err('DEVICE_OFFLINE', '桌面宿主的回包不对'));
       else resolve(r);
     });
@@ -1138,6 +1138,25 @@ async function desktopChild() {
   const info = await deskInfo();
   if (!info?.device || !chrome.runtime.sendNativeMessage) return null;
   return info.device;
+}
+
+// 打开（或切到已经开着的）桌面能力安装指南，err 显示在页面顶上
+const GUIDE = 'desktop-setup.html';
+async function openDesktopGuide(errText = '') {
+  const base = chrome.runtime.getURL(GUIDE);
+  const url = errText ? `${base}?err=${encodeURIComponent(errText.slice(0, 400))}` : base;
+  try {
+    const [tab] = await chrome.tabs.query({ url: `${base}*` });
+    if (tab) {
+      await chrome.tabs.update(tab.id, { url, active: true });
+      await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+      return;
+    }
+    await chrome.tabs.create({ url, active: true });
+  } catch {
+    // 窗口全关了（后台运行）时 tabs.create 会失败：开一个新窗口放它
+    await chrome.windows.create({ url, focused: true, type: 'normal' }).catch(() => {});
+  }
 }
 
 async function enableDesktop() {
@@ -1159,9 +1178,13 @@ async function enableDesktop() {
     device = cleanDevice(r.device);
     if (!device || device.kind !== 'desktop') throw err('DEVICE_OFFLINE', '桌面宿主报上来的设备不对');
   } catch (e) {
-    await chrome.storage.local.set({ [DESK_ERR]: (e.message || String(e)).replace('请用户在终端', '请在终端') });
+    const msg = (e.message || String(e)).replace('请用户', '请');
+    await chrome.storage.local.set({ [DESK_ERR]: msg });
+    // 宿主没装好：直接把安装指南打开，别只留一行字让用户自己琢磨
+    if (e.code === 'DEVICE_OFFLINE') void openDesktopGuide(msg);
     throw e;
   }
+  if (!r.ready) void openDesktopGuide(`桌面组件装好了，但 agent-desktop 用不了：[${r.error?.code || '?'}] ${r.error?.message || '原因不明'}`);
   await chrome.storage.local.set({ [DESK]: { device, ready: !!r.ready, at: Date.now() } });
   await log({ ev: 'desktop_on', msg: device.id });
   // 重连一次，服务器在 hello 里看到这台设备

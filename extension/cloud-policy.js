@@ -439,6 +439,26 @@ export function cleanShares(v) {
   }));
 }
 
+// 授权任务：组织里的另一个人的任务，借用户授权给他的这个浏览器做事（opus-video-maker 的共享浏览器）。
+// 信封上带 grant:{id, for}。它和用户自己的任务一样操作网页，但：放不放行只看「允许组织成员控制这个浏览器」
+// 和「组织成员的任务自动批准」两个开关；批准的网站不进用户自己的允许名单，也用不上那份名单；
+// 碰不到本机文件夹、桌面和手机；不能改写这个浏览器的经验笔记（那是用户自己的任务要读的）。
+const GRANT_BLOCKED = new Set(['folders', 'fs_list', 'fs_read', 'fs_write', 'desktop', 'apps', 'shell', 'file', 'phone']);
+
+// 信封 → { id, for } 或 null（不是授权任务）。
+export function grantOf(job) {
+  if (!job?.grant) return null;
+  const id = String(job.grant.id || '').slice(0, 64);
+  const who = String(job.grant.for || '').slice(0, 40);
+  if (!id || !who) throw err('CLOUD_DENIED', '授权任务要说明是谁的');
+  return { id, for: who };
+}
+
+export function checkGrantCommand(cmd, params) {
+  if (GRANT_BLOCKED.has(cmd)) throw err('GRANT_SCOPE', `这是组织成员借用的浏览器，不能用 ${cmd}：本机文件夹、桌面和手机不开放`);
+  if (cmd === 'notes' && params?.save !== undefined) throw err('GRANT_SCOPE', '借用的浏览器上只能读经验笔记，不能改写');
+}
+
 // 共享任务的一条命令：不在名单上的一律拒绝；能力包只能是那个网站的；开标签页只能开在那个网站。
 export function checkShareCommand(cmd, params, share) {
   if (!SHARE_CMDS.has(cmd)) throw err('CLOUD_DENIED', `替别人生成的任务不能用 ${cmd}`);

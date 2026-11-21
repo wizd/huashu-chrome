@@ -297,7 +297,7 @@ const LOG_TEXT = LANG === 'zh' ? {
   paired: '配对', unpaired: '解除配对', renamed: '改名为', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
   sites_on: '允许了新网站', sites_off: '拒绝了新网站', sites_timeout: '新网站没回应',
   folders_on: '允许了本地文件夹', folders_auto: '自动放行本地文件夹', folders_off: '拒绝了本地文件夹', folders_timeout: '本地文件夹没回应',
-  apps_on: '允许了桌面应用', apps_off: '拒绝了桌面应用', apps_timeout: '桌面应用没回应',
+  apps_on: '允许了桌面应用', apps_off: '拒绝了桌面应用', apps_timeout: '桌面应用没回应', grant_on: '允许组织成员控制', grant_off: '不再允许组织成员控制', grant_auto_on: '组织成员的任务改为自动批准', grant_auto_off: '组织成员的任务改为逐个批准',
   desk_confirm: '同意了桌面动作', desk_declined: '没同意桌面动作', desktop_on: '启用桌面能力', desktop_off: '停用桌面能力',
   desktop_reload: '为启用桌面能力重载扩展', desktop_fail: '桌面能力没启用成功：',
   site_on: '网站加入允许名单', site_off: '从允许名单移除网站', auto_on: '打开自动允许', auto_off: '关闭自动允许',
@@ -308,7 +308,7 @@ const LOG_TEXT = LANG === 'zh' ? {
   paired: 'Paired', unpaired: 'Unpaired', renamed: 'Renamed to', approved: 'Approved task', denied: 'Denied task', ended: 'Task ended',
   sites_on: 'Allowed new sites', sites_off: 'Denied new sites', sites_timeout: 'No answer on new sites',
   folders_on: 'Allowed local folders', folders_auto: 'Auto-allowed local folders', folders_off: 'Denied local folders', folders_timeout: 'No answer on local folders',
-  apps_on: 'Allowed desktop apps', apps_off: 'Denied desktop apps', apps_timeout: 'No answer on desktop apps',
+  apps_on: 'Allowed desktop apps', apps_off: 'Denied desktop apps', apps_timeout: 'No answer on desktop apps', grant_on: 'Allowed org members to control', grant_off: 'Stopped org members controlling', grant_auto_on: 'Org members’ tasks now auto-approved', grant_auto_off: 'Org members’ tasks now asked one by one',
   desk_confirm: 'Approved desktop action', desk_declined: 'Declined desktop action', desktop_on: 'Enabled desktop control', desktop_off: 'Disabled desktop control',
   desktop_reload: 'Reloaded extension to enable desktop control', desktop_fail: 'Desktop control failed to enable:',
   site_on: 'Site added to allow list', site_off: 'Site removed from allow list', auto_on: 'Turned on auto-approve', auto_off: 'Turned off auto-approve',
@@ -456,6 +456,24 @@ function renderShares(s) {
   if (s.cfg) manage.href = `${s.cfg.origin}/orgs`;
 }
 
+// 借给组织成员：两个开关，和正在借用这个浏览器的任务（停下按钮在下面的任务卡片上）。
+function renderGrants(s) {
+  $('grantSec').hidden = !s.cfg;
+  $('cloudGrant').checked = !!s.cfg?.grantOk;
+  $('cloudGrantAuto').checked = !!s.cfg?.grantAuto;
+  $('cloudGrantAuto').disabled = !s.cfg?.grantOk;
+  const box = $('grantRunning');
+  box.textContent = '';
+  for (const t of (s.tasks || []).filter((x) => x.grant && (x.state === 'pending' || x.state === 'approved'))) {
+    box.appendChild(el('div', 'sub', t.state === 'pending'
+      ? L(`等你批准 ${t.grant.for} 的任务`, `Waiting for your OK on ${t.grant.for}'s task`)
+      : L(`${t.grant.for} 正在用这个浏览器`, `${t.grant.for} is using this browser`)));
+  }
+  const manage = $('grantManage');
+  manage.hidden = !s.cfg;
+  if (s.cfg) manage.href = `${s.cfg.origin}/orgs`;
+}
+
 // 通知：服务器推来的和本机的权限请求在同一栏。文字是服务器给的，一律 textContent。
 const NOTICE_DOT = { done: 'ok', failed: 'bad', needs: 'warn', progress: '' };
 function renderNotices(s) {
@@ -519,6 +537,7 @@ function renderCloud(s) {
   $('cloudAuto').checked = !!s.cfg.auto;
   $('cloudAutoConfirm').checked = !!s.cfg.autoConfirm;
   renderShares(s);
+  renderGrants(s);
   $('cloudEval').checked = s.cfg.allowEval !== false;
   $('cloudPause').checked = !!s.cfg.paused;
 
@@ -531,12 +550,14 @@ function renderCloud(s) {
   const tasks = $('cloudTasks');
   tasks.textContent = '';
   for (const t of s.tasks.filter((x) => x.state !== 'denied')) {
-    const title = t.title || L(`任务 ${t.jobId}`, `Task ${t.jobId}`);
+    const own = t.title || L(`任务 ${t.jobId}`, `Task ${t.jobId}`);
+    const title = t.grant ? L(`${t.grant.for} 的任务：${own}`, `${t.grant.for}'s task: ${own}`) : own;
     const why = (w) => (w ? L(`。用途：${w}`, `. Purpose: ${w}`) : '');
     const no = L('不允许', 'Deny');
     if (t.state === 'pending') {
       const lines = [];
-      if (t.ask?.length) lines.push(L(`请求访问这些网站：${t.ask.join(SEP)}（允许后加入允许名单）`, `Requests these sites: ${t.ask.join(SEP)} (added to the allow list if you allow)`));
+      if (t.ask?.length && t.grant) lines.push(L(`组织成员借用这个浏览器，请求访问这些网站：${t.ask.join(SEP)}（只对这个任务有效，不进允许名单）`, `An org member borrows this browser and requests these sites: ${t.ask.join(SEP)} (for this task only, not added to the allow list)`));
+      else if (t.ask?.length) lines.push(L(`请求访问这些网站：${t.ask.join(SEP)}（允许后加入允许名单）`, `Requests these sites: ${t.ask.join(SEP)} (added to the allow list if you allow)`));
       if (t.use?.length) lines.push(L(`要用允许名单里的：${t.use.join(SEP)}`, `Will use from the allow list: ${t.use.join(SEP)}`));
       if (t.purpose) lines.push(L(`用途：${t.purpose}`, `Purpose: ${t.purpose}`));
       askBox(L(`新任务：${title}`, `New task: ${title}`), lines, L('允许', 'Allow'), L('拒绝', 'Deny'), 'decide', t.jobId);
@@ -554,7 +575,7 @@ function renderCloud(s) {
     if (t.folders?.length) box.appendChild(el('div', 'sub', L(`可读本地文件夹：${t.folders.join(SEP)}`, `Can read local folders: ${t.folders.join(SEP)}`)));
     if (t.apps?.length) box.appendChild(el('div', 'sub', L(`可操作桌面应用：${t.apps.join(SEP)}`, `Can operate desktop apps: ${t.apps.join(SEP)}`)));
     const row = el('div', 'row');
-    const stop = el('button', 'btn ghost', L('收回（关掉它的标签页）', 'Revoke (close its tabs)'));
+    const stop = el('button', 'btn ghost', t.grant ? L('停下（关掉它的标签页，不再接它的命令）', 'Stop (close its tabs, take no more commands)') : L('收回（关掉它的标签页）', 'Revoke (close its tabs)'));
     stop.onclick = () => cloudCall('endTask', { jobId: t.jobId });
     row.appendChild(stop);
     box.appendChild(row);
@@ -664,6 +685,8 @@ $('cloudAuto').onchange = (e) => cloudCall('setAuto', { auto: e.target.checked }
 $('cloudEval').onchange = (e) => cloudCall('setAllowEval', { allowEval: e.target.checked });
 $('cloudAutoConfirm').onchange = (e) => cloudCall('setAutoConfirm', { autoConfirm: e.target.checked });
 $('cloudShare').onchange = (e) => cloudCall('setShareOk', { shareOk: e.target.checked });
+$('cloudGrant').onchange = (e) => cloudCall('setGrantOk', { grantOk: e.target.checked });
+$('cloudGrantAuto').onchange = (e) => cloudCall('setGrantAuto', { grantAuto: e.target.checked });
 $('cloudPause').onchange = (e) => cloudCall('setPaused', { paused: e.target.checked });
 $('noticePopup').onchange = (e) => cloudCall('setNotify', { notify: e.target.checked });
 $('noticeProgress').onchange = (e) => cloudCall('setNotifyProgress', { notifyProgress: e.target.checked });

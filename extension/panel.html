@@ -274,6 +274,21 @@
     <div class="row"><a class="btn ghost" id="shareManage" target="_blank" rel="noopener" data-en="Manage sharing on the web">在网页上管理共享</a></div>
   </section>
 
+  <!-- 3c. 借给组织成员：网页上授权了哪些人，这里决定这个浏览器接不接他们的任务 -->
+  <section id="grantSec" hidden>
+    <h2 data-en="Lend to org members">借给组织成员</h2>
+    <label class="sw-row">
+      <span class="txt"><span data-en="Let org members control this browser">允许组织成员控制这个浏览器</span><div class="sub" data-en="People you granted this browser to on the web can have their tasks work pages here like your own tasks: open sites, click, fill, upload, run scripts, with the accounts logged in here. Local folders, the desktop and phones stay closed to them. Their sites never join your allow list.">你在网页上授权过的人，他们的任务可以像你自己的任务一样在这里操作网页：打开网站、点击、填表、上传、运行脚本，用的是这里登录着的账号。本机文件夹、桌面和手机不对他们开放；他们批准过的网站也不会进你的允许名单。</div></span>
+      <input type="checkbox" class="toggle" id="cloudGrant" />
+    </label>
+    <label class="sw-row">
+      <span class="txt"><span data-en="Approve their tasks automatically">组织成员的任务自动批准</span><div class="sub" data-en="Off: each of their tasks waits for your OK here, site by site. 'Approve new tasks automatically' does not cover their tasks.">关着时他们的每个任务都要你在这里批准，网站一个个问。「自动允许新任务」管不到他们的任务。</div></span>
+      <input type="checkbox" class="toggle" id="cloudGrantAuto" />
+    </label>
+    <div id="grantRunning"></div>
+    <div class="row"><a class="btn ghost" id="grantManage" target="_blank" rel="noopener" data-en="Manage grants on the web">在网页上管理授权</a></div>
+  </section>
+
   <!-- 4. 设置 -->
   <section>
     <h2 data-en="Local folders">本地文件夹</h2>

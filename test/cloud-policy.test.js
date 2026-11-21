@@ -12,7 +12,7 @@ import {
   normalizeSite, cleanSites, cleanAllowList, SITES_MAX, taskHosts, sitesToAsk,
   cleanFolderName, cleanFolderNames, foldersToAsk, normalizeRelPath, fileAllowed, writeAllowed, skipEntry, matchGlob, pullUrlAllowed,
   FS_EXTS, FS_DEPTH_MAX, FS_FOLDERS_MAX, mediaBody, PULL_CHUNK_MAX,
-  shareOf, checkShareCommand, cmdSite, cmdBudget, TASK_CMD_CAP, SITE_CMD_CAP,
+  shareOf, checkShareCommand, grantOf, checkGrantCommand, cmdSite, cmdBudget, TASK_CMD_CAP, SITE_CMD_CAP,
 } from '../extension/cloud-policy.js';
 
 const ORIGIN = 'https://maker.vcorp.ai';
@@ -494,4 +494,16 @@ test('命令额度按网站分开算：子域归同一家，一家用完不连�
   assert.equal(cmdBudget(task, 'xiaohongshu.com'), '');
   assert.equal(cmdBudget(task, ''), '');
   assert.match(cmdBudget({ count: TASK_CMD_CAP + 1, siteCount: {} }, ''), /最多 24000 条/);
+});
+
+test('授权任务：要说明是谁的；本机文件夹、桌面、手机一律不开放，经验笔记只读', () => {
+  assert.equal(grantOf({ id: 'j', sites: ['douyin.com'] }), null);
+  assert.deepEqual(grantOf({ id: 'j', grant: { id: 'g1', for: 'bob' } }), { id: 'g1', for: 'bob' });
+  assert.throws(() => grantOf({ id: 'j', grant: { id: 'g1' } }), (e) => e.code === 'CLOUD_DENIED');
+  for (const cmd of ['folders', 'fs_list', 'fs_read', 'fs_write', 'desktop', 'apps', 'shell', 'file', 'phone']) {
+    assert.throws(() => checkGrantCommand(cmd, {}), (e) => e.code === 'GRANT_SCOPE', cmd);
+  }
+  assert.throws(() => checkGrantCommand('notes', { site: 'douyin.com', save: '下次先点这里' }), (e) => e.code === 'GRANT_SCOPE');
+  for (const cmd of ['tabs', 'navigate', 'snapshot', 'click', 'fill', 'eval', 'upload', 'media_pull', 'sites', 'ask', 'call']) checkGrantCommand(cmd, {});
+  checkGrantCommand('notes', { site: 'douyin.com' });
 });

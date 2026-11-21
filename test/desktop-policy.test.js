@@ -6,11 +6,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import {
   checkDesktop, checkObserved, recordOf, filterWindows, checkSteps, cleanApps, appsToAsk, sensitivity, STEPS_MAX,
 } from '../extension/desktop-policy.js';
 import { resolveTarget, routeHere, stampFrom, cleanDevice, capOf, browserIdentity, defaultDeviceName, cleanDeviceName, DEVICE_NAME_MAX } from '../extension/device.js';
-import { DesktopSession } from '../src/lib/desktop.js';
+import { DesktopSession, formatExitError, prepareBinaryEnv } from '../src/lib/desktop.js';
 import { recheck } from '../native-host/host.js';
 import { CLOUD_CMDS, checkCommand } from '../extension/cloud-policy.js';
 import { extensionId, allowedOrigins, STORE_EXTENSION_ID } from '../src/lib/native-install.js';
@@ -258,3 +261,60 @@ test('浏览器实例自报种类和系统，默认名字由它们拼成，用�
   assert.equal(cleanDeviceName('x'.repeat(100)).length, DEVICE_NAME_MAX);
   assert.equal(cleanDeviceName(null), '');
 });
+
+test('formatExitError 区分缺 VC++ 运行库（0xC0000135）与其它非 JSON 退出', () => {
+  const bin = 'C:\\app\\bin\\agent-desktop-win32-x64.exe';
+  for (const code of [3221225781, -1073741515]) {
+    const d = formatExitError({ code, signal: null, line: '', errText: '', bin, platform: 'win32' });
+    assert.equal(d.code, 'DESKTOP_UNAVAILABLE');
+    assert.equal(d.delivery, 'not_delivered');
+    assert.match(d.message, /0xC0000135/);
+    assert.match(d.message, /Visual C\+\+/);
+    assert.ok(d.message.includes(bin));
+  }
+  const crash = formatExitError({ code: 3221225477, signal: null, line: '', errText: '', bin, platform: 'win32' });
+  assert.equal(crash.code, 'INTERNAL');
+  assert.match(crash.message, /无输出/);
+  assert.match(crash.message, /0xC0000005/);
+  assert.ok(crash.message.includes(bin));
+
+  const sig = formatExitError({ code: null, signal: 'SIGKILL', line: '', errText: 'killed', bin: '/tmp/ad', platform: 'darwin' });
+  assert.equal(sig.code, 'INTERNAL');
+  assert.match(sig.message, /killed/);
+  assert.match(sig.message, /信号 SIGKILL/);
+  assert.ok(sig.message.includes('/tmp/ad'));
+});
+
+test('prepareBinaryEnv 在 macOS 上自动注入 helper 路径，不覆盖已有设置', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcorp-ad-'));
+  try {
+    const bin = path.join(dir, 'agent-desktop-darwin-arm64');
+    const bundled = path.join(dir, 'agent-desktop-macos-helper-darwin-arm64');
+    const plain = path.join(dir, 'agent-desktop-macos-helper');
+    fs.writeFileSync(bin, '');
+    fs.writeFileSync(plain, '');
+
+    const base = { PATH: '/usr/bin' };
+    // 只有平铺名时用平铺名
+    const e1 = prepareBinaryEnv(bin, { platform: 'darwin', arch: 'arm64', env: base });
+    assert.equal(e1.AGENT_DESKTOP_MACOS_HELPER_PATH, plain);
+    assert.equal(base.AGENT_DESKTOP_MACOS_HELPER_PATH, undefined);
+
+    // 带平台后缀的 bundled 优先（npm 12 未跑 postinstall 时只有这个）
+    fs.writeFileSync(bundled, '');
+    const e2 = prepareBinaryEnv(bin, { platform: 'darwin', arch: 'arm64', env: base });
+    assert.equal(e2.AGENT_DESKTOP_MACOS_HELPER_PATH, bundled);
+
+    // 用户显式设过的不覆盖
+    const custom = { AGENT_DESKTOP_MACOS_HELPER_PATH: '/custom/helper' };
+    const e3 = prepareBinaryEnv(bin, { platform: 'darwin', arch: 'arm64', env: custom });
+    assert.equal(e3.AGENT_DESKTOP_MACOS_HELPER_PATH, '/custom/helper');
+
+    // PATH 裸名和 Windows 原样返回
+    assert.equal(prepareBinaryEnv('agent-desktop', { platform: 'darwin', arch: 'arm64', env: base }), base);
+    assert.equal(prepareBinaryEnv(bin, { platform: 'win32', arch: 'x64', env: base }), base);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+

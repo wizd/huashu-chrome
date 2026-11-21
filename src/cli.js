@@ -275,7 +275,7 @@ async function doctor() {
     if (env.ok) ok(`agent-desktop 可用 · ${(env.data?.apps || []).length} 个应用 · ${Date.now() - t0}ms（${bin}）`);
     else if (env.error?.code === 'PERM_DENIED') bad(`agent-desktop 没有辅助功能权限：${env.error.message}`, env.error.suggestion);
     else bad(`desktop 工具用不了：[${env.error?.code}] ${env.error?.message}`,
-      '在 vcorp-chrome 的安装目录里补装 agent-desktop（npm i agent-desktop@1.0.2），或设 AGENT_DESKTOP_BIN 指到它的可执行文件');
+      '在 vcorp-chrome 的安装目录里补装 agent-desktop（npm i agent-desktop@1.3.1），或设 AGENT_DESKTOP_BIN 指到它的可执行文件');
   }
 
   // 经验库里 agent 记下的「vcorp-chrome 的 X 不生效」——产品 bug 住在经验库里，

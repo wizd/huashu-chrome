@@ -28,6 +28,73 @@ export function findBinary() {
   return process.platform === 'win32' ? 'agent-desktop.exe' : 'agent-desktop';
 }
 
+const MACOS_HELPER_NAME = 'agent-desktop-macos-helper';
+const LINUX_HELPER_NAME = 'agent-desktop-linux-clipboard-owner';
+const MACOS_HELPER_PATH_ENV = 'AGENT_DESKTOP_MACOS_HELPER_PATH';
+
+// npm 12 默认不跑 postinstall，平台二进制和 helper 可能既没 chmod +x 也没复制成平铺文件名。
+// 直接调平台二进制前补齐执行权限，并在 macOS 上按上游启动器同样的规则注入 helper 路径。
+export function prepareBinaryEnv(bin, {
+  platform = process.platform,
+  arch = process.arch,
+  env = process.env,
+} = {}) {
+  if (platform === 'win32' || !bin || !path.isAbsolute(bin) || !fs.existsSync(bin)) return env;
+  const ensureExec = (p) => {
+    try { fs.accessSync(p, fs.constants.X_OK); } catch {
+      try { fs.chmodSync(p, 0o755); } catch { /* 只读目录不强求，交给 spawn 报实错 */ }
+    }
+  };
+  ensureExec(bin);
+  const binDir = path.dirname(bin);
+  if (platform === 'linux') {
+    const plain = path.join(binDir, LINUX_HELPER_NAME);
+    const helper = fs.existsSync(plain) ? plain : path.join(binDir, `${LINUX_HELPER_NAME}-linux-${arch}`);
+    if (fs.existsSync(helper)) ensureExec(helper);
+    return env;
+  }
+  if (platform === 'darwin') {
+    if (env[MACOS_HELPER_PATH_ENV]) {
+      if (fs.existsSync(env[MACOS_HELPER_PATH_ENV])) ensureExec(env[MACOS_HELPER_PATH_ENV]);
+      return env;
+    }
+    const bundled = path.join(binDir, `${MACOS_HELPER_NAME}-darwin-${arch}`);
+    const plain = path.join(binDir, MACOS_HELPER_NAME);
+    const helper = fs.existsSync(bundled) ? bundled : (fs.existsSync(plain) ? plain : '');
+    if (helper) {
+      ensureExec(helper);
+      return { ...env, [MACOS_HELPER_PATH_ENV]: helper };
+    }
+  }
+  return env;
+}
+
+// 非 JSON / 无输出退出时拼出可读诊断：带上退出码（Windows 附 NTSTATUS 十六进制）和二进制路径。
+export function formatExitError({ code, signal, line, errText, bin, platform = process.platform }) {
+  const hex = platform === 'win32' && typeof code === 'number' && (code >>> 0) >= 0x80000000
+    ? `0x${(code >>> 0).toString(16).toUpperCase().padStart(8, '0')}`
+    : '';
+  if (hex === '0xC0000135') {
+    return {
+      code: 'DESKTOP_UNAVAILABLE',
+      delivery: 'not_delivered',
+      message: `agent-desktop 启动失败（缺少系统运行库，退出码 ${hex}）：通常是因为系统缺少 Visual C++ 运行库（VCRUNTIME140.dll），安装 Microsoft Visual C++ Redistributable 后重试（${bin}）`,
+    };
+  }
+  const exitInfo = [
+    code !== null && code !== undefined ? `退出码 ${code}${hex ? ` (${hex})` : ''}` : '',
+    signal ? `信号 ${signal}` : '',
+  ].filter(Boolean).join('，');
+  const raw = String(line || errText || '').trim().slice(0, 300);
+  const detail = raw ? `：${raw}` : '（无输出）';
+  const tail = [exitInfo, bin].filter(Boolean).join('，');
+  return {
+    code: 'INTERNAL',
+    delivery: 'unknown',
+    message: `agent-desktop 的输出不是 JSON${detail}${tail ? ` [${tail}]` : ''}`,
+  };
+}
+
 const OUT_MAX = 8 * 1024 * 1024;
 
 // 跑一次，返回信封。不经 shell：参数数组原样交给进程，没有拼接、没有转义问题。
@@ -37,9 +104,10 @@ export function runAgentDesktop(argv, { bin = findBinary(), timeoutMs = 30000 } 
     let errText = '';
     let done = false;
     const finish = (env) => { if (!done) { done = true; clearTimeout(timer); resolve(env); } };
+    const env = prepareBinaryEnv(bin);
     let child;
     try {
-      child = spawn(bin, argv, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      child = spawn(bin, argv, { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) {
       finish(fail('DESKTOP_UNAVAILABLE', `起不来 agent-desktop（${bin}）：${e.message}`));
       return;
@@ -51,11 +119,12 @@ export function runAgentDesktop(argv, { bin = findBinary(), timeoutMs = 30000 } 
     child.stdout.on('data', (b) => { if (out.length < OUT_MAX) out += b; });
     child.stderr.on('data', (b) => { if (errText.length < 4000) errText += b; });
     child.on('error', (e) => finish(fail('DESKTOP_UNAVAILABLE',
-      e.code === 'ENOENT' ? '这台电脑上没有 agent-desktop。运行 npx vcorp-chrome doctor 看怎么装。' : e.message)));
-    child.on('close', () => {
+      e.code === 'ENOENT' ? '这台电脑上没有 agent-desktop。运行 npx vcorp-chrome doctor 看怎么装。' : `${e.message}（${bin}）`)));
+    child.on('close', (code, signal) => {
       const line = out.trim().split('\n').filter(Boolean).at(-1) || '';
       try { finish(JSON.parse(line)); } catch {
-        finish(fail('INTERNAL', `agent-desktop 的输出不是 JSON：${(line || errText).slice(0, 300)}`, 'unknown'));
+        const diag = formatExitError({ code, signal, line, errText, bin });
+        finish(fail(diag.code, diag.message, diag.delivery));
       }
     });
   });

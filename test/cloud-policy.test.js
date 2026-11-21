@@ -498,7 +498,8 @@ test('命令额度按网站分开算：子域归同一家，一家用完不连�
 
 test('授权任务：要说明是谁的；本机文件夹、桌面、手机一律不开放，经验笔记只读', () => {
   assert.equal(grantOf({ id: 'j', sites: ['douyin.com'] }), null);
-  assert.deepEqual(grantOf({ id: 'j', grant: { id: 'g1', for: 'bob' } }), { id: 'g1', for: 'bob' });
+  assert.deepEqual(grantOf({ id: 'j', grant: { id: 'g1', for: 'bob' } }), { id: 'g1', for: 'bob', desktop: false });
+  assert.equal(grantOf({ id: 'j', grant: { id: 'g1', for: 'bob', desktop: 'yes' } }).desktop, false, '只认 true');
   assert.throws(() => grantOf({ id: 'j', grant: { id: 'g1' } }), (e) => e.code === 'CLOUD_DENIED');
   for (const cmd of ['folders', 'fs_list', 'fs_read', 'fs_write', 'desktop', 'apps', 'shell', 'file', 'phone']) {
     assert.throws(() => checkGrantCommand(cmd, {}), (e) => e.code === 'GRANT_SCOPE', cmd);
@@ -506,4 +507,23 @@ test('授权任务：要说明是谁的；本机文件夹、桌面、手机一�
   assert.throws(() => checkGrantCommand('notes', { site: 'douyin.com', save: '下次先点这里' }), (e) => e.code === 'GRANT_SCOPE');
   for (const cmd of ['tabs', 'navigate', 'snapshot', 'click', 'fill', 'eval', 'upload', 'media_pull', 'sites', 'ask', 'call']) checkGrantCommand(cmd, {});
   checkGrantCommand('notes', { site: 'douyin.com' });
+});
+
+test('授权任务的电脑：服务器授权了电脑、用户也打开了开关才行；剪贴板、通知、原样命令、命令行和文件照样不开放', () => {
+  const lent = { id: 'g1', for: 'bob', desktop: true };
+  const pagesOnly = { id: 'g1', for: 'bob', desktop: false };
+  for (const cmd of ['desktop', 'apps']) {
+    assert.throws(() => checkGrantCommand(cmd, { cmd: 'snapshot', app: '微信' }, pagesOnly, { deskOk: true }), (e) => e.code === 'GRANT_SCOPE', `${cmd}：只授权了网页`);
+    assert.throws(() => checkGrantCommand(cmd, { cmd: 'snapshot', app: '微信' }, lent, { deskOk: false }), (e) => e.code === 'GRANT_OFF', `${cmd}：用户没开`);
+    assert.throws(() => checkGrantCommand(cmd, { cmd: 'snapshot', app: '微信' }, null, { deskOk: true }), (e) => e.code === 'GRANT_SCOPE', `${cmd}：信封没带授权`);
+  }
+  checkGrantCommand('apps', { add: ['微信'] }, lent, { deskOk: true });
+  for (const cmd of ['snapshot', 'click', 'list-apps', 'list-windows', 'find']) checkGrantCommand('desktop', { cmd, app: '微信' }, lent, { deskOk: true });
+  for (const cmd of ['clipboard-get', 'clipboard-set', 'list-notifications', 'notification-action']) {
+    assert.throws(() => checkGrantCommand('desktop', { cmd }, lent, { deskOk: true }), (e) => e.code === 'GRANT_SCOPE', cmd);
+  }
+  assert.throws(() => checkGrantCommand('desktop', { argv: ['shell', 'whoami'] }, lent, { deskOk: true }), (e) => e.code === 'GRANT_SCOPE', '原样 argv');
+  for (const cmd of ['shell', 'file', 'folders', 'fs_read', 'phone']) {
+    assert.throws(() => checkGrantCommand(cmd, {}, lent, { deskOk: true }), (e) => e.code === 'GRANT_SCOPE', cmd);
+  }
 });

@@ -278,12 +278,16 @@
   <section id="grantSec" hidden>
     <h2 data-en="Lend to org members">借给组织成员</h2>
     <label class="sw-row">
-      <span class="txt"><span data-en="Let org members control this browser">允许组织成员控制这个浏览器</span><div class="sub" data-en="People you granted this browser to on the web can have their tasks work pages here like your own tasks: open sites, click, fill, upload, run scripts, with the accounts logged in here. Local folders, the desktop and phones stay closed to them. Their sites never join your allow list.">你在网页上授权过的人，他们的任务可以像你自己的任务一样在这里操作网页：打开网站、点击、填表、上传、运行脚本，用的是这里登录着的账号。本机文件夹、桌面和手机不对他们开放；他们批准过的网站也不会进你的允许名单。</div></span>
+      <span class="txt"><span data-en="Let org members control this browser">允许组织成员控制这个浏览器</span><div class="sub" data-en="People you granted this browser to on the web can have their tasks work pages here like your own tasks: open sites, click, fill, upload, run scripts, with the accounts logged in here. Local folders and phones stay closed to them; the desktop only with the switch below. Their sites never join your allow list.">你在网页上授权过的人，他们的任务可以像你自己的任务一样在这里操作网页：打开网站、点击、填表、上传、运行脚本，用的是这里登录着的账号。本机文件夹和手机不对他们开放，桌面要另外打开下面的开关；他们批准过的网站也不会进你的允许名单。</div></span>
       <input type="checkbox" class="toggle" id="cloudGrant" />
     </label>
     <label class="sw-row">
       <span class="txt"><span data-en="Approve their tasks automatically">组织成员的任务自动批准</span><div class="sub" data-en="Off: each of their tasks waits for your OK here, site by site. 'Approve new tasks automatically' does not cover their tasks.">关着时他们的每个任务都要你在这里批准，网站一个个问。「自动允许新任务」管不到他们的任务。</div></span>
       <input type="checkbox" class="toggle" id="cloudGrantAuto" />
+    </label>
+    <label class="sw-row">
+      <span class="txt"><span data-en="Let org members operate this computer">允许组织成员操作这台电脑</span><div class="sub" data-en="Only for grants that include the computer on the web. Their tasks can use the apps on this computer through desktop control: you approve each app per task, and confirm every outside action (send, delete). Full desktop mode, the command line, files, the clipboard and notifications stay closed to them.">只对网页上勾了「电脑」的授权有效。他们的任务可以经桌面能力操作这台电脑上的应用：每个任务要用的应用都要你逐个批准，发送、删除这类对外动作每次都要你确认。桌面完全模式、命令行、文件、剪贴板和通知不对他们开放。</div></span>
+      <input type="checkbox" class="toggle" id="cloudGrantDesk" />
     </label>
     <div id="grantRunning"></div>
     <div class="row"><a class="btn ghost" id="grantManage" target="_blank" rel="noopener" data-en="Manage grants on the web">在网页上管理授权</a></div>

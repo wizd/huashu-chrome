@@ -266,7 +266,7 @@ export async function connect() {
               sock.send(JSON.stringify({
                 type: 'hello', v: 1, deviceId: cfg.deviceId, sig,
                 version: chrome.runtime.getManifest().version, name: deviceName(cfg), ...identity(),
-                sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), shareOk: !!cfg.shareOk, grantOk: !!cfg.grantOk,
+                sites: policy.cleanAllowList(cfg.sites), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), shareOk: !!cfg.shareOk, grantOk: !!cfg.grantOk, grantDesk: !!cfg.grantDesk,
                 folders: mounted,
                 // 手里最后一条通知的时间：断线期间的由服务器补发（它只留最近一天的）
                 noticeSince,
@@ -347,7 +347,7 @@ export async function ensureCloud() {
 // 这期间改的设置由 welcome 那里补发。
 const send = (m) => { try { if (welcomed && ws?.readyState === 1) ws.send(JSON.stringify(m)); } catch { /* 发送时已经断开 */ } };
 
-const configMessage = (cfg, mounted) => ({ type: 'config', name: deviceName(cfg), sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), shareOk: !!cfg.shareOk, grantOk: !!cfg.grantOk, folders: mounted });
+const configMessage = (cfg, mounted) => ({ type: 'config', name: deviceName(cfg), sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), shareOk: !!cfg.shareOk, grantOk: !!cfg.grantOk, grantDesk: !!cfg.grantDesk, folders: mounted });
 // 「允许云端执行脚本」：没设过就是开（先有能力，再收紧）。用户在侧栏关掉才是关。
 const evalOn = (cfg) => cfg?.allowEval !== false;
 
@@ -1020,7 +1020,7 @@ async function openMount(folderId = '') {
 async function reportFolders() {
   const mounted = await folders.names().catch(() => []);
   const cfg = await getCfg();
-  if (cfg && ws?.readyState === 1) send({ type: 'config', sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), shareOk: !!cfg.shareOk, grantOk: !!cfg.grantOk, folders: mounted });
+  if (cfg && ws?.readyState === 1) send({ type: 'config', sites: allowOf(cfg), auto: !!cfg.auto, autoConfirm: !!cfg.autoConfirm, eval: evalOn(cfg), shareOk: !!cfg.shareOk, grantOk: !!cfg.grantOk, grantDesk: !!cfg.grantDesk, folders: mounted });
   await chrome.storage.session.set({ folderTick: Date.now() }).catch(() => {});
 }
 
@@ -1235,7 +1235,7 @@ async function devicesCmd(cfg) {
 function notifyApps(t, cfg) {
   raise(`hc-cloud-apps:${t.jobId}`, {
     type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
-    title: `${policy.hostOf(cfg.origin)} 的任务想操作你电脑上的应用`,
+    title: t.grant ? `组织成员 ${t.grant.for} 的任务想操作你电脑上的应用` : `${policy.hostOf(cfg.origin)} 的任务想操作你电脑上的应用`,
     message: `${t.title ? `「${t.title}」` : '任务'} → ${(t.appAsk || []).join('、')}${t.appAskWhy ? `\n用途：${t.appAskWhy}` : ''}`,
     buttons: [{ title: '允许' }, { title: '拒绝' }],
   }, () => void chrome.runtime.lastError);
@@ -1294,7 +1294,7 @@ async function confirmDesk(chk, task, cfg) {
   await updateTask(jobId, (x) => { x.deskAsk = what; });
   raise(`hc-cloud-desk:${jobId}`, {
     type: 'basic', iconUrl: 'icons/icon128.png', priority: 2, requireInteraction: true,
-    title: `${policy.hostOf(cfg.origin)} 的任务要在你的电脑上做一件对外的事`,
+    title: task.grant ? `组织成员 ${task.grant.for} 的任务要在你的电脑上做一件对外的事` : `${policy.hostOf(cfg.origin)} 的任务要在你的电脑上做一件对外的事`,
     message: what,
     buttons: [{ title: '同意' }, { title: '不同意' }],
   }, () => void chrome.runtime.lastError);
@@ -1379,7 +1379,8 @@ async function fullCmd(cmd, p) {
 
 async function desktopCmd(p, task, cfg) {
   if (!(await desktopChild())) throw err('NO_DEVICE', NO_DESK);
-  if (await hostFull()) return desktopFull(p, task);
+  // 完全模式是用户给自己的任务开的：组织成员的任务照样逐条过闸门
+  if (!task.grant && await hostFull()) return desktopFull(p, task);
   if (p.steps !== undefined) throw err('DESKTOP_DENIED', '云端的桌面命令一条一条发，不支持 steps');
   const session = `cloud-${task.jobId}`;
   const desk = { snaps: { ...(task.desk?.snaps || {}) }, windows: { ...(task.desk?.windows || {}) } };
@@ -1517,7 +1518,8 @@ async function exec(m) {
   if (over) throw err('CLOUD_DENIED', over);
 
   if (updated.share) policy.checkShareCommand(m.cmd, m.params, updated.share);
-  if (updated.grant) policy.checkGrantCommand(m.cmd, m.params);
+  // 范围看这条命令信封上的授权（服务器当下的），电脑还要用户自己打开开关
+  if (updated.grant) policy.checkGrantCommand(m.cmd, m.params, policy.grantOf(m.job), { deskOk: !!cfg.grantDesk });
   const hosts = updated.share ? [updated.share.site] : hostsOf(updated, cfg);
   const p = policy.checkCommand(m.cmd, m.params, { hosts, origin: cfg.origin, allowEval: evalOn(cfg) && !updated.share });
   if (m.cmd === 'sites') return requestSites(updated, p, cfg);
@@ -1695,7 +1697,7 @@ async function panelState() {
   const { [SHARES]: shares = null } = await chrome.storage.session.get(SHARES);
   return {
     shares,
-    cfg: cfg && { origin: cfg.origin, account: cfg.account, name: deviceName(cfg), sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, shareOk: !!cfg.shareOk, grantOk: !!cfg.grantOk, grantAuto: !!cfg.grantAuto, allowEval: evalOn(cfg), paused: cfg.paused, pairedAt: cfg.pairedAt, notify: cfg.notify !== false, notifyProgress: cfg.notifyProgress !== false },
+    cfg: cfg && { origin: cfg.origin, account: cfg.account, name: deviceName(cfg), sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, shareOk: !!cfg.shareOk, grantOk: !!cfg.grantOk, grantAuto: !!cfg.grantAuto, grantDesk: !!cfg.grantDesk, allowEval: evalOn(cfg), paused: cfg.paused, pairedAt: cfg.pairedAt, notify: cfg.notify !== false, notifyProgress: cfg.notifyProgress !== false },
     status: status || { state: 'off' },
     claim: claimed && claimed.expiresAt > Date.now() ? { origin: claimed.origin, account: claimed.account, name: deviceName(cfg) } : null,
     tasks: Object.values(tasks).sort((a, b) => b.lastAt - a.lastAt).map(({ desk: _desk, ...t }) => t),
@@ -1791,6 +1793,19 @@ async function onPanel(m) {
             await updateTask(t.jobId, (x) => { x.state = 'denied'; });
             await closeTaskTabs(t, { force: true });
           }
+        }
+      }
+      await pushLive();
+      return panelState();
+    }
+    case 'setGrantDesk': {
+      await patchCfg({ grantDesk: !!m.grantDesk });
+      await log({ ev: m.grantDesk ? 'grant_desk_on' : 'grant_desk_off' });
+      // 关掉：组织成员的任务还在等的应用申请和对外确认，一律按「不同意」处理；之后的桌面命令直接拒绝
+      if (!m.grantDesk) {
+        for (const t of Object.values(await getTasks()).filter((x) => x.grant)) {
+          if (t.appAsk?.length) decideApps(t.jobId, false);
+          if (t.deskAsk) decideDesk(t.jobId, false);
         }
       }
       await pushLive();

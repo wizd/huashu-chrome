@@ -442,20 +442,34 @@ export function cleanShares(v) {
 // 授权任务：组织里的另一个人的任务，借用户授权给他的这个浏览器做事（opus-video-maker 的共享浏览器）。
 // 信封上带 grant:{id, for}。它和用户自己的任务一样操作网页，但：放不放行只看「允许组织成员控制这个浏览器」
 // 和「组织成员的任务自动批准」两个开关；批准的网站不进用户自己的允许名单，也用不上那份名单；
-// 碰不到本机文件夹、桌面和手机；不能改写这个浏览器的经验笔记（那是用户自己的任务要读的）。
+// 碰不到本机文件夹、命令行、文件和手机；不能改写这个浏览器的经验笔记（那是用户自己的任务要读的）。
+// 电脑（desktop、apps）要两边都同意：服务器上的授权勾了「电脑」（信封 grant.desktop），用户在扩展里
+// 也打开了「允许组织成员操作这台电脑」。应用照样每个任务逐个由用户批准；桌面完全模式对它不生效；
+// 剪贴板和通知不用批准应用就能读写，对授权任务一律不开放。
 const GRANT_BLOCKED = new Set(['folders', 'fs_list', 'fs_read', 'fs_write', 'desktop', 'apps', 'shell', 'file', 'phone']);
+const GRANT_DESK = new Set(['desktop', 'apps']);
+const GRANT_DESK_BLOCKED = new Set(['clipboard-get', 'clipboard-set', 'list-notifications', 'notification-action']);
 
-// 信封 → { id, for } 或 null（不是授权任务）。
+// 信封 → { id, for, desktop } 或 null（不是授权任务）。
 export function grantOf(job) {
   if (!job?.grant) return null;
   const id = String(job.grant.id || '').slice(0, 64);
   const who = String(job.grant.for || '').slice(0, 40);
   if (!id || !who) throw err('CLOUD_DENIED', '授权任务要说明是谁的');
-  return { id, for: who };
+  return { id, for: who, desktop: job.grant.desktop === true };
 }
 
-export function checkGrantCommand(cmd, params) {
-  if (GRANT_BLOCKED.has(cmd)) throw err('GRANT_SCOPE', `这是组织成员借用的浏览器，不能用 ${cmd}：本机文件夹、桌面和手机不开放`);
+// grant：这条命令信封上的授权（服务器当下的范围）；deskOk：用户打开了「允许组织成员操作这台电脑」。
+export function checkGrantCommand(cmd, params, grant = null, { deskOk = false } = {}) {
+  if (GRANT_DESK.has(cmd)) {
+    if (!grant?.desktop) throw err('GRANT_SCOPE', `这是组织成员借用的浏览器，主人只授权了网页，不能用 ${cmd}`);
+    if (!deskOk) throw err('GRANT_OFF', '这台电脑的主人没有在扩展里打开「允许组织成员操作这台电脑」。不要重试，只做网页上的事。');
+    if (cmd === 'desktop' && (Array.isArray(params?.argv) || GRANT_DESK_BLOCKED.has(String(params?.cmd || '')))) {
+      throw err('GRANT_SCOPE', `借用的电脑上不能用 desktop ${Array.isArray(params?.argv) ? 'argv' : params.cmd}：剪贴板、通知和原样命令不开放`);
+    }
+    return;
+  }
+  if (GRANT_BLOCKED.has(cmd)) throw err('GRANT_SCOPE', `这是组织成员借用的浏览器，不能用 ${cmd}：本机文件夹、命令行、文件和手机不开放`);
   if (cmd === 'notes' && params?.save !== undefined) throw err('GRANT_SCOPE', '借用的浏览器上只能读经验笔记，不能改写');
 }
 

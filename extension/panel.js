@@ -297,7 +297,8 @@ const LOG_TEXT = LANG === 'zh' ? {
   paired: '配对', unpaired: '解除配对', renamed: '改名为', approved: '批准任务', denied: '拒绝任务', ended: '任务结束',
   sites_on: '允许了新网站', sites_off: '拒绝了新网站', sites_timeout: '新网站没回应',
   folders_on: '允许了本地文件夹', folders_auto: '自动放行本地文件夹', folders_off: '拒绝了本地文件夹', folders_timeout: '本地文件夹没回应',
-  apps_on: '允许了桌面应用', apps_off: '拒绝了桌面应用', apps_timeout: '桌面应用没回应', grant_on: '允许组织成员控制', grant_off: '不再允许组织成员控制', grant_auto_on: '组织成员的任务改为自动批准', grant_auto_off: '组织成员的任务改为逐个批准', grant_desk_on: '允许组织成员操作这台电脑', grant_desk_off: '不再允许组织成员操作这台电脑',
+  apps_on: '允许了桌面应用', apps_auto: '自动允许了桌面应用', apps_off: '拒绝了桌面应用', apps_timeout: '桌面应用没回应', grant_on: '允许组织成员控制', grant_off: '不再允许组织成员控制', grant_auto_on: '组织成员的任务改为自动批准', grant_auto_off: '组织成员的任务改为逐个批准', grant_desk_on: '允许组织成员操作这台电脑', grant_desk_off: '不再允许组织成员操作这台电脑', grant_desk_auto_on: '组织成员的桌面请求改为自动允许', grant_desk_auto_off: '组织成员的桌面请求改为逐个确认',
+  desk_auto_on: '桌面请求改为自动允许', desk_auto_off: '桌面请求改为逐个确认',
   desk_confirm: '同意了桌面动作', desk_declined: '没同意桌面动作', desktop_on: '启用桌面能力', desktop_off: '停用桌面能力',
   desktop_reload: '为启用桌面能力重载扩展', desktop_fail: '桌面能力没启用成功：',
   site_on: '网站加入允许名单', site_off: '从允许名单移除网站', auto_on: '打开自动允许', auto_off: '关闭自动允许',
@@ -308,7 +309,8 @@ const LOG_TEXT = LANG === 'zh' ? {
   paired: 'Paired', unpaired: 'Unpaired', renamed: 'Renamed to', approved: 'Approved task', denied: 'Denied task', ended: 'Task ended',
   sites_on: 'Allowed new sites', sites_off: 'Denied new sites', sites_timeout: 'No answer on new sites',
   folders_on: 'Allowed local folders', folders_auto: 'Auto-allowed local folders', folders_off: 'Denied local folders', folders_timeout: 'No answer on local folders',
-  apps_on: 'Allowed desktop apps', apps_off: 'Denied desktop apps', apps_timeout: 'No answer on desktop apps', grant_on: 'Allowed org members to control', grant_off: 'Stopped org members controlling', grant_auto_on: 'Org members’ tasks now auto-approved', grant_auto_off: 'Org members’ tasks now asked one by one', grant_desk_on: 'Allowed org members to operate this computer', grant_desk_off: 'Stopped org members operating this computer',
+  apps_on: 'Allowed desktop apps', apps_auto: 'Auto-approved desktop apps', apps_off: 'Denied desktop apps', apps_timeout: 'No answer on desktop apps', grant_on: 'Allowed org members to control', grant_off: 'Stopped org members controlling', grant_auto_on: 'Org members’ tasks now auto-approved', grant_auto_off: 'Org members’ tasks now asked one by one', grant_desk_on: 'Allowed org members to operate this computer', grant_desk_off: 'Stopped org members operating this computer', grant_desk_auto_on: 'Org members’ desktop requests now auto-approved', grant_desk_auto_off: 'Org members’ desktop requests now ask one by one',
+  desk_auto_on: 'Desktop requests now auto-approved', desk_auto_off: 'Desktop requests now ask one by one',
   desk_confirm: 'Approved desktop action', desk_declined: 'Declined desktop action', desktop_on: 'Enabled desktop control', desktop_off: 'Disabled desktop control',
   desktop_reload: 'Reloaded extension to enable desktop control', desktop_fail: 'Desktop control failed to enable:',
   site_on: 'Site added to allow list', site_off: 'Site removed from allow list', auto_on: 'Turned on auto-approve', auto_off: 'Turned off auto-approve',
@@ -371,6 +373,8 @@ function renderDesktop(s) {
   const d = s.desktop || {};
   $('deskOn').hidden = !!d.device;
   $('deskOff').hidden = !d.device;
+  $('deskAutoRow').hidden = !(s.cfg && d.device);
+  $('cloudDeskAuto').checked = !!s.cfg?.deskAuto;
   // 没启用、或启用了但 agent-desktop 用不了，都给出安装指南
   $('deskGuide').hidden = !!d.device && d.ready !== false;
   $('deskState').textContent = d.device
@@ -464,6 +468,8 @@ function renderGrants(s) {
   $('cloudGrantAuto').disabled = !s.cfg?.grantOk;
   $('cloudGrantDesk').checked = !!s.cfg?.grantDesk;
   $('cloudGrantDesk').disabled = !s.cfg?.grantOk;
+  $('cloudGrantDeskAuto').checked = !!s.cfg?.grantDeskAuto;
+  $('cloudGrantDeskAuto').disabled = !(s.cfg?.grantOk && s.cfg?.grantDesk);
   const box = $('grantRunning');
   box.textContent = '';
   for (const t of (s.tasks || []).filter((x) => x.grant && (x.state === 'pending' || x.state === 'approved'))) {
@@ -690,6 +696,8 @@ $('cloudShare').onchange = (e) => cloudCall('setShareOk', { shareOk: e.target.ch
 $('cloudGrant').onchange = (e) => cloudCall('setGrantOk', { grantOk: e.target.checked });
 $('cloudGrantAuto').onchange = (e) => cloudCall('setGrantAuto', { grantAuto: e.target.checked });
 $('cloudGrantDesk').onchange = (e) => cloudCall('setGrantDesk', { grantDesk: e.target.checked });
+$('cloudGrantDeskAuto').onchange = (e) => cloudCall('setGrantDeskAuto', { grantDeskAuto: e.target.checked });
+$('cloudDeskAuto').onchange = (e) => cloudCall('setDeskAuto', { deskAuto: e.target.checked });
 $('cloudPause').onchange = (e) => cloudCall('setPaused', { paused: e.target.checked });
 $('noticePopup').onchange = (e) => cloudCall('setNotify', { notify: e.target.checked });
 $('noticeProgress').onchange = (e) => cloudCall('setNotifyProgress', { notifyProgress: e.target.checked });

@@ -18,7 +18,7 @@
 
 import * as policy from './cloud-policy.js';
 import * as folders from './folders.js';
-import { checkDesktop, checkObserved, recordOf, filterWindows, appsToAsk, APPS_MAX } from './desktop-policy.js';
+import { checkDesktop, checkObserved, recordOf, filterWindows, appsToAsk, appKey, deskAutoFor, APPS_MAX } from './desktop-policy.js';
 import { renderEnvelope } from './desktop-render.js';
 import { LOADS } from './loads/index.js';
 import { taskUrl } from './ask-policy.js';
@@ -1241,17 +1241,28 @@ function notifyApps(t, cfg) {
   }, () => void chrome.runtime.lastError);
 }
 
-// 和文件夹一样：自动允许管不到应用，每个任务逐个点头；批准只记在这个任务上
+// 打开桌面自动允许开关时直接放行应用申请；否则每个任务逐个点头，批准只记在这个任务上
 async function requestApps(task, p, cfg) {
   if (!(await desktopChild())) throw err('NO_DEVICE', '这个浏览器没有启用桌面能力。请用户在扩展侧栏「桌面应用」里点「启用桌面能力」。');
-  const split = appsToAsk(p.add, { apps: task.apps || [], refused: task.appRefused || [] });
+  const liveCfg = (await getCfg()) || cfg;
+  const auto = deskAutoFor(task, liveCfg);
+  const split = appsToAsk(p.add, { apps: task.apps || [], refused: task.appRefused || [], auto });
+  if (split.grant.length) {
+    const t = await updateTask(task.jobId, (x) => {
+      if (!Array.isArray(x.apps)) x.apps = [];
+      const cap = auto ? 50 : APPS_MAX;
+      for (const a of split.grant) if (!x.apps.includes(a) && x.apps.length < cap) x.apps.push(a);
+    });
+    if (!t) throw err('CLOUD_DENIED', '这个任务已经结束');
+    await log({ ev: 'apps_auto', job: task.jobId, msg: split.grant.join(',') });
+  }
   if (split.ask.length) {
     const t = await updateTask(task.jobId, (x) => {
       x.appAsk = split.ask;
       x.appAskWhy = p.reason;
     });
     if (!t) throw err('CLOUD_DENIED', '这个任务已经结束');
-    notifyApps(t, cfg);
+    notifyApps(t, liveCfg);
     const allow = await waitFor(`apps:${task.jobId}`);
     await updateTask(task.jobId, (x) => {
       if (!Array.isArray(x.apps)) x.apps = [];
@@ -1282,12 +1293,12 @@ function decideApps(jobId, allow) {
   for (const fn of waiters.get(`apps:${jobId}`) || []) fn(!!allow);
 }
 
-// 发送、删除一类的桌面动作：和页面上的对外动作同一套免确认开关；否则弹通知等用户点头。
+// 发送、删除一类的桌面动作：桌面自动允许开关、页面对外动作免确认开关、或本任务内都同意都能放行；否则弹通知等用户点头。
 // 桌面没有标签页可以挂浮条，所以走通知和侧栏卡片。
 async function confirmDesk(chk, task, cfg) {
   const jobId = task.jobId;
   const what = `${chk.cmd}「${String(chk.target?.name || '').slice(0, 40)}」（${chk.app}）`;
-  if ((cfg.autoConfirm && !task.grant) || task.confirmAll) {
+  if (deskAutoFor(task, cfg) || (cfg.autoConfirm && !task.grant) || task.confirmAll) {
     await log({ ev: 'ask_auto', job: jobId, msg: what });
     return;
   }
@@ -1388,13 +1399,15 @@ async function desktopCmd(p, task, cfg) {
     const env = await hostCall({ op: 'run', argv: ['list-windows', `--session=${session}`] });
     if (env.ok) desk.windows = windowsMap(env.data);
   }
+  const liveCfg = (await getCfg()) || cfg;
+  const autoDesk = deskAutoFor(task, liveCfg);
   const chk = checkDesktop(p, {
-    channel: 'cloud', session, apps: task.apps || [],
+    channel: 'cloud', session, apps: task.apps || [], refused: task.appRefused || [], autoApps: autoDesk,
     lookup: (id) => desk.snaps[id] || null,
     windows: (id) => desk.windows[id] || null,
   });
   if (chk.sensitive === 'pay') throw err('PAY_REFUSED', `「${chk.target?.name}」像是要花钱的按钮。桌面能力不代做付款，请用户亲手点。`);
-  if (chk.sensitive === 'sensitive') await confirmDesk(chk, task, cfg);
+  if (chk.sensitive === 'sensitive') await confirmDesk(chk, task, liveCfg);
 
   const env = await hostCall({ op: 'run', argv: chk.argv, timeoutMs: Math.min(Math.max((Number(p.timeout) || 0) + 10000, 30000), 90000) });
   if (env.ok && (chk.cmd === 'snapshot' || chk.cmd === 'find')) {
@@ -1413,7 +1426,14 @@ async function desktopCmd(p, task, cfg) {
     env.data = filterWindows(env.data, 'cloud');
     desk.windows = windowsMap(env.data);
   }
-  const held = await updateTask(task.jobId, (x) => { x.desk = desk; });
+  const touched = autoDesk && chk.app ? appKey(chk.app) : '';
+  const held = await updateTask(task.jobId, (x) => {
+    x.desk = desk;
+    if (touched) {
+      if (!Array.isArray(x.apps)) x.apps = [];
+      if (!x.apps.includes(touched) && x.apps.length < 50) x.apps.push(touched);
+    }
+  });
   if (!held) throw err('CLOUD_DENIED', '这个任务已经结束');
   const text = renderEnvelope(chk.cmd, env, { target: chk.target });
   if (!env.ok) throw err(env.error?.code || 'INTERNAL', text);
@@ -1697,7 +1717,7 @@ async function panelState() {
   const { [SHARES]: shares = null } = await chrome.storage.session.get(SHARES);
   return {
     shares,
-    cfg: cfg && { origin: cfg.origin, account: cfg.account, name: deviceName(cfg), sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, shareOk: !!cfg.shareOk, grantOk: !!cfg.grantOk, grantAuto: !!cfg.grantAuto, grantDesk: !!cfg.grantDesk, allowEval: evalOn(cfg), paused: cfg.paused, pairedAt: cfg.pairedAt, notify: cfg.notify !== false, notifyProgress: cfg.notifyProgress !== false },
+    cfg: cfg && { origin: cfg.origin, account: cfg.account, name: deviceName(cfg), sites: allowOf(cfg), auto: cfg.auto, autoConfirm: !!cfg.autoConfirm, deskAuto: !!cfg.deskAuto, shareOk: !!cfg.shareOk, grantOk: !!cfg.grantOk, grantAuto: !!cfg.grantAuto, grantDesk: !!cfg.grantDesk, grantDeskAuto: !!cfg.grantDeskAuto, allowEval: evalOn(cfg), paused: cfg.paused, pairedAt: cfg.pairedAt, notify: cfg.notify !== false, notifyProgress: cfg.notifyProgress !== false },
     status: status || { state: 'off' },
     claim: claimed && claimed.expiresAt > Date.now() ? { origin: claimed.origin, account: claimed.account, name: deviceName(cfg) } : null,
     tasks: Object.values(tasks).sort((a, b) => b.lastAt - a.lastAt).map(({ desk: _desk, ...t }) => t),
@@ -1809,6 +1829,29 @@ async function onPanel(m) {
         }
       }
       await pushLive();
+      return panelState();
+    }
+    case 'setGrantDeskAuto': {
+      await patchCfg({ grantDeskAuto: !!m.grantDeskAuto });
+      await log({ ev: m.grantDeskAuto ? 'grant_desk_auto_on' : 'grant_desk_auto_off' });
+      const now = await getCfg();
+      if (m.grantDeskAuto && now?.grantOk && now?.grantDesk) {
+        for (const t of Object.values(await getTasks()).filter((x) => x.grant)) {
+          if (t.appAsk?.length) decideApps(t.jobId, true);
+          if (t.deskAsk) decideDesk(t.jobId, true);
+        }
+      }
+      return panelState();
+    }
+    case 'setDeskAuto': {
+      await patchCfg({ deskAuto: !!m.deskAuto });
+      await log({ ev: m.deskAuto ? 'desk_auto_on' : 'desk_auto_off' });
+      if (m.deskAuto) {
+        for (const t of Object.values(await getTasks()).filter((x) => !x.grant)) {
+          if (t.appAsk?.length) decideApps(t.jobId, true);
+          if (t.deskAsk) decideDesk(t.jobId, true);
+        }
+      }
       return panelState();
     }
     case 'setGrantAuto': {

@@ -233,7 +233,9 @@ export function checkDesktop(params, ctx = {}) {
   if (app && !full) {
     const why = deniedApp(app, channel);
     if (why) throw err('DESKTOP_DENIED', why);
-    if (channel === 'cloud' && !(ctx.apps || []).includes(appKey(app))) {
+    const key = appKey(app);
+    const autoOk = ctx.autoApps === true && !(ctx.refused || []).includes(key);
+    if (channel === 'cloud' && !autoOk && !(ctx.apps || []).includes(key)) {
       throw err('APP_NOT_APPROVED', `本任务还不能操作 ${app}。先用 apps 申请，用户点头之后再来。`);
     }
     const gate = cmd === 'list-windows' ? null
@@ -395,12 +397,21 @@ export function cleanApps(list) {
   return { apps: apps.slice(0, APPS_MAX), bad, overflow: apps.slice(APPS_MAX) };
 }
 
-export function appsToAsk(add, { covered = [], apps = [], refused = [] } = {}) {
+export function appsToAsk(add, { covered = [], apps = [], refused = [], auto = false } = {}) {
   const ask = [];
+  const grant = [];
   const already = [];
   for (const a of add) {
     if (covered.includes(a) || apps.includes(a)) already.push(a);
-    else if (!refused.includes(a)) ask.push(a);
+    else if (!refused.includes(a)) (auto ? grant : ask).push(a);
   }
-  return { ask, covered: already };
+  return { ask, grant, covered: already };
+}
+
+// 桌面请求是否自动允许（免弹窗批准应用和发送/删除等敏感动作）。
+// 本人任务看 cfg.deskAuto；组织成员的授权任务必须单独开了 grantOk + grantDesk + grantDeskAuto，
+// 本人的 deskAuto / autoConfirm 不会顺带放行组织成员。
+export function deskAutoFor(task, cfg) {
+  if (!cfg) return false;
+  return task?.grant ? !!(cfg.grantOk && cfg.grantDesk && cfg.grantDeskAuto) : !!cfg.deskAuto;
 }

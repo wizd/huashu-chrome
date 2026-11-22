@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  checkDesktop, checkObserved, recordOf, filterWindows, checkSteps, cleanApps, appsToAsk, sensitivity, STEPS_MAX,
+  checkDesktop, checkObserved, recordOf, filterWindows, checkSteps, cleanApps, appsToAsk, deskAutoFor, sensitivity, STEPS_MAX,
 } from '../extension/desktop-policy.js';
 import { resolveTarget, routeHere, stampFrom, cleanDevice, capOf, browserIdentity, defaultDeviceName, cleanDeviceName, DEVICE_NAME_MAX } from '../extension/device.js';
 import { DesktopSession, formatExitError, prepareBinaryEnv } from '../src/lib/desktop.js';
@@ -148,11 +148,35 @@ test('steps：非空、有上限、不嵌套、只认表里的命令', () => {
   denied(() => checkSteps([{ cmd: 'rm' }]));
 });
 
-test('云端申请应用：浏览器和黑名单应用申请不了，重复的合并', () => {
+test('云端申请应用：浏览器和黑名单应用申请不了，重复的合并；开自动允许后免询问直接放行（已拒绝的除外）', () => {
   const { apps, bad } = cleanApps(['Weixin.exe', 'weixin', 'chrome', 'cmd.exe', 'Notepad']);
   assert.deepEqual(apps, ['weixin', 'notepad']);
   assert.deepEqual(bad, ['chrome', 'cmd.exe']);
-  assert.deepEqual(appsToAsk(['weixin', 'notepad', 'excel'], { apps: ['weixin'], refused: ['excel'] }), { ask: ['notepad'], covered: ['weixin'] });
+  assert.deepEqual(appsToAsk(['weixin', 'notepad', 'excel'], { apps: ['weixin'], refused: ['excel'] }), { ask: ['notepad'], grant: [], covered: ['weixin'] });
+  assert.deepEqual(appsToAsk(['weixin', 'notepad', 'excel'], { apps: ['weixin'], refused: ['excel'], auto: true }), { ask: [], grant: ['notepad'], covered: ['weixin'] });
+});
+
+test('桌面自动允许：本人与组织成员分开控制；开自动允许仍拦截密码管理器、终端、浏览器主窗口与付款', () => {
+  const own = { jobId: 'j1' };
+  const lent = { jobId: 'j2', grant: { id: 'g1', for: 'bob', desktop: true } };
+  assert.equal(deskAutoFor(own, null), false);
+  assert.equal(deskAutoFor(own, { deskAuto: false, grantOk: true, grantDesk: true, grantDeskAuto: true }), false);
+  assert.equal(deskAutoFor(own, { deskAuto: true }), true);
+  // 本人的 deskAuto / autoConfirm 不会顺带放行组织成员
+  assert.equal(deskAutoFor(lent, { deskAuto: true, autoConfirm: true, grantOk: true, grantDesk: true, grantDeskAuto: false }), false);
+  assert.equal(deskAutoFor(lent, { grantOk: false, grantDesk: true, grantDeskAuto: true }), false);
+  assert.equal(deskAutoFor(lent, { grantOk: true, grantDesk: false, grantDeskAuto: true }), false);
+  assert.equal(deskAutoFor(lent, { grantOk: true, grantDesk: true, grantDeskAuto: true }), true);
+
+  // autoApps: true 免去 APP_NOT_APPROVED，但硬红线不变
+  const cloudAuto = ctx({ channel: 'cloud', apps: [], refused: ['excel'], autoApps: true });
+  assert.equal(checkDesktop({ cmd: 'snapshot', app: 'Weixin.exe' }, cloudAuto).app, 'Weixin.exe');
+  denied(() => checkDesktop({ cmd: 'snapshot', app: 'Excel.exe' }, cloudAuto), 'APP_NOT_APPROVED');
+  denied(() => checkDesktop({ cmd: 'snapshot', app: 'Bitwarden' }, cloudAuto), 'DESKTOP_DENIED');
+  denied(() => checkDesktop({ cmd: 'snapshot', app: 'powershell.exe' }, cloudAuto), 'DESKTOP_DENIED');
+  denied(() => checkDesktop({ cmd: 'snapshot', app: 'chrome.exe' }, cloudAuto), 'DESKTOP_DENIED');
+  assert.equal(checkDesktop({ cmd: 'click', ref: '@snote01:e3' }, cloudAuto).sensitive, 'pay');
+  assert.equal(checkDesktop({ cmd: 'click', ref: '@snote01:e2' }, cloudAuto).sensitive, 'sensitive');
 });
 
 test('执行器：付款按钮拒绝；批处理里碰到发送/删除就停，后面的步骤不做', async () => {

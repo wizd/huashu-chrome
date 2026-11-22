@@ -286,8 +286,12 @@
       <input type="checkbox" class="toggle" id="cloudGrantAuto" />
     </label>
     <label class="sw-row">
-      <span class="txt"><span data-en="Let org members operate this computer">允许组织成员操作这台电脑</span><div class="sub" data-en="Only for grants that include the computer on the web. Their tasks can use the apps on this computer through desktop control: you approve each app per task, and confirm every outside action (send, delete). Full desktop mode, the command line, files, the clipboard and notifications stay closed to them.">只对网页上勾了「电脑」的授权有效。他们的任务可以经桌面能力操作这台电脑上的应用：每个任务要用的应用都要你逐个批准，发送、删除这类对外动作每次都要你确认。桌面完全模式、命令行、文件、剪贴板和通知不对他们开放。</div></span>
+      <span class="txt"><span data-en="Let org members operate this computer">允许组织成员操作这台电脑</span><div class="sub" data-en="Only for grants that include the computer on the web. Their tasks can use the apps on this computer through desktop control. Full desktop mode, the command line, files, the clipboard and notifications stay closed to them.">只对网页上勾了「电脑」的授权有效。他们的任务可以经桌面能力操作这台电脑上的应用。桌面完全模式、命令行、文件、剪贴板和通知不对他们开放。</div></span>
       <input type="checkbox" class="toggle" id="cloudGrantDesk" />
+    </label>
+    <label class="sw-row">
+      <span class="txt"><span data-en="Auto-approve their desktop requests">组织成员的桌面请求自动允许</span><div class="sub" data-en="When on, org members' desktop app requests and sensitive actions (send, delete) are approved automatically without confirmation popups; payments, password managers, terminals and browser windows stay blocked.">打开后，组织成员的桌面应用申请和发送、删除等敏感动作全部自动允许，不再弹确认框；付款、密码管理器、终端和浏览器主窗口照样拦截。</div></span>
+      <input type="checkbox" class="toggle" id="cloudGrantDeskAuto" />
     </label>
     <div id="grantRunning"></div>
     <div class="row"><a class="btn ghost" id="grantManage" target="_blank" rel="noopener" data-en="Manage grants on the web">在网页上管理授权</a></div>
@@ -303,6 +307,10 @@
   <section>
     <h2 data-en="Desktop apps">桌面应用</h2>
     <div id="deskState" class="sub"></div>
+    <label class="sw-row" id="deskAutoRow" hidden>
+      <span class="txt"><span data-en="Auto-approve desktop requests">自动允许桌面请求</span><div class="sub" data-en="Your own cloud tasks can operate desktop apps and perform send/delete actions without confirmation popups; payments, password managers, terminals and browser windows stay blocked. Does not cover org members' tasks.">你自己的云端任务申请桌面应用和执行发送、删除等动作时全部自动允许，不再弹确认框；付款、密码管理器、终端和浏览器主窗口照样拦截。管不到组织成员的任务。</div></span>
+      <input type="checkbox" class="toggle" id="cloudDeskAuto" />
+    </label>
     <div class="row">
       <button class="btn" id="deskOn" type="button" data-en="Enable desktop control">启用桌面能力</button>
       <button class="btn ghost" id="deskOff" type="button" hidden data-en="Disable">停用</button>
@@ -376,7 +384,7 @@
     </details>
     <details>
       <summary data-en="Desktop apps">桌面应用</summary>
-      <div data-en-html="Once enabled, paired sites can request to operate an app on this computer (e.g. WeChat, Excel). You are asked about every app a task wants. Browser windows, password managers and terminals are never touched; payments are never made, and you are asked before sending or deleting. The desktop component has to be installed once first: click &quot;Setup steps&quot; under Desktop apps for a step-by-step page.">启用后，配对的网站可以申请操作这台电脑上的某个应用（比如微信、Excel）。每个任务要用的应用都会先问你。浏览器窗口、密码管理器、终端一律不碰；付款不做，发送和删除之前会问你。需要先装一次桌面组件：点「桌面应用」里的「安装步骤」，有一步一步的图文指南。</div>
+      <div data-en-html="Once enabled, paired sites can request to operate an app on this computer (e.g. WeChat, Excel). By default you are asked about every app and before sending or deleting; turn on &quot;Auto-approve desktop requests&quot; (or the org-member switch under &quot;Lend to org members&quot;) to let them run without popups. Browser windows, password managers, terminals and payments are still blocked. The desktop component has to be installed once first: click &quot;Setup steps&quot; under Desktop apps for a step-by-step page.">启用后，配对的网站可以申请操作这台电脑上的某个应用（比如微信、Excel）。默认每个任务要用的应用以及发送、删除前都会先问你；打开「自动允许桌面请求」（或在「借给组织成员」里打开组织成员的对应开关）后不再弹窗。浏览器窗口、密码管理器、终端和付款照样拦截。需要先装一次桌面组件：点「桌面应用」里的「安装步骤」，有一步一步的图文指南。</div>
     </details>
     <details>
       <summary data-en="High-fidelity mode">高保真模式</summary>

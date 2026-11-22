@@ -134,6 +134,22 @@
   .notes .sub { color: var(--mute); font-size: 11.5px; overflow-wrap: anywhere;
                 display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .notes .ago { flex: none; margin: 2px 0 0; }
+  /* 哨兵：每个一张卡片，收起时一行看今天的数字 */
+  .wcard { border-top: 1px solid var(--line); padding: 6px 0 2px; }
+  .wcard > summary { list-style: none; display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 12.5px; margin: 0; }
+  .wcard > summary::-webkit-details-marker { display: none; }
+  .wcard > summary .nm { font-weight: 500; flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wcard > summary .nums { color: var(--mute); font-size: 11.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wcard .blk { margin-top: 6px; }
+  .wcard .blk b { font-weight: 600; font-size: 11.5px; color: var(--mute); display: block; margin-bottom: 2px; }
+  .wcard .sub, .wform .sub { color: var(--mute); font-size: 11.5px; overflow-wrap: anywhere; }
+  .wform { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; align-items: center; font-size: 12px; margin-top: 4px; }
+  .wform input { font: inherit; font-size: 12px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); min-width: 0; }
+  .wform .hrs { display: flex; gap: 4px; align-items: center; }
+  .wform .hrs input { width: 48px; }
+  .wlog div { display: flex; gap: 8px; font-size: 11.5px; color: var(--mute); padding: 1px 0; }
+  .wlog .ago { flex: none; width: 46px; text-align: right; margin: 0; }
+  .wlog .ok { color: var(--ok); } .wlog .bad { color: var(--bad); } .wlog .warn { color: var(--warn); }
   .top-err { margin: 0; padding: 8px 12px; border-radius: 10px; background: color-mix(in srgb, var(--bad) 10%, var(--card)); }
   /* 帮助：全部折叠在最下面 */
   .help details { border-top: 1px solid var(--line); padding: 2px 0 4px; }
@@ -191,6 +207,16 @@
         <input type="checkbox" class="toggle" id="noticeProgress" />
       </label>
     </details>
+  </section>
+
+  <!-- 1c. 哨兵：替任务盯着某个网页，有新情况才叫醒任务。每个都要你确认，这里随时看、随时改 -->
+  <section id="watchSec" hidden>
+    <h2><span data-en="Sentinels">哨兵</span><span class="count" id="watchCount"></span></h2>
+    <label class="sw-row">
+      <span class="txt"><span data-en="Keep watch in this browser">在这个浏览器里值守</span><div class="sub" data-en="Sentinels check the page or API you confirmed every few minutes with this browser's logins, and only send the new items' named fields to the server, which then wakes the task. No AI runs for a check. Off: every sentinel stops checking.">哨兵用这个浏览器的登录，每隔几分钟看一眼你确认过的网页或接口，只把新条目里点名的字段发给服务器，服务器再叫醒任务去处理。检查本身不调用 AI。关掉后所有哨兵都停止检查。</div></span>
+      <input type="checkbox" class="toggle" id="watchMaster" />
+    </label>
+    <div id="watchList"></div>
   </section>
 
   <!-- 2. 正在发生的 -->

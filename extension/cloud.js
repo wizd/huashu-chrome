@@ -23,6 +23,11 @@ import { renderEnvelope } from './desktop-render.js';
 import { LOADS } from './loads/index.js';
 import { taskUrl } from './ask-policy.js';
 import { routeHere, stampFrom, capOf, cleanDevice, describeDevices, browserIdentity, defaultDeviceName, cleanDeviceName } from './device.js';
+import * as watches from './watch-runner.js';
+import { checkWatchProbe } from './watch-policy.js';
+
+// background 的 30 秒 alarm 也叫哨兵查一轮
+export { tickWatches } from './watch-runner.js';
 
 const CFG = 'cloud';                 // storage.local：配对信息和用户的选择
 const TASKS = 'cloudTasks';          // storage.local：任务（批准状态、自己开的标签页）
@@ -189,7 +194,7 @@ async function unpair() {
   const { [TASKS]: tasks = {} } = await chrome.storage.local.get(TASKS);
   for (const t of Object.values(tasks)) await closeTaskTabs(t, { force: true });
   await keyDel().catch(() => {});
-  await chrome.storage.local.remove([CFG, TASKS, NOTICES, NOTICE_AT]);
+  await chrome.storage.local.remove([CFG, TASKS, NOTICES, NOTICE_AT, 'cloudWatches']);
   await chrome.storage.session.remove(SHARES).catch(() => {});
   deps?.setCloudLive([]);
   await setStatus('off');
@@ -287,11 +292,14 @@ export async function connect() {
               if (JSON.stringify(now) !== helloConfig) send(now);
             }
             await setStatus('online', String(m.account || cfg.account || ''));
+            // 哨兵：报上有哪些、补发没确认的事件（docs/TRIGGERS.md 11.3）
+            void watches.onWelcome();
             return;
           }
           // 服务器说这个设备已经被作废（用户在网页上删了它）：本机跟着解除，不再重连
           if (m.type === 'revoked') { await unpair(); await setStatus('off', '这个浏览器已在网页上被移除'); return; }
           if (m.type === 'cmd') { await handle(m); return; }
+          if (/^watch_/.test(String(m.type)) || m.type === 'event_ack') { await watches.onWatchMessage(m); return; }
           // 服务器的「验证」：一来一回量延迟，什么都不开。老版本这里还会探平台登录，已经去掉。
           if (m.type === 'probe') { send({ type: 'res', id: m.id, ok: true, data: {} }); return; }
           if (m.type === 'mount_request') { await openMount(); return; }
@@ -1504,7 +1512,7 @@ async function notesCmd(p, task) {
 
 // 这条命令会落在哪个主机上：开新页看目标地址，页面命令看它要操作的那个本任务标签页。
 // 不碰页面的命令（站点、文件夹、桌面、经验笔记……）回空，只计总数。
-const NO_PAGE = new Set(['sites', 'folders', 'apps', 'desktop', 'shell', 'file', 'fs_list', 'fs_read', 'fs_write', 'media_pull', 'notes']);
+const NO_PAGE = new Set(['sites', 'folders', 'apps', 'desktop', 'shell', 'file', 'fs_list', 'fs_read', 'fs_write', 'media_pull', 'notes', 'watch']);
 async function cmdHost(m, task) {
   if (NO_PAGE.has(m.cmd)) return '';
   if (m.cmd === 'tabs') return m.params?.action === 'new' ? policy.hostOf(m.params?.url) : '';
@@ -1541,6 +1549,14 @@ async function exec(m) {
   // 范围看这条命令信封上的授权（服务器当下的），电脑还要用户自己打开开关
   if (updated.grant) policy.checkGrantCommand(m.cmd, m.params, policy.grantOf(m.job), { deskOk: !!cfg.grantDesk });
   const hosts = updated.share ? [updated.share.site] : hostsOf(updated, cfg);
+  // 哨兵试跑：setup run 里的 agent 看看规则读不读得到东西。只查一次，不存、不报事件，
+  // 所以和读页面同一级别，不另外问；真正建哨兵要用户在侧栏确认（watch-runner.js）。
+  if (m.cmd === 'watch') {
+    if (updated.share || updated.grant) throw err('CLOUD_DENIED', '借用或共享的浏览器上不能建哨兵');
+    let p;
+    try { p = checkWatchProbe(m.params, hosts); } catch (e) { throw err('CLOUD_DENIED', e.message); }
+    return watches.probeWatch(p);
+  }
   const p = policy.checkCommand(m.cmd, m.params, { hosts, origin: cfg.origin, allowEval: evalOn(cfg) && !updated.share });
   if (m.cmd === 'sites') return requestSites(updated, p, cfg);
   if (m.cmd === 'folders') return requestFolders(updated, p, cfg);
@@ -1726,6 +1742,7 @@ async function panelState() {
     log: list.slice(-40).reverse(),
     notices: (await getNotices()).slice(0, 40).map((n) => ({ ...n, url: !!policy.noticeUrl(cfg?.origin, n) })),
     notes: Object.entries(notes).sort(([a], [b]) => a.localeCompare(b)).map(([site, n]) => ({ site, text: n.text, at: n.at })),
+    watches: await watches.watchPanelState(),
     defaultOrigin: policy.DEFAULT_ORIGIN,
   };
 }
@@ -1901,6 +1918,13 @@ async function onPanel(m) {
     case 'foldersChanged': await reportFolders(); return panelState();
     case 'endTask': await endTask(String(m.jobId), 'user'); return panelState();
     case 'reconnect': disconnect(); retryDelay = 0; await connect(); return panelState();
+    // 哨兵（侧栏「哨兵」区块）
+    case 'watchMaster': await watches.setMaster(!!m.on); return panelState();
+    case 'watchConfirm': await watches.confirmWatch(String(m.id), !!m.allow, m.settings && typeof m.settings === 'object' ? m.settings : null); return panelState();
+    case 'watchUpdate': await watches.updateWatch(String(m.id), m.settings && typeof m.settings === 'object' ? m.settings : {}); return panelState();
+    case 'watchCheck': await watches.checkNow(String(m.id)); return panelState();
+    case 'watchRebase': await watches.rebaseline(String(m.id)); return panelState();
+    case 'watchDelete': await watches.deleteWatch(String(m.id)); return panelState();
     default: throw err('INTERNAL', `未知操作 ${m.op}`);
   }
 }
@@ -1909,6 +1933,7 @@ async function onPanel(m) {
 
 export function initCloud(d) {
   deps = d;
+  watches.initWatches({ send, raise, settle, log, paired: async () => { const c = await getCfg(); return !!c?.deviceId && !c.paused; } });
 
   chrome.runtime.onMessage.addListener((m, sender, sendResponse) => {
     if (!m?.__hcCloud) return false;
@@ -1927,6 +1952,7 @@ export function initCloud(d) {
     else if (id.startsWith('hc-cloud-sites:')) decideSites(id.slice('hc-cloud-sites:'.length), idx === 0);
     else if (id.startsWith('hc-cloud:')) void decide(id.slice('hc-cloud:'.length), idx === 0);
     else if (id.startsWith('hc-folder:')) void openMount(id.slice('hc-folder:'.length));
+    else if (id.startsWith('hc-watch:')) void watches.confirmWatch(id.slice('hc-watch:'.length), idx === 0, null);
   });
   chrome.notifications?.onClicked.addListener((id) => {
     if (id.startsWith('hc-folder:')) void openMount(id.slice('hc-folder:'.length));

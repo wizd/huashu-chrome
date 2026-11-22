@@ -305,6 +305,7 @@ const LOG_TEXT = LANG === 'zh' ? {
   notes_saved: '记下网站经验', notes_deleted: '删除网站经验',
   eval_on: '允许云端执行脚本', eval_off: '禁止云端执行脚本', confirm_on: '打开对外动作免确认', confirm_off: '关闭对外动作免确认', ask_auto: '免确认放行', confirm_task: '本任务内都同意',
   paused: '暂停', resumed: '恢复', asked: '交给 maker：',
+  watch_on: '允许了哨兵', watch_off: '拒绝了哨兵', watch_deleted: '删除哨兵',
 } : {
   paired: 'Paired', unpaired: 'Unpaired', renamed: 'Renamed to', approved: 'Approved task', denied: 'Denied task', ended: 'Task ended',
   sites_on: 'Allowed new sites', sites_off: 'Denied new sites', sites_timeout: 'No answer on new sites',
@@ -317,6 +318,7 @@ const LOG_TEXT = LANG === 'zh' ? {
   notes_saved: 'Saved site notes', notes_deleted: 'Deleted site notes',
   eval_on: 'Allowed cloud scripts', eval_off: 'Blocked cloud scripts', confirm_on: 'Turned on skip-confirmation', confirm_off: 'Turned off skip-confirmation', ask_auto: 'Let through without asking', confirm_task: 'Approved for the rest of this task',
   paused: 'Paused', resumed: 'Resumed', asked: 'Handed to maker:',
+  watch_on: 'Allowed sentinel', watch_off: 'Declined sentinel', watch_deleted: 'Deleted sentinel',
 };
 
 const PERM_WORD = {
@@ -520,6 +522,7 @@ function renderCloud(s) {
   renderNotices(s);
   renderDesktop(s);
   $('asks').textContent = '';
+  renderWatches(s);
   const on = !!s.cfg;
   $('cloudPair').hidden = on || !!s.claim;
   $('cloudClaim').hidden = on || !s.claim;
@@ -723,11 +726,285 @@ $('deskOff').onclick = async () => {
   await chrome.permissions.remove({ permissions: ['nativeMessaging'] }).catch(() => {});
 };
 
+// ---------- 哨兵 ----------
+//
+// 每个哨兵一张卡片：收起时一行看今天的数字，展开看目标、设置、统计和最近记录。
+// 新哨兵（或目标变大的）进顶上的「需要你处理」，可以先改设置再确认。
+// 规则和执行记录的文字都来自服务器，一律 textContent。
+
+const openWatches = new Set();   // 展开着的卡片：每 15 秒重画时保持
+let lastWatches = null;
+const RUN_WORD = {
+  queued: [L('排队合并中', 'Queued'), 'warn'], held: [L('等着', 'Waiting'), 'warn'], skipped: [L('跳过', 'Skipped'), 'warn'],
+  running: [L('执行中', 'Running'), 'warn'], done: [L('已执行', 'Done'), 'ok'], failed: [L('执行失败', 'Failed'), 'bad'],
+  needs_user: [L('需要你处理', 'Needs you'), 'bad'],
+};
+const mins = (sec) => Math.max(1, Math.round(sec / 60));
+const words = (v) => String(v || '').split(/[,，、\n]/).map((x) => x.trim()).filter(Boolean);
+
+function watchDot(w) {
+  if (w.status === 'pending' || w.status === 'refused' || w.status === 'invalid') return 'warn';
+  if (!lastWatches?.master) return '';
+  if (w.watch?.settings.paused) return 'warn';
+  if (w.last && !w.last.ok && w.failStreak >= 2) return 'bad';
+  return 'ok';
+}
+
+function watchHint(w) {
+  if (w.status === 'pending') return w.narrowed ? L('目标变了，等你重新确认', 'Target changed: confirm again') : L('等你确认', 'Waiting for your OK');
+  if (w.status === 'refused') return L('你拒绝了', 'You declined');
+  if (w.status === 'invalid') return L('规则不合规', 'Invalid rule');
+  if (!lastWatches?.master) return L('值守已关', 'Watching off');
+  if (w.watch?.settings.paused) return L('已暂停', 'Paused');
+  if (w.hold) return L('任务运行中，暂不检查', 'Task running; checks on hold');
+  return '';
+}
+
+// 设置表单：确认框和卡片共用。返回 { node, read() }
+function settingsForm(s, { full = true } = {}) {
+  const box = el('div', 'wform');
+  const input = (val, type = 'text', attrs = {}) => {
+    const i = el('input');
+    i.type = type;
+    i.value = val ?? '';
+    Object.assign(i, attrs);
+    return i;
+  };
+  const name = input(s.name, 'text', { maxLength: 60 });
+  const every = input(mins(s.every), 'number', { min: 1, max: 1440 });
+  const from = input(s.hours ? s.hours[0] : '', 'number', { min: 0, max: 24, placeholder: '0' });
+  const to = input(s.hours ? s.hours[1] : '', 'number', { min: 0, max: 24, placeholder: '24' });
+  const inc = input((s.include || []).join('、'), 'text', { placeholder: L('不限', 'any') });
+  const exc = input((s.exclude || []).join('、'), 'text', { placeholder: L('不排除', 'none') });
+  const batch = input(Math.round((s.batchMs ?? 120000) / 60000), 'number', { min: 0, max: 60 });
+  const runs = input(s.maxRunsPerDay ?? 48, 'number', { min: 1, max: 288 });
+  const hrs = el('div', 'hrs');
+  hrs.append(from, el('span', 'sub', L('点到', 'to')), to, el('span', 'sub', L('点（空着 = 全天）', '(empty = all day)')));
+  const rows = [
+    ...(full ? [[L('名称', 'Name'), name]] : []),
+    [L('每隔几分钟查', 'Check every (min)'), every],
+    [L('运行时段', 'Hours'), hrs],
+    [L('只要含这些词', 'Only with words'), inc],
+    [L('排除含这些词', 'Skip with words'), exc],
+    ...(full ? [[L('攒几分钟再叫醒', 'Batch for (min)'), batch], [L('每天最多执行', 'Max runs a day'), runs]] : []),
+  ];
+  for (const [label, node] of rows) box.append(el('span', 'sub', label), node);
+  return {
+    node: box,
+    read() {
+      const out = {
+        every: Math.max(1, Number(every.value) || 5) * 60,
+        hours: from.value === '' && to.value === '' ? null : [Number(from.value || 0), Number(to.value || 24)],
+        include: words(inc.value),
+        exclude: words(exc.value),
+      };
+      if (full) {
+        out.name = name.value.trim();
+        out.batchMs = Math.max(0, Number(batch.value) || 0) * 60000;
+        out.maxRunsPerDay = Math.max(1, Number(runs.value) || 48);
+      }
+      return out;
+    },
+  };
+}
+
+function watchTargetLines(w) {
+  const t = w.watch.target;
+  return [
+    L(`任务：${w.watch.title || w.watch.jobId}`, `Task: ${w.watch.title || w.watch.jobId}`),
+    L(`网站：${t.site}`, `Site: ${t.site}`),
+    L(`查看：${t.url}`, `Reads: ${t.url}`),
+    L(`只上报这些字段：${t.fields.join(SEP)}`, `Sends only these fields: ${t.fields.join(SEP)}`),
+    ...(w.watch.note ? [L(`说明：${w.watch.note}`, `Note: ${w.watch.note}`)] : []),
+  ];
+}
+
+// 「需要你处理」里的确认框。#asks 每次重画都会清空：同一个哨兵同一版的确认框复用原来的节点，
+// 用户填到一半的设置和光标不会被冲掉。
+const askNodes = new Map();
+let lastFocus = null;
+document.addEventListener('focusin', (e) => { lastFocus = e.target; });
+function watchAsk(w) {
+  const key = `${w.id}:${w.watch.rev}`;
+  const cached = askNodes.get(key);
+  if (cached) {
+    $('asks').appendChild(cached);
+    if (lastFocus && cached.contains(lastFocus)) lastFocus.focus();
+    return;
+  }
+  const box = el('div', 'task pending');
+  askNodes.set(key, box);
+  box.appendChild(el('div', 't', w.narrowed
+    ? L(`哨兵的目标变了，等你重新确认：${w.watch.settings.name}`, `Sentinel target changed, confirm again: ${w.watch.settings.name}`)
+    : L(`新的哨兵等你确认：${w.watch.settings.name}`, `New sentinel needs your OK: ${w.watch.settings.name}`)));
+  for (const line of watchTargetLines(w)) box.appendChild(el('div', 'sub', line));
+  box.appendChild(el('div', 'sub', L('确认后它每隔一会儿用这个浏览器的登录看一眼，有新条目就叫醒任务；自动允许管不到这一步。', 'Once allowed it checks with this browser\'s logins and wakes the task on new items. Auto-approve never covers this.')));
+  const form = settingsForm(w.watch.settings);
+  box.appendChild(form.node);
+  const row = el('div', 'row');
+  const yes = el('button', 'btn', L('允许', 'Allow'));
+  const no = el('button', 'btn ghost', L('拒绝', 'Decline'));
+  yes.onclick = () => cloudCall('watchConfirm', { id: w.id, allow: true, settings: form.read() });
+  no.onclick = () => cloudCall('watchConfirm', { id: w.id, allow: false });
+  row.append(yes, no);
+  box.appendChild(row);
+  $('asks').appendChild(box);
+}
+
+function watchCard(w, origin) {
+  const d = el('details', 'wcard');
+  d.open = openWatches.has(w.id);
+  d.ontoggle = () => { if (d.open) openWatches.add(w.id); else openWatches.delete(w.id); };
+  const s = w.watch?.settings;
+  const sum = el('summary');
+  const hint = watchHint(w);
+  const nums = s
+    ? L(`每 ${mins(s.every)} 分钟 · 今天 检查 ${w.stats.today.checks} / 触发 ${w.stats.today.events} / 执行 ${w.ranToday}`,
+      `every ${mins(s.every)} min · today ${w.stats.today.checks} checks / ${w.stats.today.events} triggers / ${w.ranToday} runs`)
+    : '';
+  sum.append(el('span', `dot ${watchDot(w)}`), el('span', 'nm', s?.name || w.id), el('span', 'nums', `${hint ? `${hint} · ` : ''}${nums}`));
+  d.appendChild(sum);
+
+  if (w.status === 'invalid' && w.invalid) d.appendChild(el('div', 'sub', L(`服务器下发的规则不合规，没有运行：${w.invalid}`, `The server sent an invalid rule; not running: ${w.invalid}`)));
+  if (!w.watch) {
+    const del = el('button', 'btn ghost', L('删除', 'Delete'));
+    del.onclick = () => cloudCall('watchDelete', { id: w.id });
+    d.appendChild(del);
+    return d;
+  }
+
+  // 目标
+  const tgt = el('div', 'blk');
+  tgt.appendChild(el('b', null, L('目标', 'Target')));
+  for (const line of watchTargetLines(w)) tgt.appendChild(el('div', 'sub', line));
+  if (origin) {
+    const a = el('a', null, L('在网页上打开这个任务', 'Open the task on the web'));
+    a.href = `${origin}/advanced#${encodeURIComponent(w.watch.jobId)}`;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    tgt.appendChild(a);
+  }
+  d.appendChild(tgt);
+
+  // 状态
+  const st = el('div', 'blk');
+  st.appendChild(el('b', null, L('状态', 'Status')));
+  if (w.last) {
+    st.appendChild(el('div', 'sub', w.last.ok
+      ? L(`上次检查 ${relTime(w.last.at)}：读到 ${w.last.count} 条`, `Last check ${relTime(w.last.at)}: ${w.last.count} items`)
+      : L(`上次检查 ${relTime(w.last.at)} 失败：${w.last.error}${w.failStreak > 1 ? `（连续 ${w.failStreak} 次）` : ''}`,
+        `Last check ${relTime(w.last.at)} failed: ${w.last.error}${w.failStreak > 1 ? ` (${w.failStreak} in a row)` : ''}`)));
+  } else {
+    st.appendChild(el('div', 'sub', L('还没检查过', 'Not checked yet')));
+  }
+  if (w.status === 'active' && !w.based) st.appendChild(el('div', 'sub', L('下一次检查只记下现有内容，之后出现的才算新', 'The next check only records what is there; only later items count as new')));
+  if (w.unacked) st.appendChild(el('div', 'sub', L(`${w.unacked} 批新内容等连上服务器后发送`, `${w.unacked} batches waiting to reach the server`)));
+  d.appendChild(st);
+
+  // 统计
+  const stat = el('div', 'blk');
+  stat.appendChild(el('b', null, L('统计', 'Stats')));
+  const t = w.stats.today;
+  stat.appendChild(el('div', 'sub', L(`今天：检查 ${t.checks} 次，失败 ${t.fails} 次，触发 ${t.events} 批（${t.items} 条），执行 ${w.ranToday} 次`,
+    `Today: ${t.checks} checks, ${t.fails} failed, ${t.events} triggers (${t.items} items), ${w.ranToday} runs`)));
+  stat.appendChild(el('div', 'sub', L(`累计：检查 ${w.stats.checks} 次，失败 ${w.stats.fails} 次，触发 ${w.stats.events} 批（${w.stats.items} 条）`,
+    `Total: ${w.stats.checks} checks, ${w.stats.fails} failed, ${w.stats.events} triggers (${w.stats.items} items)`)));
+  const costs = w.runs.filter((r) => r.cost != null);
+  if (costs.length) {
+    const sum7 = costs.reduce((a, r) => a + r.cost, 0);
+    stat.appendChild(el('div', 'sub', L(`最近执行共花 ${Math.round(sum7 * 100) / 100} 积分`, `Recent runs spent ${Math.round(sum7 * 100) / 100} credits`)));
+  }
+  d.appendChild(stat);
+
+  // 最近记录：每批新内容，和它的去向
+  const rec = el('div', 'blk');
+  rec.appendChild(el('b', null, L('最近记录', 'Recent')));
+  const logBox = el('div', 'wlog');
+  const used = new Set();
+  const rows = [];
+  for (const b of w.batches) {
+    const run = w.runs.find((r) => r.seqs.includes(b.seq));
+    if (run) used.add(run.id);
+    rows.push({ at: b.at, batch: b, run });
+  }
+  for (const r of w.runs) if (!used.has(r.id)) rows.push({ at: r.at, run: r });
+  rows.sort((a, b) => b.at - a.at);
+  if (!rows.length) logBox.appendChild(el('div', null, L('还没有触发过。', 'No triggers yet.')));
+  for (const row of rows.slice(0, 50)) {
+    const line = el('div');
+    const parts = [];
+    if (row.batch) parts.push(L(`新 ${row.batch.n} 条`, `${row.batch.n} new`) + (row.batch.preview?.length ? `（${row.batch.preview.join('；')}）` : ''));
+    const [word, cls] = row.run ? RUN_WORD[row.run.status] || [row.run.status, ''] : [L('已上报', 'Sent'), ''];
+    const tail = row.run ? [row.run.reason, row.run.title ? `「${row.run.title}」` : '', row.run.cost != null ? L(`${row.run.cost} 积分`, `${row.run.cost} credits`) : ''].filter(Boolean).join(' ') : '';
+    const txt = el('span', null, `${parts.join(' ')}${parts.length ? ' → ' : ''}`);
+    txt.appendChild(el('span', cls, word));
+    if (tail) txt.appendChild(document.createTextNode(` ${tail}`));
+    if (row.run?.runId && origin) {
+      line.style.cursor = 'pointer';
+      line.title = L('打开这次执行的任务', 'Open the task');
+      line.onclick = () => chrome.tabs.create({ url: `${origin}/advanced#${encodeURIComponent(w.watch.jobId)}` });
+    }
+    line.append(el('span', 'ago', relTime(row.at)), txt);
+    logBox.appendChild(line);
+  }
+  rec.appendChild(logBox);
+  d.appendChild(rec);
+
+  // 设置（确认过的才在这里改；待确认的在上面的确认框里改）
+  if (w.status === 'active') {
+    const set = el('div', 'blk');
+    set.appendChild(el('b', null, L('设置', 'Settings')));
+    const form = settingsForm(s);
+    set.appendChild(form.node);
+    const save = el('button', 'btn ghost', L('保存设置', 'Save settings'));
+    save.onclick = () => cloudCall('watchUpdate', { id: w.id, settings: form.read() });
+    set.appendChild(save);
+    d.appendChild(set);
+  }
+
+  // 操作
+  const row = el('div', 'row');
+  if (w.status === 'active') {
+    const pause = el('button', 'btn ghost', s.paused ? L('恢复', 'Resume') : L('暂停', 'Pause'));
+    pause.onclick = () => cloudCall('watchUpdate', { id: w.id, settings: { paused: !s.paused } });
+    const now = el('button', 'btn ghost', L('立即检查', 'Check now'));
+    now.onclick = () => cloudCall('watchCheck', { id: w.id });
+    const base = el('button', 'btn ghost', L('重建基线', 'Re-baseline'));
+    base.title = L('把现在的内容都记为看过，之后出现的才算新', 'Mark everything there now as seen');
+    base.onclick = () => cloudCall('watchRebase', { id: w.id });
+    row.append(pause, now, base);
+  }
+  const del = el('button', 'btn ghost', L('删除', 'Delete'));
+  del.onclick = () => { if (confirm(L(`删除哨兵「${s.name}」？任务不会再被它叫醒。`, `Delete sentinel "${s.name}"? It will no longer wake the task.`))) cloudCall('watchDelete', { id: w.id }); };
+  row.appendChild(del);
+  d.appendChild(row);
+  return d;
+}
+
+function renderWatches(s) {
+  const data = s.watches || { master: true, list: [] };
+  lastWatches = data;
+  const sec = $('watchSec');
+  sec.hidden = !s.cfg || !data.list.length;
+  const live = new Set();
+  for (const w of data.list) if (w.status === 'pending' && w.watch) { watchAsk(w); live.add(`${w.id}:${w.watch.rev}`); }
+  for (const k of askNodes.keys()) if (!live.has(k)) askNodes.delete(k);
+  // 正在填设置时不重画，免得把用户输入的冲掉
+  if (sec.contains(document.activeElement) && document.activeElement?.tagName === 'INPUT' && document.activeElement.type !== 'checkbox') return;
+  $('watchMaster').checked = data.master;
+  const bad = data.list.filter((w) => w.status === 'active' && w.last && !w.last.ok && w.failStreak >= 2).length;
+  $('watchCount').textContent = bad ? L(`${bad} 个出错`, `${bad} failing`) : '';
+  const box = $('watchList');
+  box.textContent = '';
+  for (const w of data.list) box.appendChild(watchCard(w, s.cfg?.origin));
+}
+$('watchMaster').onchange = (e) => cloudCall('watchMaster', { on: e.target.checked });
+
 // ---------- 订阅 ----------
 
 chrome.storage.onChanged.addListener((changes, area) => {
   const keys0 = Object.keys(changes);
-  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudNotices', 'cloudLog', 'cloudStatus', 'cloudClaim', 'folderTick', 'cloudDesktop', 'cloudDesktopError', 'cloudShares'].includes(k))) void cloudCall('state');
+  if (keys0.some((k) => ['cloud', 'cloudTasks', 'cloudNotices', 'cloudLog', 'cloudStatus', 'cloudClaim', 'folderTick', 'cloudDesktop', 'cloudDesktopError', 'cloudShares', 'cloudWatches'].includes(k))) void cloudCall('state');
   if (area !== 'session') return;
   const keys = Object.keys(changes);
   if (keys.includes(`panel:${tabId}`) || keys.includes('liveSids')) renderPage();

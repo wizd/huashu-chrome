@@ -15,7 +15,7 @@ import { matchChallenge, hostOf, hostMatches, L2_ORIGINS_SEED } from './risk.js'
 import { CRED_URL, redactCreds } from './redact.js';
 import { identityOf, stripMarkPrefix } from './identity.js';
 import { validateScript, condText, repeatMax, EXEC_BUDGET, collectRefs, toRecipe } from './script.js';
-import { initCloud, ensureCloud } from './cloud.js';
+import { initCloud, ensureCloud, tickWatches } from './cloud.js';
 import { initAsk } from './ask.js';
 import { loadDef, loadHostAllowed, checkLoadParams, checkCallParams, netHookMatches, needs, hostsText, takeBinary } from './load.js';
 
@@ -3026,6 +3026,7 @@ cdp.reapOrphans();
 // 永远不需要用户手点」的最后一道保险，所以判据必须是连通性本身。
 chrome.alarms?.onAlarm.addListener(async () => {
   void ensureCloud();   // 云端通道和本机桥互不相干，各自自愈
+  void tickWatches().catch(() => {});   // 哨兵：到点的查一轮（watch-runner.js）
   await ensureOffscreen();
   if (await connected()) return setBadge(true);
   // 先让 offscreen 那条腿尽力——kick 会等它把五个端口探完再回话。

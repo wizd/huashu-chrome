@@ -1511,9 +1511,51 @@ async function notesCmd(p, task) {
   };
 }
 
+const agentNotifyUrls = new Map();
+
+async function notifyCmd(p, task, cfg) {
+  if ((task.notified || 0) >= policy.NOTIFY_MAX) {
+    throw err('CLOUD_DENIED', `本任务通知次数已达上限（${policy.NOTIFY_MAX} 次）`);
+  }
+  await updateTask(task.jobId, (t) => { t.notified = (t.notified || 0) + 1; });
+  const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  const nid = `hc-agent:${id}`;
+  const targetUrl = p.url || (cfg?.origin ? `${cfg.origin}/advanced#${encodeURIComponent(task.jobId)}` : '');
+  if (targetUrl) {
+    agentNotifyUrls.set(nid, targetUrl);
+    if (agentNotifyUrls.size > 100) agentNotifyUrls.delete(agentNotifyUrls.keys().next().value);
+  }
+  const created = await new Promise((resolve) => {
+    if (!chrome.notifications?.create) return resolve({ ok: false, error: '浏览器未提供 notifications 接口' });
+    chrome.notifications.create(nid, {
+      type: 'basic',
+      iconUrl: 'icons/icon128.png',
+      title: p.title,
+      message: p.message,
+      contextMessage: policy.hostOf(cfg?.origin) || 'vcorp-chrome',
+      priority: p.urgent ? 2 : 1,
+      requireInteraction: !!p.urgent,
+    }, () => {
+      const e = chrome.runtime.lastError;
+      resolve(e ? { ok: false, error: e.message } : { ok: true });
+    });
+  });
+  await editNotices((list) => policy.mergeNotices(list, [{
+    id: `agent-${id}`,
+    at: Date.now(),
+    kind: 'done',
+    head: p.title,
+    text: p.message,
+    job: task.jobId,
+  }]).list);
+  await log({ ev: 'notify', jobId: task.jobId, msg: `${p.title}：${p.message}`.slice(0, 160) });
+  if (!created.ok) throw err('INTERNAL', `系统通知发送失败：${created.error}`);
+  return { ok: true, id: nid, text: `✅ 已弹出桌面通知：${p.title}` };
+}
+
 // 这条命令会落在哪个主机上：开新页看目标地址，页面命令看它要操作的那个本任务标签页。
-// 不碰页面的命令（站点、文件夹、桌面、经验笔记……）回空，只计总数。
-const NO_PAGE = new Set(['sites', 'folders', 'apps', 'desktop', 'shell', 'file', 'fs_list', 'fs_read', 'fs_write', 'media_pull', 'notes', 'watch']);
+// 不碰页面的命令（站点、文件夹、桌面、经验笔记、通知……）回空，只计总数。
+const NO_PAGE = new Set(['sites', 'folders', 'apps', 'desktop', 'shell', 'file', 'fs_list', 'fs_read', 'fs_write', 'media_pull', 'notes', 'notify', 'watch']);
 async function cmdHost(m, task) {
   if (NO_PAGE.has(m.cmd)) return '';
   if (m.cmd === 'tabs') return m.params?.action === 'new' ? policy.hostOf(m.params?.url) : '';
@@ -1567,6 +1609,7 @@ async function exec(m) {
   if (m.cmd === 'fs_list' || m.cmd === 'fs_read' || m.cmd === 'fs_write') return fsCmd(m.cmd, p, updated);
   if (m.cmd === 'media_pull') return mediaPull(p, updated, hosts);
   if (m.cmd === 'notes') return notesCmd(p, updated);
+  if (m.cmd === 'notify') return notifyCmd(p, updated, cfg);
   const sid = sidOf(jobId);
   const label = labelOf(cfg.origin);
   const own = new Set(updated.tabs);
@@ -1962,7 +2005,12 @@ export function initCloud(d) {
   chrome.notifications?.onClicked.addListener((id) => {
     if (id.startsWith('hc-folder:')) void openMount(id.slice('hc-folder:'.length));
     else if (id.startsWith('hc-note:')) void openNotice(id.slice('hc-note:'.length));
-    else if (id === 'hc-notes') {
+    else if (id.startsWith('hc-agent:')) {
+      chrome.notifications.clear(id, () => void chrome.runtime.lastError);
+      const url = agentNotifyUrls.get(id);
+      agentNotifyUrls.delete(id);
+      if (url) void openTab(url);
+    } else if (id === 'hc-notes') {
       chrome.notifications.clear(id, () => void chrome.runtime.lastError);
       void getCfg().then((cfg) => cfg?.origin && openTab(cfg.origin));
     }

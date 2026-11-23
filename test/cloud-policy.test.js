@@ -501,12 +501,28 @@ test('授权任务：要说明是谁的；本机文件夹、桌面、手机一�
   assert.deepEqual(grantOf({ id: 'j', grant: { id: 'g1', for: 'bob' } }), { id: 'g1', for: 'bob', desktop: false });
   assert.equal(grantOf({ id: 'j', grant: { id: 'g1', for: 'bob', desktop: 'yes' } }).desktop, false, '只认 true');
   assert.throws(() => grantOf({ id: 'j', grant: { id: 'g1' } }), (e) => e.code === 'CLOUD_DENIED');
-  for (const cmd of ['folders', 'fs_list', 'fs_read', 'fs_write', 'desktop', 'apps', 'shell', 'file', 'phone']) {
+  for (const cmd of ['folders', 'fs_list', 'fs_read', 'fs_write', 'desktop', 'apps', 'shell', 'file', 'phone', 'notify']) {
     assert.throws(() => checkGrantCommand(cmd, {}), (e) => e.code === 'GRANT_SCOPE', cmd);
   }
   assert.throws(() => checkGrantCommand('notes', { site: 'douyin.com', save: '下次先点这里' }), (e) => e.code === 'GRANT_SCOPE');
   for (const cmd of ['tabs', 'navigate', 'snapshot', 'click', 'fill', 'eval', 'upload', 'media_pull', 'sites', 'ask', 'call']) checkGrantCommand(cmd, {});
   checkGrantCommand('notes', { site: 'douyin.com' });
+});
+
+test('notify：清洗标题正文、允许站点内链接，拒绝越界链接和空通知', () => {
+  assert.ok(CLOUD_CMDS.has('notify'));
+  assert.deepEqual(
+    checkCommand('notify', { title: 'Gmail  新邮件', message: '来自 Jan\n主题：欢迎', url: 'https://douyin.com/inbox', urgent: true }, ctx),
+    { title: 'Gmail 新邮件', message: '来自 Jan 主题：欢迎', url: 'https://douyin.com/inbox', urgent: true },
+  );
+  assert.deepEqual(
+    checkCommand('notify', { body: '只有正文' }, ctx),
+    { title: '任务通知', message: '只有正文', urgent: false },
+  );
+  denied(() => checkCommand('notify', {}, ctx));
+  denied(() => checkCommand('notify', { title: '   ', message: '' }, ctx));
+  denied(() => checkCommand('notify', { title: '钓鱼', message: '点这里', url: 'https://evil.example/phish' }, ctx));
+  denied(() => checkShareCommand('notify', { title: 'hi', message: 'x' }, { site: 'flow.google.com' }));
 });
 
 test('授权任务的电脑：服务器授权了电脑、用户也打开了开关才行；剪贴板、通知、原样命令、命令行和文件照样不开放', () => {

@@ -54,7 +54,11 @@ export const CLOUD_CMDS = new Set([
   // 站点经验笔记：这个浏览器上、这个网站怎么操作更快更稳，纯文本，存在扩展自己的存储里。
   // 只能读写本任务允许的网站；侧栏里用户能看、能删。不是代码，不会被执行。
   'notes',
+  // 系统桌面通知：通过 Chrome 原生通知弹出提醒，不依赖桌面应用插件；url 必须在允许站点内。
+  'notify',
 ]);
+
+export const NOTIFY_MAX = 20;
 
 // ---------- 站点申请 ----------
 
@@ -446,7 +450,7 @@ export function cleanShares(v) {
 // 电脑（desktop、apps）要两边都同意：服务器上的授权勾了「电脑」（信封 grant.desktop），用户在扩展里
 // 也打开了「允许组织成员操作这台电脑」。应用照样每个任务逐个由用户批准；桌面完全模式对它不生效；
 // 剪贴板和通知不用批准应用就能读写，对授权任务一律不开放。
-const GRANT_BLOCKED = new Set(['folders', 'fs_list', 'fs_read', 'fs_write', 'desktop', 'apps', 'shell', 'file', 'phone']);
+const GRANT_BLOCKED = new Set(['folders', 'fs_list', 'fs_read', 'fs_write', 'desktop', 'apps', 'shell', 'file', 'phone', 'notify']);
 const GRANT_DESK = new Set(['desktop', 'apps']);
 const GRANT_DESK_BLOCKED = new Set(['clipboard-get', 'clipboard-set', 'list-notifications', 'notification-action']);
 
@@ -618,6 +622,23 @@ export function checkCommand(cmd, params, { hosts, origin, allowEval = false }) 
       if (typeof p.save !== 'string') throw err('CLOUD_DENIED', 'notes 的 save 是整份笔记的文本（覆盖旧的）；空字符串表示删除');
       if (p.save.length > NOTES_MAX) throw err('CLOUD_DENIED', `笔记超过 ${NOTES_MAX} 字：删掉过时的、合并重复的再存`);
       return { site, save: p.save };
+    }
+    case 'notify': {
+      const title = String(p.title ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+      const message = String(p.message ?? p.body ?? '').replace(/\r?\n/g, ' ').replace(/[ \t]+/g, ' ').trim().slice(0, 300);
+      if (!title && !message) throw err('CLOUD_DENIED', 'notify 至少要给 title 或 message');
+      let url = '';
+      if (p.url !== undefined && p.url !== '') {
+        const rawUrl = String(p.url).trim();
+        if (!urlAllowed(rawUrl, hosts)) throw err('CLOUD_DENIED', `notify 的 url 不在本任务允许的网站上：${hostOf(rawUrl) || rawUrl}`);
+        url = rawUrl.slice(0, 2000);
+      }
+      return {
+        title: title || '任务通知',
+        message: message || title,
+        ...(url ? { url } : {}),
+        urgent: p.urgent === true || p.requireInteraction === true,
+      };
     }
     case 'media_pull': {
       // 只 GET 一个地址，最多带 Range 和 Referer。别的头、方法、请求体一个都不收。

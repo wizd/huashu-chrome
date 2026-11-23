@@ -927,10 +927,11 @@ function watchCard(w, origin) {
     `Today: ${t.checks} checks, ${t.fails} failed, ${t.events} triggers (${t.items} items), ${w.ranToday} runs`)));
   stat.appendChild(el('div', 'sub', L(`累计：检查 ${w.stats.checks} 次，失败 ${w.stats.fails} 次，触发 ${w.stats.events} 批（${w.stats.items} 条）`,
     `Total: ${w.stats.checks} checks, ${w.stats.fails} failed, ${w.stats.events} triggers (${w.stats.items} items)`)));
+  const fmtCost = (c) => Math.round(Number(c) * 100) / 100;
   const costs = w.runs.filter((r) => r.cost != null);
   if (costs.length) {
     const sum7 = costs.reduce((a, r) => a + r.cost, 0);
-    stat.appendChild(el('div', 'sub', L(`最近执行共花 ${Math.round(sum7 * 100) / 100} 积分`, `Recent runs spent ${Math.round(sum7 * 100) / 100} credits`)));
+    stat.appendChild(el('div', 'sub', L(`最近执行共花 ${fmtCost(sum7)} 积分`, `Recent runs spent ${fmtCost(sum7)} credits`)));
   }
   d.appendChild(stat);
 
@@ -953,7 +954,7 @@ function watchCard(w, origin) {
     const parts = [];
     if (row.batch) parts.push(L(`新 ${row.batch.n} 条`, `${row.batch.n} new`) + (row.batch.preview?.length ? `（${row.batch.preview.join('；')}）` : ''));
     const [word, cls] = row.run ? RUN_WORD[row.run.status] || [row.run.status, ''] : [L('已上报', 'Sent'), ''];
-    const tail = row.run ? [row.run.reason, row.run.title ? `「${row.run.title}」` : '', row.run.cost != null ? L(`${row.run.cost} 积分`, `${row.run.cost} credits`) : ''].filter(Boolean).join(' ') : '';
+    const tail = row.run ? [row.run.reason, row.run.title ? `「${row.run.title}」` : '', row.run.cost != null ? L(`${fmtCost(row.run.cost)} 积分`, `${fmtCost(row.run.cost)} credits`) : ''].filter(Boolean).join(' ') : '';
     const txt = el('span', null, `${parts.join(' ')}${parts.length ? ' → ' : ''}`);
     txt.appendChild(el('span', cls, word));
     if (tail) txt.appendChild(document.createTextNode(` ${tail}`));

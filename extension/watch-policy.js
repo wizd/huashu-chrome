@@ -172,7 +172,7 @@ export function cleanWatchTarget(raw) {
 export function cleanWatchDetect(raw, fields) {
   const d = raw && typeof raw === 'object' ? raw : {};
   const { mode } = d;
-  if (mode !== 'api' && mode !== 'page') throw err('detect.mode 只能是 api 或 page');
+  if (mode !== 'live' && mode !== 'api' && mode !== 'page') throw err('detect.mode 只能是 live、api 或 page');
   const map = d.fields && typeof d.fields === 'object' && !Array.isArray(d.fields) ? d.fields : null;
   if (!map) throw err('detect.fields 要是 { 字段名: 路径 }');
   const keys = Object.keys(map);
@@ -201,7 +201,37 @@ export function cleanWatchDetect(raw, fields) {
     out[f] = String(map[f] ?? '').trim();
   }
   if (d.ready !== undefined && d.ready !== '' && !okSelector(d.ready)) throw err('detect.ready 要是 CSS 选择器');
-  return { mode, items: d.items.trim(), key: String(d.key ?? '').trim(), fields: out, ...(d.ready ? { ready: String(d.ready).trim() } : {}) };
+  if (d.omit !== undefined && d.omit !== '' && !okSelector(d.omit)) throw err('detect.omit 要是 CSS 选择器');
+  return {
+    mode,
+    items: d.items.trim(),
+    key: String(d.key ?? '').trim(),
+    fields: out,
+    ...(d.ready ? { ready: String(d.ready).trim() } : {}),
+    ...(d.omit ? { omit: String(d.omit).trim() } : {}),
+  };
+}
+
+// 实时模式（live）里 MutationObserver 要监听的属性名单：
+// 只盯规则里实际用到的 @属性（以及选择器里用到的 [attr] / .class），避免无关属性抖动唤醒观察器。
+export function pageObservedAttrs(detect) {
+  const attrs = new Set();
+  const scanSel = (sel) => {
+    if (!sel) return;
+    if (/(?:^|[\s>+~,(])\.[A-Za-z_-]/.test(sel) || /[A-Za-z0-9\])]\.[A-Za-z_-]/.test(sel)) attrs.add('class');
+    for (const m of sel.matchAll(/\[\s*([A-Za-z_:][-A-Za-z0-9_:.]*)/g)) attrs.add(m[1]);
+  };
+  scanSel(detect?.items);
+  scanSel(detect?.ready);
+  const scanSpec = (raw) => {
+    const p = parsePageField(raw);
+    if (!p) return;
+    if (p.attr) attrs.add(p.attr);
+    scanSel(p.sel);
+  };
+  scanSpec(detect?.key);
+  for (const v of Object.values(detect?.fields || {})) scanSpec(v);
+  return [...attrs];
 }
 
 // 服务器下发的一个哨兵 → { ok: true, watch } 或 { ok: false, error }。
@@ -277,10 +307,16 @@ export function apiExtract(json, detect) {
   }));
 }
 
+// 指纹归一化：去掉零宽字符，折叠连续空白和 NBSP，避免排版抖动、不可见防爬字符引起误报。
+export const normalizeForHash = (v) => String(v ?? '')
+  .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+  .replace(/[\u00A0\s]+/g, ' ')
+  .trim();
+
 // 字段内容的指纹：同一个 key 的内容变了（同一个会话来了新消息）也算新
 export function itemHash(item, fields) {
   let h = 0x811c9dc5;
-  const s = fields.map((f) => item.fields?.[f] ?? '').join('\u0001');
+  const s = fields.map((f) => normalizeForHash(item.fields?.[f] ?? '')).join('\u0001');
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
   return (h >>> 0).toString(16);
 }
@@ -339,3 +375,37 @@ export function watchInHours(settings, now = Date.now()) {
   const h = localParts(now, settings.tz).hour;
   return from < to ? h >= from && h < to : h >= from || h < to;
 }
+
+// 解析 HTTP Retry-After（秒数或 HTTP 日期），夹在 [0, 30 分钟] 内
+export function parseRetryAfterMs(header, now = Date.now()) {
+  if (header == null) return 0;
+  const s = String(header).trim();
+  if (!s) return 0;
+  if (/^\d+$/.test(s)) return Math.min(Math.max(Number(s) * 1000, 0), 1800_000);
+  const t = Date.parse(s);
+  if (!Number.isFinite(t)) return 0;
+  return Math.min(Math.max(t - now, 0), 1800_000);
+}
+
+// 失败/限流退避时间计算（纯函数，便于测试）：
+// - live 模式：30s → 60s → 120s → 240s → 300s 指数退避，避免登录过期时反复开关标签页；
+// - 轮询遇到临时错误（429 / 5xx / 超时）：在 every 基础上退避并尊重 Retry-After（封顶 30 分钟）；
+// - 正常轮询：every + 小幅随机抖动（≤10% 且 ≤10s），打散同秒突发请求。
+export function nextDelayMs({ live = false, everySec = WATCH_EVERY_DEFAULT, failStreak = 0, transient = false, retryAfterMs = 0, jitter = 0 } = {}) {
+  const baseMs = Math.max(WATCH_EVERY_MIN, Number(everySec) || WATCH_EVERY_DEFAULT) * 1000;
+  const ra = Math.min(Math.max(Number(retryAfterMs) || 0, 0), 1800_000);
+  if (failStreak > 0) {
+    if (live) {
+      const exp = Math.min(300_000, 30_000 * (2 ** Math.min(failStreak - 1, 3)));
+      return Math.max(exp, ra);
+    }
+    if (transient || ra > 0) {
+      const exp = Math.min(1800_000, baseMs * (2 ** Math.min(failStreak - 1, 3)));
+      return Math.max(exp, ra);
+    }
+    return baseMs;
+  }
+  const j = Math.min(Math.max(Number(jitter) || 0, 0), 1) * Math.min(Math.round(baseMs * 0.1), 10_000);
+  return baseMs + Math.round(j);
+}
+

@@ -213,7 +213,7 @@
   <section id="watchSec" hidden>
     <h2><span data-en="Sentinels">哨兵</span><span class="count" id="watchCount"></span></h2>
     <label class="sw-row">
-      <span class="txt"><span data-en="Keep watch in this browser">在这个浏览器里值守</span><div class="sub" data-en="Sentinels check the page or API you confirmed every few minutes with this browser's logins, and only send the new items' named fields to the server, which then wakes the task. No AI runs for a check. Off: every sentinel stops checking.">哨兵用这个浏览器的登录，每隔几分钟看一眼你确认过的网页或接口，只把新条目里点名的字段发给服务器，服务器再叫醒任务去处理。检查本身不调用 AI。关掉后所有哨兵都停止检查。</div></span>
+      <span class="txt"><span data-en="Keep watch in this browser">在这个浏览器里值守</span><div class="sub" data-en="Sentinels watch your confirmed page in real time (or check an API) with this browser's logins, and only send new items' named fields to wake the task. Zero AI cost while watching. Off: all sentinels stop.">哨兵用这个浏览器的登录，在后台实时监听你确认过的网页（或按规则检查接口），只把新条目里点名的字段发给服务器并立刻叫醒任务。监听本身不消耗 AI。关掉后所有哨兵都停止值守。</div></span>
       <input type="checkbox" class="toggle" id="watchMaster" />
     </label>
     <div id="watchList"></div>

@@ -15,7 +15,7 @@ import { matchChallenge, hostOf, hostMatches, L2_ORIGINS_SEED } from './risk.js'
 import { CRED_URL, redactCreds } from './redact.js';
 import { identityOf, stripMarkPrefix } from './identity.js';
 import { validateScript, condText, repeatMax, EXEC_BUDGET, collectRefs, toRecipe } from './script.js';
-import { initCloud, ensureCloud, tickWatches } from './cloud.js';
+import { initCloud, ensureCloud, tickWatches, onWatchTabRemoved, onWatchTabUpdated } from './cloud.js';
 import { initAsk } from './ask.js';
 import { loadDef, loadHostAllowed, checkLoadParams, checkCallParams, netHookMatches, needs, hostsText, takeBinary } from './load.js';
 
@@ -3063,6 +3063,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     (k.startsWith('seen:') && k.endsWith(':' + tabId)) || k === frameSnapKey(tabId) || k === panelKey(tabId));
   if (gone.length) await chrome.storage.session.remove(gone);
   await noteMarked(tabId, false);
+  void onWatchTabRemoved(tabId).catch(() => {});
   emit('tab_closed', { tabId });
 });
 
@@ -3073,7 +3074,10 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 // 这个监听器对浏览器里每一个标签页的每一次加载都会响，所以 syncMark 的
 // 第一件事是查 liveSids：没有会话在线时它一次 storage.get 就返回了。
 chrome.tabs.onUpdated.addListener((tabId, info) => {
-  if (info.status === 'complete') void syncMark(tabId);
+  if (info.status === 'complete') {
+    void syncMark(tabId);
+    void onWatchTabUpdated(tabId, info).catch(() => {});
+  }
 });
 
 chrome.runtime.onMessage.addListener((m, sender, sendResponse) => {

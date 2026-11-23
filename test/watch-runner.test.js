@@ -4,6 +4,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 const store = new Map();
+const sessionStore = new Map();
+const tabs = new Map();
+const tabGroups = new Map();
+const updatedListeners = new Set();
+let nextTabId = 100;
+let nextGroupId = 1;
+let scriptHandler = null;
+let tabMsgHandler = null;
+
 globalThis.chrome = {
   storage: {
     local: {
@@ -14,6 +23,82 @@ globalThis.chrome = {
       async set(obj) {
         for (const [k, v] of Object.entries(obj)) store.set(k, structuredClone(v));
       },
+    },
+    session: {
+      async get(key) {
+        if (typeof key === 'string') return { [key]: sessionStore.get(key) };
+        return Object.fromEntries([...sessionStore.entries()]);
+      },
+      async set(obj) {
+        for (const [k, v] of Object.entries(obj)) sessionStore.set(k, structuredClone(v));
+      },
+    },
+  },
+  tabs: {
+    async create({ url, active }) {
+      const id = nextTabId++;
+      const t = { id, url, active: !!active, status: 'complete', windowId: 1, discarded: false, autoDiscardable: true };
+      tabs.set(id, t);
+      return { ...t };
+    },
+    async get(id) {
+      const t = tabs.get(id);
+      if (!t) throw new Error('No tab');
+      return { ...t };
+    },
+    async update(id, patch) {
+      const t = tabs.get(id);
+      if (!t) throw new Error('No tab');
+      Object.assign(t, patch);
+      return { ...t };
+    },
+    async remove(id) {
+      tabs.delete(id);
+    },
+    async reload(id) {
+      const t = tabs.get(id);
+      if (t) t.discarded = false;
+    },
+    async query(q = {}) {
+      return [...tabs.values()].filter((t) => (q.groupId == null || t.groupId === q.groupId)).map((t) => ({ ...t }));
+    },
+    async group({ tabIds, groupId, createProperties }) {
+      const gid = groupId ?? nextGroupId++;
+      if (!tabGroups.has(gid)) tabGroups.set(gid, { id: gid, windowId: createProperties?.windowId ?? 1, title: '', collapsed: false });
+      for (const tid of Array.isArray(tabIds) ? tabIds : [tabIds]) {
+        const t = tabs.get(tid);
+        if (t) t.groupId = gid;
+      }
+      return gid;
+    },
+    async sendMessage(tabId, msg) {
+      if (!tabMsgHandler) throw new Error('No listener');
+      return tabMsgHandler(tabId, msg);
+    },
+    onUpdated: {
+      addListener(fn) { updatedListeners.add(fn); },
+      removeListener(fn) { updatedListeners.delete(fn); },
+    },
+  },
+  tabGroups: {
+    async get(id) {
+      const g = tabGroups.get(id);
+      if (!g) throw new Error('No group');
+      return { ...g };
+    },
+    async update(id, patch) {
+      const g = tabGroups.get(id);
+      if (g) Object.assign(g, patch);
+      return g ? { ...g } : null;
+    },
+    async query(q = {}) {
+      return [...tabGroups.values()].filter((g) => (q.title == null || g.title === q.title) && (q.windowId == null || g.windowId === q.windowId));
+    },
+  },
+  scripting: {
+    async executeScript(opts) {
+      if (!scriptHandler) throw new Error('No scriptHandler');
+      return [{ result: await scriptHandler(opts) }];
     },
   },
 };
@@ -39,6 +124,11 @@ function makeWatch(over = {}) {
 
 function setupHarness(fetchImpl) {
   store.clear();
+  sessionStore.clear();
+  tabs.clear();
+  tabGroups.clear();
+  scriptHandler = null;
+  tabMsgHandler = null;
   const sent = [];
   const raised = [];
   const settled = [];
@@ -183,6 +273,97 @@ test('连续同原因失败在达到 WATCH_FAIL_MAX（5 次）前逐次上报 st
     for (let i = 0; i < 5; i++) await runner.checkNow(w.id);
     const states = h.sent.filter((m) => m.type === 'watch_state' && m.ok === false);
     assert.deepEqual(states.map((m) => m.streak), [1, 2, 3, 4, 5], 'should report streaks 1..5 and throttle 6');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+});
+
+test('实时监听模式（live，以 Gmail 新邮件为例）：常驻后台标签页、零轮询即刻触发、防伪造、hold 重建基线与暂停关闭', async () => {
+  const w = makeWatch({
+    id: 'w_gmail',
+    site: 'mail.google.com',
+    target: { site: 'mail.google.com', url: 'https://mail.google.com/mail/u/0/#inbox', fields: ['from', 'subject', 'snippet'] },
+    detect: {
+      mode: 'live',
+      items: 'div[role="main"] tr.zA',
+      key: 'span[data-legacy-thread-id]@data-legacy-thread-id',
+      fields: { from: '.yX .zF', subject: '.bog', snippet: '.y2' },
+      ready: 'div[role="main"]',
+    },
+    settings: { batchMs: 5000 },
+  });
+  const h = setupHarness();
+  let attached = null;
+  let currentInbox = [{ key: 't1', fields: { from: 'Alice', subject: 'Hello', snippet: 'old email' } }];
+  scriptHandler = async ({ target, args }) => {
+    const [id, token, detect, _max, _readyMs, attrs] = args;
+    attached = { tabId: target.tabId, id, token, detect, attrs };
+    return { ok: true, items: currentInbox };
+  };
+  tabMsgHandler = async (tabId, msg) => {
+    if (attached && tabId === attached.tabId && msg.__hcWatchPing === attached.id && msg.token === attached.token) return { ok: true };
+    if (attached && tabId === attached.tabId && msg.__hcWatchPull === attached.id && msg.token === attached.token) return { ok: true, items: currentInbox };
+    if (attached && tabId === attached.tabId && msg.__hcWatchStop === attached.id) return { ok: true };
+    throw new Error('no listener');
+  };
+
+  try {
+    await runner.onWatchMessage({ type: 'watch_set', watch: w });
+    assert.ok(h.raised[0].opts.message.includes('实时监听'), 'confirm notification should describe live mode');
+    await runner.confirmWatch(w.id, true);
+    await wait();
+
+    // 确认后应自动在折叠的「vcorp 值守」标签组打开后台标签页，并设 autoDiscardable=false
+    assert.ok(attached, 'live observer should be attached');
+    const tab = tabs.get(attached.tabId);
+    assert.equal(tab.active, false);
+    assert.equal(tab.autoDiscardable, false);
+    assert.equal(tabGroups.get(tab.groupId).title, 'vcorp 值守');
+    assert.equal(tabGroups.get(tab.groupId).collapsed, true);
+    assert.ok(attached.attrs.includes('data-legacy-thread-id'));
+    assert.equal(h.sent.filter((m) => m.type === 'event').length, 0, 'initial baseline emits no event');
+    assert.equal((await runner.watchPanelState()).list[0].liveTab, true);
+
+    // 伪造 token 或伪造 tabId 的消息必须被拒
+    await runner.onLiveMessage(
+      { __hcWatch: 'live_items', id: w.id, token: 'wrong-token', items: [{ key: 'spoof', fields: { from: 'x', subject: 'y', snippet: 'z' } }] },
+      { tab: { id: attached.tabId, url: w.target.url } },
+    );
+    assert.equal(h.sent.filter((m) => m.type === 'event').length, 0, 'bad token must be ignored');
+
+    // Gmail DOM 推来一封新邮件 → MutationObserver 立即回报 → 马上发 event（不靠轮询）
+    const mail2 = { key: 't2', fields: { from: 'Boss', subject: 'Urgent', snippet: 'Please review' } };
+    currentInbox = [mail2, ...currentInbox];
+    await runner.onLiveMessage(
+      { __hcWatch: 'live_items', id: w.id, token: attached.token, items: currentInbox },
+      { tab: { id: attached.tabId, url: w.target.url } },
+    );
+    const evs = h.sent.filter((m) => m.type === 'event');
+    assert.equal(evs.length, 1);
+    assert.deepEqual(evs[0].items, [mail2]);
+
+    // Agent 运行期间 hold=true：标签页保持常驻不关，但忽略这期间的 DOM 抖动
+    await runner.onWatchMessage({ type: 'watch_hold', id: w.id, hold: true });
+    assert.ok(tabs.has(attached.tabId), 'live tab stays open during hold');
+    const mail3 = { key: 't3', fields: { from: 'Bot', subject: 'During run', snippet: 'ignored until rebaseline' } };
+    currentInbox = [mail3, ...currentInbox];
+    await runner.onLiveMessage(
+      { __hcWatch: 'live_items', id: w.id, token: attached.token, items: currentInbox },
+      { tab: { id: attached.tabId, url: w.target.url } },
+    );
+    assert.equal(h.sent.filter((m) => m.type === 'event').length, 1, 'mutations during hold must not emit');
+
+    // Agent 结束 hold=false, rebaseline=true：直接向已开标签页 pull 重建基线，不新开标签页
+    const tabCountBefore = tabs.size;
+    await runner.onWatchMessage({ type: 'watch_hold', id: w.id, hold: false, rebaseline: true });
+    await wait();
+    assert.equal(tabs.size, tabCountBefore, 'rebaseline reuses existing live tab');
+    assert.equal(h.sent.filter((m) => m.type === 'event').length, 1, 'rebaseline does not re-emit');
+
+    // 暂停哨兵：自动关掉常驻后台标签页
+    await runner.updateWatch(w.id, { paused: true });
+    assert.equal(tabs.has(attached.tabId), false, 'pausing closes live tab');
+    assert.equal((await runner.watchPanelState()).list[0].liveTab, false);
   } finally {
     globalThis.fetch = origFetch;
   }

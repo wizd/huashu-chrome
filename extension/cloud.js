@@ -26,8 +26,8 @@ import { routeHere, stampFrom, capOf, cleanDevice, describeDevices, browserIdent
 import * as watches from './watch-runner.js';
 import { checkWatchProbe } from './watch-policy.js';
 
-// background 的 30 秒 alarm 也叫哨兵查一轮
-export { tickWatches } from './watch-runner.js';
+// background 的 30 秒 alarm 和标签页事件也交给哨兵（live 常驻标签页自愈/重挂）
+export { tickWatches, onWatchTabRemoved, onWatchTabUpdated } from './watch-runner.js';
 
 const CFG = 'cloud';                 // storage.local：配对信息和用户的选择
 const TASKS = 'cloudTasks';          // storage.local：任务（批准状态、自己开的标签页）
@@ -193,6 +193,7 @@ async function unpair() {
   disconnect();
   const { [TASKS]: tasks = {} } = await chrome.storage.local.get(TASKS);
   for (const t of Object.values(tasks)) await closeTaskTabs(t, { force: true });
+  await watches.closeAllLiveTabs().catch(() => {});
   await keyDel().catch(() => {});
   await chrome.storage.local.remove([CFG, TASKS, NOTICES, NOTICE_AT, 'cloudWatches']);
   await chrome.storage.session.remove(SHARES).catch(() => {});
@@ -1936,6 +1937,10 @@ export function initCloud(d) {
   watches.initWatches({ send, raise, settle, log, paired: async () => { const c = await getCfg(); return !!c?.deviceId && !c.paused; } });
 
   chrome.runtime.onMessage.addListener((m, sender, sendResponse) => {
+    if (m?.__hcWatch) {
+      void watches.onLiveMessage(m, sender).catch(() => {});
+      return false;
+    }
     if (!m?.__hcCloud) return false;
     if (!fromPanel(sender)) { sendResponse({ ok: false, error: '只接受扩展侧栏发来的操作' }); return false; }
     onPanel({ ...m, op: m.__hcCloud }).then(

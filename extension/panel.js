@@ -761,7 +761,7 @@ function watchHint(w) {
 }
 
 // 设置表单：确认框和卡片共用。返回 { node, read() }
-function settingsForm(s, { full = true } = {}) {
+function settingsForm(s, { full = true, live = false } = {}) {
   const box = el('div', 'wform');
   const input = (val, type = 'text', attrs = {}) => {
     const i = el('input');
@@ -776,31 +776,35 @@ function settingsForm(s, { full = true } = {}) {
   const to = input(s.hours ? s.hours[1] : '', 'number', { min: 0, max: 24, placeholder: '24' });
   const inc = input((s.include || []).join('、'), 'text', { placeholder: L('不限', 'any') });
   const exc = input((s.exclude || []).join('、'), 'text', { placeholder: L('不排除', 'none') });
-  const batch = input(Math.round((s.batchMs ?? 120000) / 60000), 'number', { min: 0, max: 60 });
+  const batch = live
+    ? input(Math.round((s.batchMs ?? 5000) / 1000), 'number', { min: 0, max: 3600 })
+    : input(Math.round((s.batchMs ?? 120000) / 60000), 'number', { min: 0, max: 60 });
   const runs = input(s.maxRunsPerDay ?? 48, 'number', { min: 1, max: 288 });
   const hrs = el('div', 'hrs');
   hrs.append(from, el('span', 'sub', L('点到', 'to')), to, el('span', 'sub', L('点（空着 = 全天）', '(empty = all day)')));
   const rows = [
     ...(full ? [[L('名称', 'Name'), name]] : []),
-    [L('每隔几分钟查', 'Check every (min)'), every],
+    ...(!live ? [[L('每隔几分钟查', 'Check every (min)'), every]] : []),
     [L('运行时段', 'Hours'), hrs],
     [L('只要含这些词', 'Only with words'), inc],
     [L('排除含这些词', 'Skip with words'), exc],
-    ...(full ? [[L('攒几分钟再叫醒', 'Batch for (min)'), batch], [L('每天最多执行', 'Max runs a day'), runs]] : []),
+    ...(full ? [[live ? L('合并防抖（秒）', 'Debounce (sec)') : L('攒几分钟再叫醒', 'Batch for (min)'), batch], [L('每天最多执行', 'Max runs a day'), runs]] : []),
   ];
   for (const [label, node] of rows) box.append(el('span', 'sub', label), node);
   return {
     node: box,
     read() {
       const out = {
-        every: Math.max(1, Number(every.value) || 5) * 60,
+        ...(!live ? { every: Math.max(1, Number(every.value) || 5) * 60 } : {}),
         hours: from.value === '' && to.value === '' ? null : [Number(from.value || 0), Number(to.value || 24)],
         include: words(inc.value),
         exclude: words(exc.value),
       };
       if (full) {
         out.name = name.value.trim();
-        out.batchMs = Math.max(0, Number(batch.value) || 0) * 60000;
+        out.batchMs = live
+          ? Math.max(0, Math.min(3600, Number(batch.value) || 0)) * 1000
+          : Math.max(0, Number(batch.value) || 0) * 60000;
         out.maxRunsPerDay = Math.max(1, Number(runs.value) || 48);
       }
       return out;
@@ -837,9 +841,12 @@ function watchAsk(w) {
   box.appendChild(el('div', 't', w.narrowed
     ? L(`哨兵的目标变了，等你重新确认：${w.watch.settings.name}`, `Sentinel target changed, confirm again: ${w.watch.settings.name}`)
     : L(`新的哨兵等你确认：${w.watch.settings.name}`, `New sentinel needs your OK: ${w.watch.settings.name}`)));
+  const live = w.watch.detect?.mode === 'live';
   for (const line of watchTargetLines(w)) box.appendChild(el('div', 'sub', line));
-  box.appendChild(el('div', 'sub', L('确认后它每隔一会儿用这个浏览器的登录看一眼，有新条目就叫醒任务；自动允许管不到这一步。', 'Once allowed it checks with this browser\'s logins and wakes the task on new items. Auto-approve never covers this.')));
-  const form = settingsForm(w.watch.settings);
+  box.appendChild(el('div', 'sub', live
+    ? L('确认后它会在后台常驻监听该页面，有新条目立刻叫醒任务（不花积分）；自动允许管不到这一步。', 'Once allowed it watches this page live in a background tab and wakes the task immediately on new items (zero AI cost). Auto-approve never covers this.')
+    : L('确认后它每隔一会儿用这个浏览器的登录看一眼，有新条目就叫醒任务；自动允许管不到这一步。', 'Once allowed it checks with this browser\'s logins and wakes the task on new items. Auto-approve never covers this.')));
+  const form = settingsForm(w.watch.settings, { live });
   box.appendChild(form.node);
   const row = el('div', 'row');
   const yes = el('button', 'btn', L('允许', 'Allow'));
@@ -856,11 +863,15 @@ function watchCard(w, origin) {
   d.open = openWatches.has(w.id);
   d.ontoggle = () => { if (d.open) openWatches.add(w.id); else openWatches.delete(w.id); };
   const s = w.watch?.settings;
+  const live = w.watch?.detect?.mode === 'live';
   const sum = el('summary');
   const hint = watchHint(w);
   const nums = s
-    ? L(`每 ${mins(s.every)} 分钟 · 今天 检查 ${w.stats.today.checks} / 触发 ${w.stats.today.events} / 执行 ${w.ranToday}`,
-      `every ${mins(s.every)} min · today ${w.stats.today.checks} checks / ${w.stats.today.events} triggers / ${w.ranToday} runs`)
+    ? (live
+      ? L(`实时监听 · 今天 触发 ${w.stats.today.events} / 执行 ${w.ranToday}`,
+        `live · today ${w.stats.today.events} triggers / ${w.ranToday} runs`)
+      : L(`每 ${mins(s.every)} 分钟 · 今天 检查 ${w.stats.today.checks} / 触发 ${w.stats.today.events} / 执行 ${w.ranToday}`,
+        `every ${mins(s.every)} min · today ${w.stats.today.checks} checks / ${w.stats.today.events} triggers / ${w.ranToday} runs`))
     : '';
   sum.append(el('span', `dot ${watchDot(w)}`), el('span', 'nm', s?.name || w.id), el('span', 'nums', `${hint ? `${hint} · ` : ''}${nums}`));
   d.appendChild(sum);
@@ -889,13 +900,20 @@ function watchCard(w, origin) {
   // 状态
   const st = el('div', 'blk');
   st.appendChild(el('b', null, L('状态', 'Status')));
+  if (live && w.status === 'active' && !s?.paused && lastWatches?.master) {
+    st.appendChild(el('div', 'sub', w.liveTab
+      ? L('实时监听中（后台标签页已连接，DOM 变化即触发）', 'Watching live (background tab connected; triggers on DOM change)')
+      : L('等待建立实时监听标签页…', 'Connecting live watch tab…')));
+  }
   if (w.last) {
     st.appendChild(el('div', 'sub', w.last.ok
-      ? L(`上次检查 ${relTime(w.last.at)}：读到 ${w.last.count} 条`, `Last check ${relTime(w.last.at)}: ${w.last.count} items`)
+      ? (live
+        ? L(`上次同步 ${relTime(w.last.at)}：看到 ${w.last.count} 条`, `Last synced ${relTime(w.last.at)}: ${w.last.count} items`)
+        : L(`上次检查 ${relTime(w.last.at)}：读到 ${w.last.count} 条`, `Last check ${relTime(w.last.at)}: ${w.last.count} items`))
       : L(`上次检查 ${relTime(w.last.at)} 失败：${w.last.error}${w.failStreak > 1 ? `（连续 ${w.failStreak} 次）` : ''}`,
         `Last check ${relTime(w.last.at)} failed: ${w.last.error}${w.failStreak > 1 ? ` (${w.failStreak} in a row)` : ''}`)));
   } else {
-    st.appendChild(el('div', 'sub', L('还没检查过', 'Not checked yet')));
+    st.appendChild(el('div', 'sub', live ? L('还没建立基线', 'Not synced yet') : L('还没检查过', 'Not checked yet')));
   }
   if (w.status === 'active' && !w.based) st.appendChild(el('div', 'sub', L('下一次检查只记下现有内容，之后出现的才算新', 'The next check only records what is there; only later items count as new')));
   if (w.unacked) st.appendChild(el('div', 'sub', L(`${w.unacked} 批新内容等连上服务器后发送`, `${w.unacked} batches waiting to reach the server`)));
@@ -954,7 +972,7 @@ function watchCard(w, origin) {
   if (w.status === 'active') {
     const set = el('div', 'blk');
     set.appendChild(el('b', null, L('设置', 'Settings')));
-    const form = settingsForm(s);
+    const form = settingsForm(s, { live });
     set.appendChild(form.node);
     const save = el('button', 'btn ghost', L('保存设置', 'Save settings'));
     save.onclick = () => cloudCall('watchUpdate', { id: w.id, settings: form.read() });
@@ -985,7 +1003,7 @@ function renderWatches(s) {
   const data = s.watches || { master: true, list: [] };
   lastWatches = data;
   const sec = $('watchSec');
-  sec.hidden = !s.cfg || !data.list.length;
+  sec.hidden = !s.cfg;
   const live = new Set();
   for (const w of data.list) if (w.status === 'pending' && w.watch) { watchAsk(w); live.add(`${w.id}:${w.watch.rev}`); }
   for (const k of askNodes.keys()) if (!live.has(k)) askNodes.delete(k);
@@ -996,6 +1014,10 @@ function renderWatches(s) {
   $('watchCount').textContent = bad ? L(`${bad} 个出错`, `${bad} failing`) : '';
   const box = $('watchList');
   box.textContent = '';
+  if (!data.list.length) {
+    box.appendChild(el('div', 'empty', L('还没有哨兵。在网页上勾选「重复执行 → 网页有新内容时（哨兵）」创建。', 'No sentinels yet. Create one on the web via Repeat → When a web page has new items (sentinel).')));
+    return;
+  }
   for (const w of data.list) box.appendChild(watchCard(w, s.cfg?.origin));
 }
 $('watchMaster').onchange = (e) => cloudCall('watchMaster', { on: e.target.checked });

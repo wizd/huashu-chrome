@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import {
   checkWatch, checkWatchProbe, targetCovered, cleanEventItems, apiExtract, diffItems, itemHash, watchMatch,
   chunkEvents, watchInHours, watchDay, parsePath, pickJson, jsonItems, parsePageField, cleanWatchSettings,
-  WATCH_MAX, WATCH_EVERY_MIN, WATCH_FIELD_MAX, WATCH_SEEN_MAX,
+  pageObservedAttrs, WATCH_MAX, WATCH_EVERY_MIN, WATCH_FIELD_MAX, WATCH_SEEN_MAX,
 } from '../extension/watch-policy.js';
 
 const base = () => ({
@@ -194,6 +194,26 @@ test('关键词过滤', () => {
 test('事件切块', () => {
   assert.deepEqual(chunkEvents([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]);
   assert.deepEqual(chunkEvents([]), []);
+});
+
+test('实时监听模式（live）的哨兵与监听属性推导', () => {
+  const w = base();
+  w.target = { site: 'mail.google.com', url: 'https://mail.google.com/mail/u/0/#inbox', fields: ['from', 'subject', 'snippet'] };
+  w.detect = {
+    mode: 'live',
+    items: 'div[role="main"] tr.zA',
+    key: 'span[data-legacy-thread-id]@data-legacy-thread-id',
+    fields: { from: '.yX .zF', subject: '.bog', snippet: '.y2' },
+    ready: 'div[role="main"]',
+  };
+  const r = checkWatch(w);
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.watch.detect.mode, 'live');
+  assert.equal(checkWatchProbe({ action: 'probe', watch: w }, ['mail.google.com']).watch.detect.mode, 'live');
+  const attrs = pageObservedAttrs(r.watch.detect);
+  assert.ok(attrs.includes('class'));
+  assert.ok(attrs.includes('role'));
+  assert.ok(attrs.includes('data-legacy-thread-id'));
 });
 
 test('运行时段按用户的时区，跨午夜', () => {

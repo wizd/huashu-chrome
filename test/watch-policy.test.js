@@ -63,11 +63,17 @@ test('detect.fields 和 target.fields 不一致：拒（不能偷偷多报字段
   assert.equal(checkWatch(w2).ok, false);
 });
 
-test('字段名只能是标识符', () => {
-  const w = base();
-  w.target.fields = ['__proto__x', 'a b'];
-  w.detect.fields = { __proto__x: 'a', 'a b': 'b' };
-  assert.equal(checkWatch(w).ok, false);
+test('字段名允许中英文和连字符，拒绝空格和原型链键', () => {
+  const ok = base();
+  ok.target.fields = ['标题', 'last-msg'];
+  ok.detect.fields = { '标题': 'title', 'last-msg': 'lastMsg' };
+  assert.equal(checkWatch(ok).ok, true);
+  for (const bad of ['a b', '__proto__', 'constructor', 'prototype', '']) {
+    const w = base();
+    w.target.fields = [bad];
+    w.detect.fields = { [bad]: 'a' };
+    assert.equal(checkWatch(w).ok, false, bad);
+  }
 });
 
 test('选择器里不收花括号，路径不收过滤表达式和多个 [*]', () => {

@@ -151,6 +151,8 @@ async function watchSet(raw) {
     const w = st.list[nw.id] || blank();
     // 服务器回的旧版本（用户刚在这里改过、服务器还没看到）不盖新的
     if (w.watch && nw.rev < w.watch.rev) return null;
+    const revUp = !w.watch || nw.rev > w.watch.rev;
+    const wasPaused = !!w.watch?.settings?.paused;
     const detectChanged = w.watch && JSON.stringify(w.watch.detect) !== JSON.stringify(nw.detect);
     const targetChanged = w.watch && JSON.stringify(w.watch.target) !== JSON.stringify(nw.target);
     w.watch = nw;
@@ -160,14 +162,15 @@ async function watchSet(raw) {
     if (detectChanged || targetChanged) { w.based = false; w.seen = {}; }
     const covered = wp.targetCovered(w.confirmed, nw.target);
     if (covered) {
-      if (w.status !== 'active') w.nextAt = 0;
+      if (w.status !== 'active' || (wasPaused && !nw.settings.paused)) w.nextAt = 0;
       w.status = 'active';
-    } else if (w.status !== 'refused' || targetChanged) {
+      w.confirmedRev = Math.max(w.confirmedRev ?? 0, nw.rev);
+    } else if (w.status !== 'refused' || targetChanged || revUp) {
       w.status = 'pending';
     }
     if (!w.nextAt || detectChanged || targetChanged) w.nextAt = 0;
     st.list[nw.id] = w;
-    return { id: nw.id, pending: w.status === 'pending', watch: nw, active: w.status === 'active' };
+    return { id: nw.id, pending: w.status === 'pending', watch: nw, active: w.status === 'active' && !nw.settings.paused };
   });
   if (!out) return;
   if (out.invalid) {
@@ -197,9 +200,9 @@ export async function onWelcome() {
   const list = Object.entries(st.list);
   deps?.send({ type: 'watch_list', watches: list.map(([id, w]) => ({ id, rev: w.watch?.rev ?? 0 })) });
   for (const [id, w] of list) {
-    if (w.dirty) deps?.send({ type: 'watch_update', id, settings: w.dirty });
     if (w.status === 'active' && w.confirmedRev != null) deps?.send({ type: 'watch_confirm', id, rev: w.confirmedRev, ok: true });
     if (w.status === 'refused') deps?.send({ type: 'watch_confirm', id, rev: w.watch?.rev ?? 0, ok: false });
+    if (w.dirty) deps?.send({ type: 'watch_update', id, settings: w.dirty });
     for (const e of [...w.unacked].sort((a, b) => a.seq - b.seq)) deps?.send(e);
     if (!st.master) deps?.send({ type: 'watch_state', id, at: Date.now(), ok: false, off: true, error: '浏览器的值守总开关关着' });
   }
@@ -212,22 +215,31 @@ export async function confirmWatch(id, allow, settings) {
     const w = st.list[id];
     if (!w?.watch) return null;
     if (allow) {
-      if (settings) applySettings(w, settings);
+      let changed = false;
+      if (settings) {
+        const before = JSON.stringify(w.watch.settings);
+        const merged = wp.cleanWatchSettings({ ...w.watch.settings, ...settings }, w.watch.title);
+        if (JSON.stringify(merged) !== before) {
+          w.watch.settings = merged;
+          w.dirty = merged;
+          changed = true;
+        }
+      }
       w.confirmed = { ...w.watch.target, fields: [...w.watch.target.fields] };
       w.confirmedRev = w.watch.rev;
       w.status = 'active';
       w.based = false;
       w.nextAt = 0;
-    } else {
-      w.status = 'refused';
+      return { rev: w.watch.rev, settings: changed ? w.dirty : null };
     }
-    return { rev: w.watch.rev, settings: allow && settings ? w.dirty : null };
+    w.status = 'refused';
+    return { rev: w.watch.rev, settings: null };
   });
   if (!out) return;
   deps?.settle(notifyId(id));
   await deps?.log({ ev: allow ? 'watch_on' : 'watch_off', job: id, msg: id });
-  if (out.settings) deps?.send({ type: 'watch_update', id, settings: out.settings });
   deps?.send({ type: 'watch_confirm', id, rev: out.rev, ok: !!allow });
+  if (out.settings) deps?.send({ type: 'watch_update', id, settings: out.settings });
   if (allow) void checkSoon(id);
 }
 
@@ -341,7 +353,7 @@ async function checkOnce(id, { manual = false } = {}) {
   const { watch } = w0;
   const site = watch.target.site;
   const gap = Date.now() - (siteLast.get(site) || 0);
-  if (gap < wp.WATCH_SITE_GAP_MS) {
+  if (!manual && gap < wp.WATCH_SITE_GAP_MS) {
     // 同一个网站刚查过：挪到下一轮，不在这里干等
     await edit((s) => { if (s.list[id]) s.list[id].nextAt = Date.now() + (wp.WATCH_SITE_GAP_MS - gap); });
     return;
@@ -405,10 +417,12 @@ async function reportState(id, s, force) {
     const w = st.list[id];
     if (!w) return null;
     const prev = w.sent;
-    const changed = !prev || prev.ok !== s.ok || (prev.error || '') !== (s.error || '');
+    const streak = s.streak || 0;
+    const streakChanged = !s.ok && streak <= wp.WATCH_FAIL_MAX && (prev?.streak || 0) !== streak;
+    const changed = !prev || prev.ok !== s.ok || (prev.error || '') !== (s.error || '') || streakChanged;
     if (!force && !changed && now - prev.at < STATE_BEAT_MS) return null;
-    w.sent = { ok: s.ok, error: s.error || '', at: now };
-    return { type: 'watch_state', id, at: now, ok: s.ok, ...(s.error ? { error: s.error } : {}), ...(s.count != null ? { count: s.count } : {}), ...(s.streak ? { streak: s.streak } : {}) };
+    w.sent = { ok: s.ok, error: s.error || '', streak, at: now };
+    return { type: 'watch_state', id, at: now, ok: s.ok, ...(s.error ? { error: s.error } : {}), ...(s.count != null ? { count: s.count } : {}), ...(streak ? { streak } : {}) };
   });
   if (msg) deps?.send(msg);
 }

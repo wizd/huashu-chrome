@@ -30,7 +30,8 @@ const oneLine = (v, max) => String(v ?? '').replace(/[\x00-\x1f\x7f]+/g, ' ').re
 const shortText = (v, max) => String(v ?? '').replace(/[\x00-\x08\x0b-\x1f\x7f]+/g, ' ').trim().slice(0, max);
 const OWN = (o, k) => o !== null && typeof o === 'object' && Object.prototype.hasOwnProperty.call(o, k);
 
-const FIELD_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,31}$/;
+const FIELD_NAME = /^[\w一-鿿-]{1,30}$/;
+const FORBIDDEN_FIELDS = new Set(['__proto__', 'constructor', 'prototype']);
 const NAME = '[A-Za-z_$][\\w$-]*';
 const ITEMS_PATH = new RegExp(`^\\$(?:\\.${NAME}|\\[\\d{1,6}\\]|\\[\\*\\])*$`);
 const REL_PATH = new RegExp(`^(?:${NAME}|\\[\\d{1,6}\\])(?:\\.${NAME}|\\[\\d{1,6}\\])*$`);
@@ -159,7 +160,7 @@ export function cleanWatchTarget(raw) {
   if (!hostMatches(u.hostname.toLowerCase(), site)) throw err(`target.url 不在 ${site} 上：${u.hostname}`);
   const fields = [];
   for (const f of Array.isArray(t.fields) ? t.fields : []) {
-    if (typeof f !== 'string' || !FIELD_NAME.test(f)) throw err(`字段名不合规：${String(f).slice(0, 40)}（字母、数字、下划线）`);
+    if (typeof f !== 'string' || !FIELD_NAME.test(f) || FORBIDDEN_FIELDS.has(f)) throw err(`字段名不合规：${String(f).slice(0, 40)}（只能用字母、数字、汉字、_ 和 -）`);
     if (!fields.includes(f)) fields.push(f);
   }
   if (!fields.length) throw err('target.fields 至少要有一个字段名');

@@ -22,7 +22,7 @@
     "bridge": "node src/cli.js bridge --foreground",
     "doctor": "node src/cli.js doctor",
     "build:loads": "node scripts/build-loads.mjs",
-    "test": "node --test test/protocol.test.js test/mcp.test.js test/fetch-pages.test.js test/liveness.test.js test/redact.test.js test/audit-redact.test.js test/learnings.test.js test/risk.test.js test/identity.test.js test/host.test.js test/presence.test.js test/act-script.test.js test/script.test.js test/multi-instance.test.js test/compat.test.js test/cloud-policy.test.js test/ask-policy.test.js test/loads.test.js test/media-load.test.js test/desktop-policy.test.js test/desktop-full.test.js test/folders-write.test.js test/gateway.test.js test/flow-driver.test.js test/i18n.test.js test/folders-perm.test.js test/watch-policy.test.js",
+    "test": "node --test test/protocol.test.js test/mcp.test.js test/fetch-pages.test.js test/liveness.test.js test/redact.test.js test/audit-redact.test.js test/learnings.test.js test/risk.test.js test/identity.test.js test/host.test.js test/presence.test.js test/act-script.test.js test/script.test.js test/multi-instance.test.js test/compat.test.js test/cloud-policy.test.js test/ask-policy.test.js test/loads.test.js test/media-load.test.js test/desktop-policy.test.js test/desktop-full.test.js test/folders-write.test.js test/gateway.test.js test/flow-driver.test.js test/i18n.test.js test/folders-perm.test.js test/watch-policy.test.js test/watch-runner.test.js",
     "test:live": "node --test test/scenarios.test.js"
   },
   "dependencies": {

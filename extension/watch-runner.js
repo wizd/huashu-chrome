@@ -959,6 +959,16 @@ async function liveAttach(id, token, detect, max, readyMs, attrFilter) {
 
     const ATTR = /^[A-Za-z_:][-A-Za-z0-9_:.]{0,63}$/;
     const fieldNames = Object.keys(detect.fields || {});
+    const omitSel = detect.omit || '';
+    const norm = (v) => String(v ?? '').replace(/[\u200B-\u200D\u2060\uFEFF]/g, '').replace(/[\u00A0\s]+/g, ' ').trim();
+    const readText = (el) => {
+      if (omitSel && el.querySelector(omitSel)) {
+        const clone = el.cloneNode(true);
+        for (const bad of clone.querySelectorAll(omitSel)) bad.remove();
+        return (clone.innerText || '').trim() || (clone.textContent || '').replace(/\s+/g, ' ').trim();
+      }
+      return (el.innerText || '').trim() || (el.textContent || '').replace(/\s+/g, ' ').trim();
+    };
     const read = (node, spec) => {
       const s = String(spec || '').trim();
       let sel = s;
@@ -968,7 +978,7 @@ async function liveAttach(id, token, detect, max, readyMs, attrFilter) {
       const el = sel ? node.querySelector(sel) : node;
       if (!el) return '';
       if (attr) return el.getAttribute(attr) || '';
-      return (el.innerText || '').trim() || (el.textContent || '').replace(/\s+/g, ' ').trim();
+      return readText(el);
     };
     const extract = () => [...document.querySelectorAll(detect.items)].slice(0, max).map((n) => ({
       key: read(n, detect.key),
@@ -977,7 +987,7 @@ async function liveAttach(id, token, detect, max, readyMs, attrFilter) {
     const snapHash = (items) => {
       let h = 0x811c9dc5;
       for (const it of items) {
-        const line = `${it.key}\u0002${fieldNames.map((f) => it.fields[f] ?? '').join('\u0001')}\u0003`;
+        const line = `${norm(it.key)}\u0002${fieldNames.map((f) => norm(it.fields[f] ?? '')).join('\u0001')}\u0003`;
         for (let i = 0; i < line.length; i++) { h ^= line.charCodeAt(i); h = Math.imul(h, 0x01000193); }
       }
       return `${items.length}:${(h >>> 0).toString(16)}`;
@@ -1018,7 +1028,7 @@ async function liveAttach(id, token, detect, max, readyMs, attrFilter) {
     };
 
     const obs = new MutationObserver(schedule);
-    const root = document.body || document.documentElement;
+    let root = document.body || document.documentElement;
     const opts = { childList: true, subtree: true, characterData: true };
     if (Array.isArray(attrFilter) && attrFilter.length) {
       opts.attributes = true;
@@ -1028,7 +1038,29 @@ async function liveAttach(id, token, detect, max, readyMs, attrFilter) {
 
     const onMsg = (m, _sender, sendResponse) => {
       if (stopped) return false;
-      if (m?.__hcWatchPing === id && m.token === token) { sendResponse({ ok: true }); return false; }
+      if (m?.__hcWatchPing === id && m.token === token) {
+        const nextRoot = document.body || document.documentElement;
+        if (nextRoot && (nextRoot !== root || !root?.isConnected)) {
+          root = nextRoot;
+          try { obs.disconnect(); obs.observe(root, opts); } catch { /* noop */ }
+        }
+        if (m.sync) {
+          try {
+            const items = extract();
+            const h = snapHash(items);
+            const changed = !!m.force || h !== lastHash;
+            lastHash = h;
+            sendResponse(changed
+              ? { ok: true, changed: true, items, count: items.length }
+              : { ok: true, changed: false, count: items.length });
+          } catch (e) {
+            sendResponse({ ok: false, error: String(e?.message || e).slice(0, 160) });
+          }
+          return false;
+        }
+        sendResponse({ ok: true });
+        return false;
+      }
       if (m?.__hcWatchPull === id && m.token === token) {
         try {
           const items = extract();
@@ -1078,6 +1110,15 @@ async function pageExtract(detect, max, readyMs) {
     while (!document.querySelector(want) && Date.now() < until) await new Promise((r) => setTimeout(r, 300));
     if (!document.querySelector(want)) return { ok: false, error: `页面上找不到 ${want}（可能没登录，或网站改版了）` };
     const ATTR = /^[A-Za-z_:][-A-Za-z0-9_:.]{0,63}$/;
+    const omitSel = detect.omit || '';
+    const readText = (el) => {
+      if (omitSel && el.querySelector(omitSel)) {
+        const clone = el.cloneNode(true);
+        for (const bad of clone.querySelectorAll(omitSel)) bad.remove();
+        return (clone.innerText || '').trim() || (clone.textContent || '').replace(/\s+/g, ' ').trim();
+      }
+      return (el.innerText || '').trim() || (el.textContent || '').replace(/\s+/g, ' ').trim();
+    };
     const read = (node, spec) => {
       const s = String(spec || '').trim();
       let sel = s;
@@ -1087,7 +1128,7 @@ async function pageExtract(detect, max, readyMs) {
       const el = sel ? node.querySelector(sel) : node;
       if (!el) return '';
       if (attr) return el.getAttribute(attr) || '';
-      return (el.innerText || '').trim() || (el.textContent || '').replace(/\s+/g, ' ').trim();
+      return readText(el);
     };
     const nodes = [...document.querySelectorAll(detect.items)].slice(0, max);
     const items = nodes.map((n) => ({

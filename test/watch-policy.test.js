@@ -9,7 +9,8 @@ import assert from 'node:assert/strict';
 import {
   checkWatch, checkWatchProbe, targetCovered, cleanEventItems, apiExtract, diffItems, itemHash, watchMatch,
   chunkEvents, watchInHours, watchDay, parsePath, pickJson, jsonItems, parsePageField, cleanWatchSettings,
-  pageObservedAttrs, WATCH_MAX, WATCH_EVERY_MIN, WATCH_FIELD_MAX, WATCH_SEEN_MAX,
+  pageObservedAttrs, normalizeForHash, parseRetryAfterMs, nextDelayMs,
+  WATCH_MAX, WATCH_EVERY_MIN, WATCH_FIELD_MAX, WATCH_SEEN_MAX,
 } from '../extension/watch-policy.js';
 
 const base = () => ({
@@ -226,3 +227,32 @@ test('运行时段按用户的时区，跨午夜', () => {
   assert.equal(watchDay(t, 'Asia/Shanghai'), '2026-11-23');
   assert.equal(watchDay(Date.UTC(2026, 10, 23, 17), 'Asia/Shanghai'), '2026-11-24');
 });
+
+test('去噪与退避：detect.omit、零宽/空白归一化、Retry-After 解析与指数退避', () => {
+  // 1. detect.omit 合规校验
+  const w = base();
+  w.detect = { mode: 'live', items: 'tr.row', key: '@data-id', fields: { from: '.from', text: '.msg' }, omit: '.time-ago, .badge' };
+  const r = checkWatch(w);
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.watch.detect.omit, '.time-ago, .badge');
+  w.detect.omit = 'div{color:red}';
+  assert.equal(checkWatch(w).ok, false);
+
+  // 2. normalizeForHash / itemHash 忽略零宽字符、NBSP 与多余换行空白
+  assert.equal(normalizeForHash('  你\u200B好\uFEFF \n\t 世\u00A0界 '), '你好 世 界');
+  const h1 = itemHash({ key: '1', fields: { from: 'Alice', text: 'Hello   world' } }, ['from', 'text']);
+  const h2 = itemHash({ key: '1', fields: { from: 'Al\u200Bice', text: 'Hello\n\u00A0world\uFEFF' } }, ['from', 'text']);
+  assert.equal(h1, h2);
+
+  // 3. parseRetryAfterMs（秒数与 HTTP-date）与 nextDelayMs
+  assert.equal(parseRetryAfterMs('120'), 120_000);
+  assert.equal(parseRetryAfterMs('99999'), 1800_000); // 封顶 30 分钟
+  const now = Date.UTC(2026, 10, 23, 12, 0, 0);
+  assert.equal(parseRetryAfterMs(new Date(now + 45_000).toUTCString(), now), 45_000);
+  assert.equal(nextDelayMs({ everySec: 120, jitter: 0.5 }), 125_000);
+  assert.equal(nextDelayMs({ live: true, failStreak: 1 }), 30_000);
+  assert.equal(nextDelayMs({ live: true, failStreak: 3 }), 120_000);
+  assert.equal(nextDelayMs({ everySec: 60, failStreak: 2, transient: true }), 120_000);
+  assert.equal(nextDelayMs({ everySec: 60, failStreak: 1, transient: true, retryAfterMs: 180_000 }), 180_000);
+});
+

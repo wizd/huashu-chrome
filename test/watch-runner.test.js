@@ -368,3 +368,101 @@ test('实时监听模式（live，以 Gmail 新邮件为例）：常驻后台标
     globalThis.fetch = origFetch;
   }
 });
+
+test('接口模式（api）与实时模式（live）：ETag 304 零解析快路径、429 Retry-After 退避与 5 分钟混合兜底同步', async () => {
+  const origNow = Date.now;
+  let nowOffset = 0;
+  Date.now = () => origNow() + nowOffset;
+
+  const w = makeWatch({ id: 'w_etag', site: 'etag.example.com', settings: { every: 60 } });
+  let seenIfNoneMatch = '';
+  let mode = 'first';
+  const h = setupHarness(async (_url, init) => {
+    seenIfNoneMatch = init?.headers?.['If-None-Match'] || '';
+    if (mode === 'first') {
+      const r = new Response(JSON.stringify({ list: [{ id: '1', u: 'A', t: 'hi' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json', etag: '"v1"' },
+      });
+      Object.defineProperty(r, 'url', { value: w.target.url });
+      return r;
+    }
+    if (mode === '304') {
+      const r = new Response(null, { status: 304, headers: { etag: '"v1"' } });
+      Object.defineProperty(r, 'url', { value: w.target.url });
+      return r;
+    }
+    const r = new Response('Too Many Requests', { status: 429, headers: { 'retry-after': '180' } });
+    Object.defineProperty(r, 'url', { value: w.target.url });
+    return r;
+  });
+
+  try {
+    await runner.onWatchMessage({ type: 'watch_set', watch: w });
+    await runner.confirmWatch(w.id, true);
+    await wait();
+
+    // 1. 下一轮自动轮询应携带 If-None-Match: "v1"，收到 304 后零解析通过且 checks 增加、不产生误报事件
+    mode = '304';
+    nowOffset += 70_000;
+    await runner.tickWatches();
+    assert.equal(seenIfNoneMatch, '"v1"');
+    let panel = (await runner.watchPanelState()).list.find((x) => x.id === w.id);
+    assert.equal(panel.last.ok, true);
+    assert.equal(panel.last.count, 1);
+    assert.equal(panel.stats.checks, 2);
+    assert.equal(h.sent.filter((m) => m.type === 'event').length, 0);
+
+    // 2. 遇到 HTTP 429 + Retry-After: 180，应按 Retry-After 退避 180 秒
+    mode = '429';
+    nowOffset += 70_000;
+    const before429 = Date.now();
+    await runner.tickWatches();
+    panel = (await runner.watchPanelState()).list.find((x) => x.id === w.id);
+    assert.equal(panel.last.ok, false);
+    assert.ok(panel.last.error.includes('429'));
+    assert.ok(panel.nextAt >= before429 + 180_000, 'nextAt should honor Retry-After: 180');
+
+    // 3. live 模式经过 5 分钟（LIVE_RESYNC_MS）后，tickWatches 发送 sync: true 混合兜底同步并捕获静默变更
+    const wLive = makeWatch({
+      id: 'w_live_sync',
+      site: 'sync.example.com',
+      target: { site: 'sync.example.com', url: 'https://sync.example.com/inbox', fields: ['from', 'text'] },
+      detect: { mode: 'live', items: '.row', key: '@data-id', fields: { from: '.u', text: '.t' }, omit: '.noise' },
+    });
+    let liveAttached = null;
+    let liveItems = [{ key: '1', fields: { from: 'Alice', text: 'initial' } }];
+    let lastPing = null;
+    scriptHandler = async ({ target, args }) => {
+      const [id, token, detect] = args;
+      liveAttached = { tabId: target.tabId, id, token, detect };
+      return { ok: true, items: liveItems };
+    };
+    tabMsgHandler = async (tabId, msg) => {
+      if (liveAttached && tabId === liveAttached.tabId && msg.__hcWatchPing === liveAttached.id && msg.token === liveAttached.token) {
+        lastPing = msg;
+        if (msg.sync) return { ok: true, changed: true, items: liveItems, count: liveItems.length };
+        return { ok: true };
+      }
+      return { ok: true };
+    };
+
+    await runner.onWatchMessage({ type: 'watch_set', watch: wLive });
+    await runner.confirmWatch(wLive.id, true);
+    await wait();
+    assert.equal(liveAttached?.detect?.omit, '.noise');
+
+    // 5 分钟后模拟 SPA 容器替换导致未推送，但兜底 sync 拉到了新条目
+    liveItems = [{ key: '2', fields: { from: 'Bob', text: 'caught by hybrid sync' } }, ...liveItems];
+    nowOffset += 305_000;
+    await runner.tickWatches();
+    assert.equal(lastPing?.sync, true);
+    const liveEvs = h.sent.filter((m) => m.type === 'event' && m.id === wLive.id);
+    assert.equal(liveEvs.length, 1);
+    assert.deepEqual(liveEvs[0].items, [{ key: '2', fields: { from: 'Bob', text: 'caught by hybrid sync' } }]);
+  } finally {
+    Date.now = origNow;
+    globalThis.fetch = origFetch;
+  }
+});
+

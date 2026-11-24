@@ -222,6 +222,13 @@ test('宿主清单同时放行开发者模式版和商店版：商店包没有 k
   const id = extensionId(Buffer.from('test-key').toString('base64'));
   assert.deepEqual(allowedOrigins(id), [`chrome-extension://${id}/`, `chrome-extension://${STORE_EXTENSION_ID}/`]);
   assert.deepEqual(allowedOrigins(STORE_EXTENSION_ID), [`chrome-extension://${STORE_EXTENSION_ID}/`]);
+  const extra = extensionId(Buffer.from('oem-key').toString('base64'));
+  assert.deepEqual(allowedOrigins(id, [extra]), [
+    `chrome-extension://${id}/`,
+    `chrome-extension://${STORE_EXTENSION_ID}/`,
+    `chrome-extension://${extra}/`,
+  ]);
+  assert.throws(() => allowedOrigins(id, ['not-valid-id']), /无效的扩展 ID/);
 });
 
 test('云端命令表：desktop / apps 可用，apps 申请过滤掉浏览器和终端', () => {

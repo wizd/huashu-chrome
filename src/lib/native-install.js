@@ -31,9 +31,13 @@ function ourExtensionId() {
 // 商店版的 id 是商店分配的：打商店包时 manifest.key 被剥掉（scripts/pack-extension.mjs），算不出来，只能写死
 export const STORE_EXTENSION_ID = 'migojdmaegllchbambngejkclndannnf';
 
-// 清单放行的来源：开发者模式加载的（id 由 key 算出）和商店装的，两种都是本扩展
-export function allowedOrigins(id = ourExtensionId()) {
-  return [...new Set([id, STORE_EXTENSION_ID])].map((x) => `chrome-extension://${x}/`);
+// 清单放行的来源：开发者模式加载的（id 由 key 算出）、商店装的，以及通过 --allow-ext 额外放行的同源 OEM 扩展
+export function allowedOrigins(id = ourExtensionId(), extra = []) {
+  const extras = (Array.isArray(extra) ? extra : [extra]).flatMap((v) => String(v || '').split(',')).map((s) => s.trim()).filter(Boolean);
+  for (const x of extras) {
+    if (!/^[a-p]{32}$/.test(x)) throw new Error(`无效的扩展 ID：${x}（应为 32 位 a-p 小写字母）`);
+  }
+  return [...new Set([id, STORE_EXTENSION_ID, ...extras])].map((x) => `chrome-extension://${x}/`);
 }
 
 const REG_KEYS = [
@@ -50,7 +54,7 @@ function manifestDirs() {
   return ['google-chrome', 'chromium', 'microsoft-edge', 'BraveSoftware/Brave-Browser'].map((b) => path.join(h, '.config', b, 'NativeMessagingHosts'));
 }
 
-export function install() {
+export function install({ extraExtIds = [] } = {}) {
   ensureHome();
   fs.mkdirSync(DIR, { recursive: true });
   const win = process.platform === 'win32';
@@ -60,12 +64,13 @@ export function install() {
     : `#!/bin/sh\nexec "${process.execPath}" "${HOST_JS}" "$@"\n`);
   if (!win) fs.chmodSync(launcher, 0o755);
   const id = ourExtensionId();
+  const origins = allowedOrigins(id, extraExtIds);
   fs.writeFileSync(MANIFEST, JSON.stringify({
     name: HOST_NAME,
     description: 'vcorp-chrome desktop host',
     path: launcher,
     type: 'stdio',
-    allowed_origins: allowedOrigins(id),
+    allowed_origins: origins,
   }, null, 2));
   const placed = [];
   if (win) {
@@ -81,7 +86,7 @@ export function install() {
       placed.push(dir);
     }
   }
-  return { id, launcher, manifest: MANIFEST, placed };
+  return { id, allowedOrigins: origins, launcher, manifest: MANIFEST, placed };
 }
 
 export function uninstall() {

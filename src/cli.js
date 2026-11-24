@@ -107,8 +107,14 @@ switch (cmd) {
     const nat = await import('./lib/native-install.js');
     const sub = process.argv[3];
     if (sub === 'install') {
-      const r = nat.install();
-      console.log(`已登记原生消息宿主 ${nat.HOST_NAME}（只允许扩展 ${r.id} 调用）`);
+      const extraExtIds = [];
+      for (let i = 4; i < process.argv.length; i++) {
+        if (process.argv[i] === '--allow-ext' && process.argv[i + 1]) extraExtIds.push(process.argv[++i]);
+        else if (process.argv[i].startsWith('--allow-ext=')) extraExtIds.push(process.argv[i].slice('--allow-ext='.length));
+      }
+      const r = nat.install({ extraExtIds });
+      const ids = r.allowedOrigins.map((o) => o.replace(/^chrome-extension:\/\/|\/$/g, ''));
+      console.log(`已登记原生消息宿主 ${nat.HOST_NAME}（允许扩展：${ids.join(', ')}）`);
       for (const p of r.placed) console.log(`  ✅ ${p}`);
       if (!r.placed.length) console.log('  ⚠️ 没找到已安装的 Chrome / Edge / Chromium 配置目录');
       console.log('\n回到扩展侧栏点「启用桌面能力」。');

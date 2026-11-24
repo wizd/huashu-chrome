@@ -1674,6 +1674,20 @@
   }
 
   async function doWait(p) {
+    const hasFor = p.for !== undefined && p.for !== null && p.for !== '';
+    if (!hasFor && p.ms !== undefined) {
+      const ms = Number(p.ms);
+      if (!Number.isFinite(ms) || ms < 0) throw fail('BAD_PARAMS', 'wait 的 ms 必须是非负数字（毫秒）');
+      const clamped = Math.min(Math.round(ms), 30000);
+      await sleep(clamped);
+      return { data: { text: `已等待 ${clamped}ms` } };
+    }
+    if (!['selector', 'text', 'idle'].includes(p.for)) {
+      throw fail('BAD_PARAMS', `wait 需要 for（"selector" | "text" | "idle"，其中 selector/text 需传 value）或 ms（毫秒数，上限 30000），收到：${JSON.stringify(p.for)}`);
+    }
+    if ((p.for === 'selector' || p.for === 'text') && (typeof p.value !== 'string' || !p.value)) {
+      throw fail('BAD_PARAMS', `wait for="${p.for}" 需要非空字符串 value`);
+    }
     const timeout = p.timeout || 10000;
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {

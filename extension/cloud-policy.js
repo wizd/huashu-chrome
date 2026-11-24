@@ -539,6 +539,21 @@ export function checkCommand(cmd, params, { hosts, origin, allowEval = false }) 
         ...(typeof p.dropSelector === 'string' ? { dropSelector: p.dropSelector } : {}),
       };
     }
+    case 'wait': {
+      const hasFor = p.for !== undefined && p.for !== null && p.for !== '';
+      if (!hasFor && p.ms !== undefined) {
+        const ms = Number(p.ms);
+        if (!Number.isFinite(ms) || ms < 0) throw err('BAD_PARAMS', 'wait 的 ms 必须是非负数字（毫秒）');
+        return { ms: Math.min(Math.round(ms), 30000) };
+      }
+      if (!['selector', 'text', 'idle'].includes(p.for)) {
+        throw err('BAD_PARAMS', `wait 需要 for（"selector" | "text" | "idle"，其中 selector/text 需传 value）或 ms（毫秒数，上限 30000），收到：${JSON.stringify(p.for)}`);
+      }
+      if ((p.for === 'selector' || p.for === 'text') && (typeof p.value !== 'string' || !p.value)) {
+        throw err('BAD_PARAMS', `wait for="${p.for}" 需要非空字符串 value`);
+      }
+      return { for: p.for, ...(p.value !== undefined ? { value: p.value } : {}), ...(p.timeout !== undefined ? { timeout: p.timeout } : {}) };
+    }
     case 'screenshot':
       delete p.focus;    // 只走 CDP 截后台页；退回老路要切前台，那会截到用户正在看的东西
       return p;

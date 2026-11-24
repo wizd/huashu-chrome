@@ -543,3 +543,15 @@ test('授权任务的电脑：服务器授权了电脑、用户也打开了开�
     assert.throws(() => checkGrantCommand(cmd, {}, lent, { deskOk: true }), (e) => e.code === 'GRANT_SCOPE', cmd);
   }
 });
+
+test('wait：校验 for/value，支持有上限的纯 ms 延时，非法参数立刻报 BAD_PARAMS', () => {
+  assert.deepEqual(checkCommand('wait', { ms: 5000 }, ctx), { ms: 5000 });
+  assert.deepEqual(checkCommand('wait', { ms: 99999 }, ctx), { ms: 30000 });
+  assert.deepEqual(checkCommand('wait', { for: 'selector', value: '.ok' }, ctx), { for: 'selector', value: '.ok' });
+  assert.deepEqual(checkCommand('wait', { for: 'text', value: '完成', timeout: 25000 }, ctx), { for: 'text', value: '完成', timeout: 25000 });
+  assert.deepEqual(checkCommand('wait', { for: 'idle', timeout: 300000 }, ctx), { for: 'idle', timeout: 300000 });
+  for (const bad of [{}, { for: 'bogus' }, { for: 'selector' }, { for: 'text', value: '' }, { ms: -1 }, { ms: 'nope' }]) {
+    assert.throws(() => checkCommand('wait', bad, ctx), (e) => e.code === 'BAD_PARAMS', JSON.stringify(bad));
+  }
+});
+

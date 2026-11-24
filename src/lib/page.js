@@ -251,6 +251,43 @@ function inPage(op, spec, arg) {
       return { desc: describe(el), got: valueOf(el) };
     }
 
+    // 往当前聚焦元素输入文字（page.keyboard.type / insertText）
+    case 'typeActive': {
+      let el = document.activeElement;
+      while (el) {
+        const sr = el.shadowRoot || el._sr || el.__shadowRoot;
+        if (sr?.activeElement) { el = sr.activeElement; continue; }
+        if ((el.tagName === 'IFRAME' || el.tagName === 'FRAME') && el.contentDocument?.activeElement) {
+          el = el.contentDocument.activeElement; continue;
+        }
+        break;
+      }
+      if (!el || el === document.body || el === document.documentElement) {
+        throw new Error('当前没有聚焦的输入框：先 click 输入框，或用 page.fill(selector, text)');
+      }
+      if (el.disabled || el.readOnly) {
+        throw new Error(`当前焦点输入框 ${describe(el)} 不可编辑（readonly/disabled）`);
+      }
+      if (editable(el)) {
+        insertLines(el, arg);
+      } else if ('value' in el) {
+        const cur = String(el.value || '');
+        let next = cur + arg, caret = null;
+        try {
+          if (typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number') {
+            const start = el.selectionStart, end = el.selectionEnd;
+            next = cur.slice(0, start) + arg + cur.slice(end);
+            caret = start + arg.length;
+          }
+        } catch { /* number/email 等 input 不支持 selectionStart */ }
+        setNative(el, next);
+        if (caret != null) { try { el.setSelectionRange(caret, caret); } catch { /* ignore */ } }
+      } else {
+        throw new Error(`当前焦点元素 ${describe(el)} 不能输入文字`);
+      }
+      return { desc: describe(el), got: valueOf(el) };
+    }
+
     case 'check': {
       const { el } = one(spec);
       if (!el) notFound(spec);
@@ -342,6 +379,16 @@ export class Page {
     this.signal = signal;
     this.defaultTimeout = 15000;
     this._netMark = 0;
+    // 不带目标的按键：发给当前焦点。既保留旧写法 page.keyboard('Escape')，也兼容 Playwright 的
+    // page.keyboard.press('Escape') / page.keyboard.type(text) / page.keyboard.insertText(text)。
+    const kb = (key) => this._step('key', key, () => this._cmd('key', { key }).then((r) => ({ __note: noteOf(r) })));
+    kb.press = (key) => kb(key);
+    kb.type = (text) => this._step('type', String(text).slice(0, 40), async () => {
+      const r = await this._in('typeActive', null, String(text));
+      return { __note: r.desc };
+    });
+    kb.insertText = kb.type;
+    this.keyboard = kb;
   }
 
   _check() { if (this.signal?.aborted) throw new ScriptError('脚本已被取消', 'CANCELLED'); }
@@ -382,7 +429,29 @@ export class Page {
     // 扩展的 eval 返回 JSON.stringify 的结果；顺带把它附加的提示去掉
     const body = text.replace(/\n\n（提示：[\s\S]*$/, '');
     if (body === 'undefined' || body === '') return undefined;
-    if (/\n…（已截断）$/.test(body)) throw new ScriptError('页面返回的数据超过 4MB，被截断了。只取需要的字段再返回。', 'TOO_BIG');
+    const cloudTrim = /\n…（结果太大，已截断）$/.exec(body);
+    if (cloudTrim) {
+      const kept = body.length - cloudTrim[0].length;
+      throw new ScriptError(
+        `页面返回的数据超过云端传输上限，已被截断（仅保留前 ${kept} 字符）。只取需要的字段再返回；不要用 evaluate 整包回传大媒体。`,
+        'TOO_BIG',
+      );
+    }
+    const evalTrim = /\n…（已截断）$/.exec(body);
+    if (r?.truncated || evalTrim) {
+      const maxLen = Number(r?.maxLength);
+      const kept = evalTrim ? body.length - evalTrim[0].length : body.length;
+      const limit = Number.isFinite(maxLen) && maxLen > 0 ? maxLen : null;
+      const refLen = limit || Math.max(1000, kept);
+      const rawKb = Math.max(1, Math.floor((refLen * 0.7) / 1000));
+      const detail = limit
+        ? `上限约 ${Math.round(limit / 1000)}KB / ${limit} 字符`
+        : `已保留 ${kept} 字符后被截断`;
+      throw new ScriptError(
+        `页面返回的数据过大，已被截断（${detail}）。只取需要的字段再返回；若必须分块回传二进制，单块原始字节应低于 ${rawKb}KB。`,
+        'TOO_BIG',
+      );
+    }
     try { return JSON.parse(body); } catch { return body; }
   }
 
@@ -422,15 +491,20 @@ export class Page {
   click(css, o) { return this.locator(css).click(o); }
   fill(css, v) { return this.locator(css).fill(v); }
   type(css, v) { return this.locator(css).pressSequentially(v); }
-  press(css, key) { return this.locator(css).press(key); }
+  async press(css, key) {
+    if (key === undefined) {
+      throw new ScriptError(
+        `page.press(selector, key) 需要两个参数（收到 ${JSON.stringify(css)}）。对当前焦点按键请用 page.keyboard.press(${JSON.stringify(String(css ?? ''))})`,
+        'BAD_PARAMS',
+      );
+    }
+    return this.locator(css).press(key);
+  }
   check(css) { return this.locator(css).check(); }
   textContent(css) { return this.locator(css).textContent(); }
   inputValue(css) { return this.locator(css).inputValue(); }
   setInputFiles(css, files) { return this.locator(css).setInputFiles(files); }
   waitForSelector(css, o) { return this.locator(css).waitFor(o); }
-
-  // 不带目标的按键：发给当前焦点
-  async keyboard(key) { return this._step('key', key, () => this._cmd('key', { key }).then((r) => ({ __note: noteOf(r) }))); }
 
   // ---- 等待 ----
 

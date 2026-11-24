@@ -134,3 +134,82 @@ test('locator 认 Playwright 选择器写法，不再原样塞给 querySelectorA
   assert.deepEqual(parseSelector('div.card'), { css: 'div.card' });
   assert.throws(() => parseSelector('div:has-text("x") > a'), /只能写在最后/);
 });
+
+test('TOO_BIG 报真实上限而不是写死 4MB，且新版扩展保留旧截断后缀以兼容旧客户端', async () => {
+  // 旧客户端 + 新扩展兼容检查：extension 截断输出仍以 \n…（已截断） 结尾
+  const bgSrc = fs.readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8');
+  const cdpSrc = fs.readFileSync(new URL('../extension/cdp.js', import.meta.url), 'utf8');
+  assert.match(bgSrc, /s\.slice\(0, max\) \+ '\\n…（已截断）'/);
+  assert.match(cdpSrc, /s\.slice\(0, maxLength\) \+ '\\n…（已截断）'/);
+  const oldClientRe = /\n…（已截断）$/;
+  const newExtReply = { untrusted: true, text: 'a'.repeat(400000) + '\n…（已截断）', truncated: true, maxLength: 400000 };
+  assert.ok(oldClientRe.test(newExtReply.text), '旧客户端仍能识别新版扩展的截断输出');
+
+  const make = (reply) => ({
+    calls: [],
+    ws: null,
+    async call(cmd) {
+      if (cmd === 'eval') return reply;
+      return { text: 'ok' };
+    },
+  });
+  for (const [reply, re] of [
+    [newExtReply, /上限约 400KB \/ 400000 字符.*低于 280KB/],
+    [{ untrusted: true, text: 'a'.repeat(400000) + '\n…（已截断）' }, /已保留 400000 字符后被截断.*低于 280KB/],
+    [{ untrusted: true, text: 'a'.repeat(200000) + '\n…（结果太大，已截断）' }, /超过云端传输上限.*仅保留前 200000 字符/],
+  ]) {
+    const r = new ScriptRunner(make(reply));
+    const out = await r.handle({ code: 'return await page.evaluate(() => 1)' });
+    assert.match(out, /TOO_BIG/);
+    assert.match(out, re);
+    assert.doesNotMatch(out, /超过 4MB/);
+  }
+});
+
+test('page.keyboard 兼容函数调用与 Playwright 风格 press/type，单参数 page.press 立刻报 BAD_PARAMS', async () => {
+  const b = fakeBridge({ typeActive: { desc: '<input>', got: 'hi' } });
+  const r = new ScriptRunner(b);
+  const ok = await r.handle({ code: `await page.keyboard('Escape'); await page.keyboard.press('Enter'); await page.keyboard.type('hi'); return 'ok'` });
+  assert.match(ok, /^✅ 完成/);
+  assert.deepEqual(b.calls.filter((c) => c.cmd === 'key').map((c) => c.params.key), ['Escape', 'Enter']);
+  const typeCall = b.calls.find((c) => c.cmd === 'eval' && c.params.expr.includes('"typeActive"'));
+  assert.ok(typeCall);
+
+  // 直接在沙箱里跑注入页面的 typeActive：验证中间光标、选区替换和 readonly/disabled 拒绝
+  const { default: vm } = await import('node:vm');
+  const runTypeActive = (activeElement, text) => {
+    const expr = typeCall.params.expr.replace(/"hi"\)$/, `${JSON.stringify(text)})`);
+    const ctx = {
+      document: { activeElement, body: {}, documentElement: {} },
+      Event: class { constructor(t) { this.type = t; } },
+      HTMLInputElement: class {},
+      HTMLTextAreaElement: class {},
+    };
+    return vm.runInNewContext(expr, ctx);
+  };
+  const makeInput = (value, selectionStart, selectionEnd, extra = {}) => ({
+    tagName: 'INPUT', value, selectionStart, selectionEnd, ...extra,
+    getAttribute: () => '', dispatchEvent: () => {},
+    setSelectionRange(s, e) { this.selectionStart = s; this.selectionEnd = e; },
+  });
+  // 光标在中间插入
+  const mid = makeInput('abef', 2, 2);
+  runTypeActive(mid, 'cd');
+  assert.equal(mid.value, 'abcdef');
+  assert.equal(mid.selectionStart, 4);
+  assert.equal(mid.selectionEnd, 4);
+  // 有选区时替换选区
+  const sel = makeInput('hello world', 6, 11);
+  runTypeActive(sel, 'claude');
+  assert.equal(sel.value, 'hello claude');
+  assert.equal(sel.selectionStart, 12);
+  // 只读/禁用拒绝
+  assert.throws(() => runTypeActive(makeInput('x', 1, 1, { readOnly: true }), 'y'), /不可编辑/);
+  assert.throws(() => runTypeActive(makeInput('x', 1, 1, { disabled: true }), 'y'), /不可编辑/);
+
+  const bad = await r.handle({ code: `await page.press('Escape')` });
+  assert.match(bad, /^❌ 失败/);
+  assert.match(bad, /BAD_PARAMS/);
+  assert.match(bad, /page\.keyboard\.press\("Escape"\)/);
+});
+

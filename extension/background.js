@@ -1043,7 +1043,7 @@ function routeOf(p) {
 // 后台标签页的对话框会被 Chrome 抑制（靶场里有一条测试守着），
 // 所以真撞上多半是用户正好切到了这一页，或者 beforeunload 拦下了导航。
 const contentBudget = (p) => {
-  if (p?.__hc === 'wait') return (Number(p.timeout) || 10000) + 5000;
+  if (p?.__hc === 'wait') return Math.max(Number(p.timeout) || 10000, Math.min(Number(p.ms) || 0, 30000)) + 5000;
   if (p?.__hc === 'scroll') return Math.min(Number(p.times) || 1, 50) * (Number(p.wait) || 700) + 10000;
   // 云端上传要先在页面里取完整个视频。fetchMs 是扩展按素材大小算的，内容脚本到点自己取消
   if (p?.__hc === 'upload' && p.fetchMs) return p.fetchMs + 15000;
@@ -2708,7 +2708,8 @@ const HANDLERS = {
             let s;
             try { s = JSON.stringify(v, null, 2); } catch { s = String(v); }
             if (s === undefined) s = 'undefined';
-            return { ok: true, text: s.length > max ? s.slice(0, max) + '\n…（已截断）' : s };
+            const truncated = s.length > max;
+            return { ok: true, truncated, maxLength: max, text: truncated ? s.slice(0, max) + '\n…（已截断）' : s };
           } catch (e) {
             return { ok: false, message: String((e && e.message) || e) };
           }
@@ -2736,7 +2737,9 @@ const HANDLERS = {
       // 走页面世界就够，没必要为它们挂一下黄条。
       if (csp) {
         try {
-          return { untrusted: true, text: await cdp.evaluate(id, src, { maxLength: p.maxLength || 20000 }) };
+          const maxLength = p.maxLength || 20000;
+          const text = await cdp.evaluate(id, src, { maxLength });
+          return { untrusted: true, text, ...(text.endsWith('\n…（已截断）') ? { truncated: true, maxLength } : {}) };
         } catch (e) {
           // 调试器通道跑通了，是代码自己出错（选择器写错、元素不在……）：照原话报，
           // 不提 CSP——以前这里一律说「真实求值通道也没能用上」，agent 就去换工具绕路
@@ -2754,7 +2757,7 @@ const HANDLERS = {
     // 而且不受 CSP 限制（eval 在大站上要挂调试器才跑得通）——说一句，下次就省了
     const tip = /\b(document\.body|document\.documentElement)\.innerText\b/.test(src)
       ? '\n\n（提示：整页文本用 read_text(scope:"page") 拿，结果一样，大站上不用挂调试器。）' : '';
-    return { untrusted: true, text: result.text + tip };
+    return { untrusted: true, text: result.text + tip, ...(result.truncated ? { truncated: true, maxLength: result.maxLength } : {}) };
   },
 
   // captureVisibleTab 截的是「那个窗口当前可见的标签页」，不是我们的受控标签页。

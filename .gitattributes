@@ -1,2 +1,5 @@
 # 能力包产物按字节入库：注册表里记着 sha256，换行被改写就对不上
 extension/loads/** -text
+
+# CLI 入口含 shebang，npm/工具在 Windows 下会把首行改回 LF；固定 LF 避免 core.autocrlf 导致虚假修改
+src/cli.js text eol=lf

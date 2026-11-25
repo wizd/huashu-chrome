@@ -1,19 +1,23 @@
-# 推送与 package.json.version 一致的 v* tag 自动发 npm。走 OIDC 可信发布，仓库里不存任何 token。
+# 推送与 package.json / extension/manifest.json 一致的 v* tag 自动发 npm、打包商店 ZIP 并上传 Chrome Web Store 草稿。
+# 全链路走 OIDC（npm Trusted Publisher + Google Workload Identity Federation），仓库不存长期密钥。
 #
 # 用法（权威发布入口：显式推送 tag）：
-#   # 方式 A：自动改版本、commit 并打附注 tag，然后显式推送分支和该 tag
-#   npm version patch          # 或 minor / major
-#   git push origin HEAD "v$(node -p "require('./package.json').version")"
-#
-#   # 方式 B：手动改完 package.json 并 commit 后打附注 tag 并显式推送
-#   git tag -a v3.8.5 -m "Release 3.8.5"
-#   git push origin HEAD v3.8.5
+#   # 方式 A：同步升级 package.json 与 extension/manifest.json 版本、commit、打附注 tag 并显式推送
+#   git tag -a v3.8.6 -m "Release 3.8.6"
+#   git push origin HEAD v3.8.6
 #
 # 注意：
 #   - 轻量 tag（git tag vX.Y.Z 不带 -a）不会被 `git push --follow-tags` 推送，
-#     因此一律显式推送 tag（如 `git push origin HEAD v3.8.5`）。
-#   - 手动触发（workflow_dispatch）也必须在 Actions 页面选择与 package.json.version 匹配的 v* tag。
+#     因此一律显式推送 tag（如 `git push origin HEAD v3.8.6`）。
+#   - 手动触发（workflow_dispatch）也必须在 Actions 页面选择与版本匹配的 v* tag。
 #   - 本地不要再手动 npm publish——发布交给这条流水线。
+#   - Chrome Web Store 仅上传更新草稿（:upload），不自动提审（保留人工在开发者后台确认后提审）。
+#   - 商店上传为独立 job：即使 Google 鉴权或商店接口异常，npm 发布与商店 ZIP Actions artifact 均不受影响。
+#   - 仓库 Variables（Settings → Secrets and variables → Actions → Variables）需配置：
+#       CWS_PUBLISHER_ID     Chrome Web Store Publisher ID
+#       CWS_WIF_PROVIDER     GCP Workload Identity Provider 完整资源路径
+#       CWS_SERVICE_ACCOUNT  已绑定到 Chrome Web Store Publisher 的 GCP Service Account 邮箱
+#       CWS_ITEM_ID          （可选，默认 migojdmaegllchbambngejkclndannnf）
 #   - npm 网页 Settings → Trusted Publisher 需绑定：
 #       Repository: wizd/huashu-chrome | Workflow: publish.yml | Environment: 留空 | Allowed actions: 勾选 npm publish
 #     新建绑定必须在 48 小时内完成首次 CI 成功发布，否则会自动过期（过期需先删除再重建）。
@@ -35,6 +39,10 @@ jobs:
     permissions:
       id-token: write # OIDC 换发布凭据，缺这条整条链路不成立
       contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      store_zip_name: ${{ steps.version.outputs.store_zip_name }}
+      artifact_name: ${{ steps.version.outputs.artifact_name }}
 
     steps:
       - uses: actions/checkout@v5
@@ -45,11 +53,13 @@ jobs:
           node-version: '24'
           package-manager-cache: false # 发布构建不吃缓存
 
-      - name: Verify tag matches package.json version
+      - name: Verify tag matches package.json and extension/manifest.json
+        id: version
         shell: bash
         run: |
           set -euo pipefail
           PKG_VER=$(node -p "require('./package.json').version")
+          EXT_VER=$(node -p "require('./extension/manifest.json').version")
           EXPECTED_TAG="v${PKG_VER}"
           if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
             echo "::error::发布必须基于与 package.json.version 一致的 v* tag 触发（当前 ref=${GITHUB_REF_NAME}, ref_type=${GITHUB_REF_TYPE}）。请显式推送 tag ${EXPECTED_TAG}，或在 workflow_dispatch 时选择 tag ${EXPECTED_TAG}。"
@@ -59,13 +69,34 @@ jobs:
             echo "::error::Tag (${GITHUB_REF_NAME}) 与 package.json version (${PKG_VER}，期望 ${EXPECTED_TAG}) 不一致，已中止发布。"
             exit 1
           fi
-          echo "Verified tag ${GITHUB_REF_NAME} matches package.json version ${PKG_VER}"
+          if [ "${EXT_VER}" != "${PKG_VER}" ]; then
+            echo "::error::extension/manifest.json version (${EXT_VER}) 与 package.json version (${PKG_VER}) 不一致，已中止发布。"
+            exit 1
+          fi
+          echo "Verified tag ${GITHUB_REF_NAME} matches package.json (${PKG_VER}) and extension/manifest.json (${EXT_VER})"
+          echo "version=${PKG_VER}" >> "$GITHUB_OUTPUT"
+          echo "store_zip_name=vcorp-chrome-${PKG_VER}.zip" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=chrome-web-store-v${PKG_VER}" >> "$GITHUB_OUTPUT"
 
       # 固定支持 OIDC 可信发布（要求 >= 11.5.1）的 npm 版本，避免 npm@latest 跨大版本漂移。
       - run: npm install -g npm@11.21.3
 
       - run: npm ci
       - run: npm test
+
+      - name: Pack Chrome Web Store ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm run pack:ext
+          node scripts/cws-upload.mjs --verify-zip "dist/${{ steps.version.outputs.store_zip_name }}" --expected-version "${{ steps.version.outputs.version }}"
+
+      - name: Upload Chrome Web Store ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.artifact_name }}
+          path: dist/${{ steps.version.outputs.store_zip_name }}
+          if-no-files-found: error
 
       # 查询 registry 已发布版本列表：已发布则跳过（幂等）；
       # 若发生网络错误、鉴权错误或 registry 异常，直接中止任务，不误判为未发布。
@@ -95,3 +126,66 @@ jobs:
         if: steps.published.outputs.skip != 'true'
         shell: bash
         run: npm publish --registry https://registry.npmjs.org/ --loglevel verbose
+
+  upload-chrome-web-store:
+    needs: [publish]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Verify Chrome Web Store variables
+        shell: bash
+        env:
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+          CWS_WIF_PROVIDER: ${{ vars.CWS_WIF_PROVIDER }}
+          CWS_SERVICE_ACCOUNT: ${{ vars.CWS_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ -n "${CWS_PUBLISHER_ID}" ] || missing+=("CWS_PUBLISHER_ID")
+          [ -n "${CWS_WIF_PROVIDER}" ] || missing+=("CWS_WIF_PROVIDER")
+          [ -n "${CWS_SERVICE_ACCOUNT}" ] || missing+=("CWS_SERVICE_ACCOUNT")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::缺少 Chrome Web Store 自动上传配置变量：${missing[*]}。商店 ZIP 已保存为 Actions artifact（${{ needs.publish.outputs.artifact_name }}），可先下载手动上传。"
+            exit 1
+          fi
+
+      - name: Download Chrome Web Store ZIP artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.publish.outputs.artifact_name }}
+          path: dist
+
+      - run: npm ci
+
+      - name: Authenticate to Google Cloud via WIF
+        id: gcp-auth
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.CWS_WIF_PROVIDER }}
+          service_account: ${{ vars.CWS_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/chromewebstore
+          access_token_lifetime: 600s
+          create_credentials_file: false
+
+      - name: Upload draft to Chrome Web Store (API V2)
+        shell: bash
+        env:
+          CWS_ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
+          CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
+          CWS_ITEM_ID: ${{ vars.CWS_ITEM_ID || 'migojdmaegllchbambngejkclndannnf' }}
+        run: |
+          set -euo pipefail
+          node scripts/cws-upload.mjs \
+            --zip "dist/${{ needs.publish.outputs.store_zip_name }}" \
+            --expected-version "${{ needs.publish.outputs.version }}"

@@ -1,23 +1,26 @@
-# 推送与 package.json / extension/manifest.json 一致的 v* tag 自动发 npm、打包商店 ZIP 并上传 Chrome Web Store 草稿。
+# 推送与 package.json / extension/manifest.json 一致的 v* tag 自动发 npm、打包商店 ZIP 并同步到 Chrome Web Store。
 # 全链路走 OIDC（npm Trusted Publisher + Google Workload Identity Federation），仓库不存长期密钥。
 #
 # 用法（权威发布入口：显式推送 tag）：
 #   # 方式 A：同步升级 package.json 与 extension/manifest.json 版本、commit、打附注 tag 并显式推送
-#   git tag -a v3.8.6 -m "Release 3.8.6"
-#   git push origin HEAD v3.8.6
+#   git tag -a v3.8.7 -m "Release 3.8.7"
+#   git push origin HEAD v3.8.7
 #
 # 注意：
 #   - 轻量 tag（git tag vX.Y.Z 不带 -a）不会被 `git push --follow-tags` 推送，
-#     因此一律显式推送 tag（如 `git push origin HEAD v3.8.6`）。
+#     因此一律显式推送 tag（如 `git push origin HEAD v3.8.7`）。
 #   - 手动触发（workflow_dispatch）也必须在 Actions 页面选择与版本匹配的 v* tag。
 #   - 本地不要再手动 npm publish——发布交给这条流水线。
-#   - Chrome Web Store 仅上传更新草稿（:upload），不自动提审（保留人工在开发者后台确认后提审）。
-#   - 商店上传为独立 job：即使 Google 鉴权或商店接口异常，npm 发布与商店 ZIP Actions artifact 均不受影响。
-#   - 仓库 Variables（Settings → Secrets and variables → Actions → Variables）需配置：
-#       CWS_PUBLISHER_ID     Chrome Web Store Publisher ID
-#       CWS_WIF_PROVIDER     GCP Workload Identity Provider 完整资源路径
-#       CWS_SERVICE_ACCOUNT  已绑定到 Chrome Web Store Publisher 的 GCP Service Account 邮箱
-#       CWS_ITEM_ID          （可选，默认 migojdmaegllchbambngejkclndannnf）
+#   - 商店上传为独立 job（按扩展串行锁），即使 Google 鉴权或商店接口异常，npm 发布与商店 ZIP Actions artifact 均不受影响。
+#   - 仓库 Variables（Settings → Secrets and variables → Actions → Variables）配置：
+#       CWS_PUBLISHER_ID          Chrome Web Store Publisher ID
+#       CWS_WIF_PROVIDER          GCP Workload Identity Provider 完整资源路径
+#       CWS_SERVICE_ACCOUNT       已绑定到 Chrome Web Store Publisher 的 GCP Service Account 邮箱
+#       CWS_ITEM_ID               （可选，默认 migojdmaegllchbambngejkclndannnf）
+#       CWS_AUTO_PUBLISH          （可选）default=过审后沿用商店现有放量设置自动上线（DEFAULT_PUBLISH）；
+#                                  staged=过审后暂存（STAGED_PUBLISH）；留空或 false=仅上传草稿不提审
+#       CWS_CANCEL_PENDING_REVIEW （可选）true=检测到更低版本处于 PENDING_REVIEW 时自动 :cancelSubmission 撤回后再传；
+#                                  留空或 false=不自动撤回（同版已审/已发始终幂等跳过，更高版/缺版本/STAGED 始终保留现状）
 #   - npm 网页 Settings → Trusted Publisher 需绑定：
 #       Repository: wizd/huashu-chrome | Workflow: publish.yml | Environment: 留空 | Allowed actions: 勾选 npm publish
 #     新建绑定必须在 48 小时内完成首次 CI 成功发布，否则会自动过期（过期需先删除再重建）。
@@ -130,6 +133,10 @@ jobs:
   upload-chrome-web-store:
     needs: [publish]
     runs-on: ubuntu-latest
+    # 按目标扩展串行，避免连续打多个 tag 时互相撤审或提交错误草稿
+    concurrency:
+      group: chrome-web-store-${{ vars.CWS_ITEM_ID || 'migojdmaegllchbambngejkclndannnf' }}
+      cancel-in-progress: false
     permissions:
       id-token: write
       contents: read
@@ -143,11 +150,14 @@ jobs:
           package-manager-cache: false
 
       - name: Verify Chrome Web Store variables
+        id: cws-config
         shell: bash
         env:
           CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
           CWS_WIF_PROVIDER: ${{ vars.CWS_WIF_PROVIDER }}
           CWS_SERVICE_ACCOUNT: ${{ vars.CWS_SERVICE_ACCOUNT }}
+          CWS_AUTO_PUBLISH: ${{ vars.CWS_AUTO_PUBLISH }}
+          CWS_CANCEL_PENDING_REVIEW: ${{ vars.CWS_CANCEL_PENDING_REVIEW }}
         run: |
           set -euo pipefail
           missing=()
@@ -158,6 +168,32 @@ jobs:
             echo "::error::缺少 Chrome Web Store 自动上传配置变量：${missing[*]}。商店 ZIP 已保存为 Actions artifact（${{ needs.publish.outputs.artifact_name }}），可先下载手动上传。"
             exit 1
           fi
+
+          AUTO_PUBLISH_NORM=$(printf '%s' "${CWS_AUTO_PUBLISH}" | tr '[:upper:]' '[:lower:]' | xargs)
+          PUBLISH_TYPE=""
+          case "${AUTO_PUBLISH_NORM}" in
+            ""|"false"|"none"|"draft") PUBLISH_TYPE="" ;;
+            "default"|"default_publish") PUBLISH_TYPE="DEFAULT_PUBLISH" ;;
+            "staged"|"staged_publish") PUBLISH_TYPE="STAGED_PUBLISH" ;;
+            *)
+              echo "::error::无效的 CWS_AUTO_PUBLISH 变量值：${CWS_AUTO_PUBLISH}（仅支持 default / staged / false 或留空）。"
+              exit 1
+              ;;
+          esac
+
+          CANCEL_NORM=$(printf '%s' "${CWS_CANCEL_PENDING_REVIEW}" | tr '[:upper:]' '[:lower:]' | xargs)
+          CANCEL_FLAG="false"
+          case "${CANCEL_NORM}" in
+            ""|"false") CANCEL_FLAG="false" ;;
+            "true") CANCEL_FLAG="true" ;;
+            *)
+              echo "::error::无效的 CWS_CANCEL_PENDING_REVIEW 变量值：${CWS_CANCEL_PENDING_REVIEW}（仅支持 true / false 或留空）。"
+              exit 1
+              ;;
+          esac
+
+          echo "publish_type=${PUBLISH_TYPE}" >> "$GITHUB_OUTPUT"
+          echo "cancel_pending_review=${CANCEL_FLAG}" >> "$GITHUB_OUTPUT"
 
       - name: Download Chrome Web Store ZIP artifact
         uses: actions/download-artifact@v4
@@ -178,14 +214,24 @@ jobs:
           access_token_lifetime: 600s
           create_credentials_file: false
 
-      - name: Upload draft to Chrome Web Store (API V2)
+      - name: Upload and publish to Chrome Web Store (API V2)
         shell: bash
         env:
           CWS_ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
           CWS_PUBLISHER_ID: ${{ vars.CWS_PUBLISHER_ID }}
           CWS_ITEM_ID: ${{ vars.CWS_ITEM_ID || 'migojdmaegllchbambngejkclndannnf' }}
+          CWS_PUBLISH_TYPE: ${{ steps.cws-config.outputs.publish_type }}
+          CWS_CANCEL_PENDING_REVIEW: ${{ steps.cws-config.outputs.cancel_pending_review }}
         run: |
           set -euo pipefail
-          node scripts/cws-upload.mjs \
-            --zip "dist/${{ needs.publish.outputs.store_zip_name }}" \
+          args=(
+            --zip "dist/${{ needs.publish.outputs.store_zip_name }}"
             --expected-version "${{ needs.publish.outputs.version }}"
+          )
+          if [ -n "${CWS_PUBLISH_TYPE}" ]; then
+            args+=(--publish-type "${CWS_PUBLISH_TYPE}")
+            if [ "${CWS_CANCEL_PENDING_REVIEW}" = "true" ]; then
+              args+=(--cancel-pending-review)
+            fi
+          fi
+          node scripts/cws-upload.mjs "${args[@]}"
